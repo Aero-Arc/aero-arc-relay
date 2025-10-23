@@ -2,7 +2,6 @@ package sinks
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/makinje/aero-arc-relay/internal/config"
@@ -33,20 +32,20 @@ func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
 	}, nil
 }
 
-// Write sends telemetry data to Kafka
-func (k *KafkaSink) Write(data *telemetry.Data) error {
-	// Serialize data to JSON
-	jsonData, err := data.ToJSON()
+// WriteMessage sends telemetry message to Kafka
+func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+	// Serialize message to JSON
+	jsonData, err := msg.ToJSON()
 	if err != nil {
-		return fmt.Errorf("failed to serialize data: %w", err)
+		return fmt.Errorf("failed to serialize message: %w", err)
 	}
 
 	// Create Kafka message
 	message := &sarama.ProducerMessage{
 		Topic:     k.topic,
-		Key:       sarama.StringEncoder(data.Source),
+		Key:       sarama.StringEncoder(msg.GetSource()),
 		Value:     sarama.ByteEncoder(jsonData),
-		Timestamp: time.Now(),
+		Timestamp: msg.GetTimestamp(),
 	}
 
 	// Send message

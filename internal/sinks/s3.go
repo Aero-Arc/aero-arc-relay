@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -43,18 +42,18 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 	}, nil
 }
 
-// Write uploads telemetry data to S3
-func (s *S3Sink) Write(data *telemetry.Data) error {
-	// Serialize data to JSON
-	jsonData, err := data.ToJSON()
+// WriteMessage uploads telemetry message to S3
+func (s *S3Sink) WriteMessage(msg telemetry.TelemetryMessage) error {
+	// Serialize message to JSON
+	jsonData, err := msg.ToJSON()
 	if err != nil {
-		return fmt.Errorf("failed to serialize data: %w", err)
+		return fmt.Errorf("failed to serialize message: %w", err)
 	}
 
-	// Generate object key with timestamp
-	timestamp := time.Now().UTC()
+	// Generate object key with timestamp and message type
+	timestamp := msg.GetTimestamp().UTC()
 	key := filepath.Join(s.prefix, timestamp.Format("2006/01/02"),
-		fmt.Sprintf("%s_%d.json", data.Source, timestamp.Unix()))
+		fmt.Sprintf("%s_%s_%d.json", msg.GetSource(), msg.GetMessageType(), timestamp.Unix()))
 
 	// Upload to S3
 	_, err = s.client.PutObjectWithContext(context.Background(), &s3.PutObjectInput{

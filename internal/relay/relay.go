@@ -219,43 +219,45 @@ func (r *Relay) handleFrame(evt *gomavlib.EventFrame, name string) {
 
 // handleHeartbeat processes heartbeat messages
 func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, sourceName string) {
-	telemetryData := telemetry.New(sourceName)
-	telemetryData.Status = "connected"
-	telemetryData.Mode = r.getFlightMode(msg.CustomMode)
-	r.handleTelemetry(telemetryData)
+	heartbeatMsg := telemetry.NewHeartbeatMessage(sourceName)
+	heartbeatMsg.Status = "connected"
+	heartbeatMsg.Mode = r.getFlightMode(msg.CustomMode)
+	r.handleTelemetryMessage(heartbeatMsg)
 }
 
 // handleGlobalPosition processes global position messages
 func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, sourceName string) {
-	telemetryData := telemetry.New(sourceName)
-	telemetryData.Latitude = float64(msg.Lat) / 1e7
-	telemetryData.Longitude = float64(msg.Lon) / 1e7
-	telemetryData.Altitude = float64(msg.Alt) / 1000.0 // Convert mm to meters
-	r.handleTelemetry(telemetryData)
+	positionMsg := telemetry.NewPositionMessage(sourceName)
+	positionMsg.Latitude = float64(msg.Lat) / 1e7
+	positionMsg.Longitude = float64(msg.Lon) / 1e7
+	positionMsg.Altitude = float64(msg.Alt) / 1000.0 // Convert mm to meters
+	r.handleTelemetryMessage(positionMsg)
 }
 
 // handleAttitude processes attitude messages
 func (r *Relay) handleAttitude(msg *common.MessageAttitude, sourceName string) {
-	telemetryData := telemetry.New(sourceName)
-	telemetryData.Heading = float64(msg.Yaw * 180.0 / 3.14159) // Convert to degrees
-	r.handleTelemetry(telemetryData)
+	attitudeMsg := telemetry.NewAttitudeMessage(sourceName)
+	attitudeMsg.Roll = float64(msg.Roll * 180.0 / 3.14159)   // Convert to degrees
+	attitudeMsg.Pitch = float64(msg.Pitch * 180.0 / 3.14159) // Convert to degrees
+	attitudeMsg.Yaw = float64(msg.Yaw * 180.0 / 3.14159)     // Convert to degrees
+	r.handleTelemetryMessage(attitudeMsg)
 }
 
 // handleVfrHud processes VFR HUD messages
 func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, sourceName string) {
-	telemetryData := telemetry.New(sourceName)
-	telemetryData.Speed = float64(msg.Groundspeed)
-	telemetryData.Altitude = float64(msg.Alt)
-	telemetryData.Heading = float64(msg.Heading)
-	r.handleTelemetry(telemetryData)
+	vfrHudMsg := telemetry.NewVfrHudMessage(sourceName)
+	vfrHudMsg.Speed = float64(msg.Groundspeed)
+	vfrHudMsg.Altitude = float64(msg.Alt)
+	vfrHudMsg.Heading = float64(msg.Heading)
+	r.handleTelemetryMessage(vfrHudMsg)
 }
 
 // handleSysStatus processes system status messages
 func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, sourceName string) {
-	telemetryData := telemetry.New(sourceName)
-	telemetryData.Battery = float64(msg.BatteryRemaining) / 100.0 // Convert to percentage
-	telemetryData.Signal = int(msg.OnboardControlSensorsPresent)
-	r.handleTelemetry(telemetryData)
+	batteryMsg := telemetry.NewBatteryMessage(sourceName)
+	batteryMsg.Battery = float64(msg.BatteryRemaining) / 100.0 // Convert to percentage
+	batteryMsg.Voltage = float64(msg.VoltageBattery) / 1000.0  // Convert mV to V
+	r.handleTelemetryMessage(batteryMsg)
 }
 
 // getFlightMode converts custom mode to flight mode string
@@ -322,12 +324,12 @@ func (r *Relay) getFlightMode(customMode uint32) string {
 	}
 }
 
-// handleTelemetry processes incoming telemetry data
-func (r *Relay) handleTelemetry(data *telemetry.Data) {
+// handleTelemetryMessage processes incoming telemetry messages
+func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryMessage) {
 	// Forward to all sinks
 	for _, sink := range r.sinks {
-		if err := sink.Write(data); err != nil {
-			log.Printf("Failed to write to sink: %v", err)
+		if err := sink.WriteMessage(msg); err != nil {
+			log.Printf("Failed to write message to sink: %v", err)
 		}
 	}
 }

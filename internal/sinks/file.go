@@ -59,8 +59,8 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 	return sink, nil
 }
 
-// Write writes telemetry data to file
-func (f *FileSink) Write(data *telemetry.Data) error {
+// WriteMessage writes telemetry message to file
+func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -71,14 +71,14 @@ func (f *FileSink) Write(data *telemetry.Data) error {
 		}
 	}
 
-	// Write data based on format
+	// Write message based on format
 	switch f.config.Format {
 	case "json":
-		return f.writeJSON(data)
+		return f.writeJSON(msg)
 	case "csv":
-		return f.writeCSV(data)
+		return f.writeCSV(msg)
 	case "binary":
-		return f.writeBinary(data)
+		return f.writeBinary(msg)
 	default:
 		return fmt.Errorf("unsupported format: %s", f.config.Format)
 	}
@@ -95,9 +95,9 @@ func (f *FileSink) Close() error {
 	return f.file.Close()
 }
 
-// writeJSON writes data in JSON format
-func (f *FileSink) writeJSON(data *telemetry.Data) error {
-	jsonData, err := data.ToJSON()
+// writeJSON writes message in JSON format
+func (f *FileSink) writeJSON(msg telemetry.TelemetryMessage) error {
+	jsonData, err := msg.ToJSON()
 	if err != nil {
 		return err
 	}
@@ -106,25 +106,70 @@ func (f *FileSink) writeJSON(data *telemetry.Data) error {
 	return err
 }
 
-// writeCSV writes data in CSV format
-func (f *FileSink) writeCSV(data *telemetry.Data) error {
-	// Convert telemetry data to CSV row
-	row := []string{
-		data.Timestamp.Format(time.RFC3339),
-		data.Source,
-		fmt.Sprintf("%.6f", data.Latitude),
-		fmt.Sprintf("%.6f", data.Longitude),
-		fmt.Sprintf("%.2f", data.Altitude),
-		fmt.Sprintf("%.2f", data.Speed),
-		fmt.Sprintf("%.2f", data.Heading),
+// writeCSV writes message in CSV format
+func (f *FileSink) writeCSV(msg telemetry.TelemetryMessage) error {
+	// Convert telemetry message to CSV row based on message type
+	var row []string
+
+	switch m := msg.(type) {
+	case *telemetry.HeartbeatMessage:
+		row = []string{
+			m.Timestamp.Format(time.RFC3339),
+			m.Source,
+			m.GetMessageType(),
+			m.Status,
+			m.Mode,
+		}
+	case *telemetry.PositionMessage:
+		row = []string{
+			m.Timestamp.Format(time.RFC3339),
+			m.Source,
+			m.GetMessageType(),
+			fmt.Sprintf("%.6f", m.Latitude),
+			fmt.Sprintf("%.6f", m.Longitude),
+			fmt.Sprintf("%.2f", m.Altitude),
+		}
+	case *telemetry.AttitudeMessage:
+		row = []string{
+			m.Timestamp.Format(time.RFC3339),
+			m.Source,
+			m.GetMessageType(),
+			fmt.Sprintf("%.2f", m.Roll),
+			fmt.Sprintf("%.2f", m.Pitch),
+			fmt.Sprintf("%.2f", m.Yaw),
+		}
+	case *telemetry.VfrHudMessage:
+		row = []string{
+			m.Timestamp.Format(time.RFC3339),
+			m.Source,
+			m.GetMessageType(),
+			fmt.Sprintf("%.2f", m.Speed),
+			fmt.Sprintf("%.2f", m.Altitude),
+			fmt.Sprintf("%.2f", m.Heading),
+		}
+	case *telemetry.BatteryMessage:
+		row = []string{
+			m.Timestamp.Format(time.RFC3339),
+			m.Source,
+			m.GetMessageType(),
+			fmt.Sprintf("%.2f", m.Battery),
+			fmt.Sprintf("%.2f", m.Voltage),
+		}
+	default:
+		// Generic row for unknown message types
+		row = []string{
+			msg.GetTimestamp().Format(time.RFC3339),
+			msg.GetSource(),
+			msg.GetMessageType(),
+		}
 	}
 
 	return f.writer.Write(row)
 }
 
-// writeBinary writes data in binary format
-func (f *FileSink) writeBinary(data *telemetry.Data) error {
-	binaryData, err := data.ToBinary()
+// writeBinary writes message in binary format
+func (f *FileSink) writeBinary(msg telemetry.TelemetryMessage) error {
+	binaryData, err := msg.ToBinary()
 	if err != nil {
 		return err
 	}
