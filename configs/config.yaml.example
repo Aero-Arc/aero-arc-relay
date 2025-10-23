@@ -1,0 +1,42 @@
+relay:
+  buffer_size: 1000
+  workers: 4
+
+mavlink:
+  endpoints:
+    - name: "drone-1"
+      protocol: "udp"
+      address: "192.168.1.100"
+      port: 14550
+    - name: "drone-2"
+      protocol: "tcp"
+      address: "192.168.1.101"
+      port: 5760
+    - name: "ground-station"
+      protocol: "serial"
+      address: "/dev/ttyUSB0"
+      baud_rate: 57600
+
+sinks:
+  s3:
+    bucket: "your-telemetry-bucket"
+    region: "us-west-2"
+    access_key: "${AWS_ACCESS_KEY_ID}"
+    secret_key: "${AWS_SECRET_ACCESS_KEY}"
+    prefix: "telemetry"
+  
+  kafka:
+    brokers:
+      - "localhost:9092"
+      - "localhost:9093"
+    topic: "telemetry-data"
+  
+  file:
+    path: "/var/log/aero-arc-relay/telemetry"
+    format: "json"
+    rotation: "daily"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"

@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  aero-arc-relay:
+    build: .
+    container_name: aero-arc-relay
+    restart: unless-stopped
+    volumes:
+      - ./configs:/root/configs:ro
+      - ./logs:/var/log/aero-arc-relay
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    networks:
+      - aero-network
+    depends_on:
+      - kafka
+      - zookeeper
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: aero-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - aero-network
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: aero-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - aero-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: aero-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - aero-network
+
+networks:
+  aero-network:
+    driver: bridge
