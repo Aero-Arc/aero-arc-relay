@@ -1,8 +1,8 @@
 relay:
   buffer_size: 1000
-  workers: 4
 
 mavlink:
+  dialect: "common"  # common, ardupilot, px4, etc.
   endpoints:
     - name: "drone-1"
       protocol: "udp"

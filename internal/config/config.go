@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,11 +20,12 @@ type Config struct {
 // RelayConfig contains relay-specific configuration
 type RelayConfig struct {
 	BufferSize int `yaml:"buffer_size"`
-	Workers    int `yaml:"workers"`
 }
 
 // MAVLinkConfig contains MAVLink connection settings
 type MAVLinkConfig struct {
+	Dialect   *dialect.Dialect
+	dialect   string            `yaml:"dialect"` // common, ardupilot, px4, etc.
 	Endpoints []MAVLinkEndpoint `yaml:"endpoints"`
 }
 
@@ -88,8 +91,8 @@ func Load(path string) (*Config, error) {
 	if config.Relay.BufferSize == 0 {
 		config.Relay.BufferSize = 1000
 	}
-	if config.Relay.Workers == 0 {
-		config.Relay.Workers = 4
+	if config.MAVLink.dialect == "" {
+		config.MAVLink.Dialect = common.Dialect
 	}
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
