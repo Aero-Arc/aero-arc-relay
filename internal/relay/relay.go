@@ -16,10 +16,10 @@ import (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
-	config *config.Config
-	sinks  []sinks.Sink
-	node   *gomavlib.Node
-	mu     sync.RWMutex
+	config      *config.Config
+	sinks       []sinks.Sink
+	connections sync.Map // map[string]*gomavlib.Node
+	mu          sync.RWMutex
 }
 
 // New creates a new relay instance
@@ -42,24 +42,39 @@ func (r *Relay) Start(ctx context.Context) error {
 	log.Println("Starting aero-arc-relay...")
 
 	// Initialize MAVLink node with all endpoints
-	if err := r.initializeMAVLinkNode(r.config.MAVLink.Dialect); err != nil {
-		return fmt.Errorf("failed to initialize MAVLink node: %w", err)
+	processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to initialize one or more MAVLink nodes: %v", errs)
 	}
 
-	// Start message processing
-	go r.processMessages(ctx)
+	// Start new goroutines for extracting messages from the nodes
+	wg := sync.WaitGroup{}
+	for _, name := range processed {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			r.processMessages(ctx, name)
+		}(name)
+	}
 
 	// Wait for context cancellation
 	<-ctx.Done()
+	wg.Wait()
 	log.Println("Shutting down relay...")
 
-	// Stop MAVLink node
+	// Stop MAVLink nodes
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.node != nil {
-		r.node.Close()
-	}
+	r.connections.Range(func(key, value any) bool {
+		node, ok := value.(*gomavlib.Node)
+		if !ok {
+			return true
+		}
+
+		node.Close()
+		return true
+	})
 
 	// Close all sinks
 	for _, sink := range r.sinks {
@@ -106,34 +121,35 @@ func (r *Relay) initializeSinks() error {
 }
 
 // initializeMAVLinkNode sets up a single MAVLink node with all endpoints
-func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) error {
+func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []error) {
+	var errs []error
 	if len(r.config.MAVLink.Endpoints) == 0 {
-		return fmt.Errorf("no MAVLink endpoints configured")
+		return nil, []error{fmt.Errorf("no MAVLink endpoints configured")}
 	}
 
 	// Convert all endpoints to gomavlib endpoint configurations
-	var endpoints []gomavlib.EndpointConf
+	processed := []string{}
 	for _, endpoint := range r.config.MAVLink.Endpoints {
 		endpointConf, err := r.createEndpointConf(endpoint)
 		if err != nil {
-			return fmt.Errorf("failed to create endpoint config for %s: %w", endpoint.Name, err)
+			return nil, []error{fmt.Errorf("failed to create endpoint config for %s: %w", endpoint.Name, err)}
 		}
-		endpoints = append(endpoints, endpointConf)
+		node, err := gomavlib.NewNode(gomavlib.NodeConf{
+			Endpoints:   []gomavlib.EndpointConf{endpointConf},
+			Dialect:     dialect,
+			OutVersion:  gomavlib.V2,
+			OutSystemID: 255,
+		})
+		// TODO handle failures but don't return and jump to the next endpoint.
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to create MAVLink node: %w", err))
+			continue
+		}
+		r.connections.Store(endpoint.Name, node)
+		processed = append(processed, endpoint.Name)
 	}
 
-	// Create single MAVLink node with all endpoints
-	node, err := gomavlib.NewNode(gomavlib.NodeConf{
-		Endpoints:   endpoints,
-		Dialect:     dialect,
-		OutVersion:  gomavlib.V2,
-		OutSystemID: 255,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create MAVLink node: %w", err)
-	}
-
-	r.node = node
-	return nil
+	return processed, errs
 }
 
 // createEndpointConf converts a config endpoint to gomavlib endpoint configuration
@@ -158,45 +174,47 @@ func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.En
 }
 
 // processMessages processes incoming MAVLink messages
-func (r *Relay) processMessages(ctx context.Context) {
+func (r *Relay) processMessages(ctx context.Context, name string) {
+	conn, ok := r.connections.Load(name)
+	if !ok {
+		log.Fatalf("connection %s not found", name)
+	}
+	node, ok := conn.(*gomavlib.Node)
+	if !ok {
+		log.Fatalf("connection %s is not a valid MAVLink node", name)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case evt := <-r.node.Events():
+		case evt := <-node.Events():
 			if evt, ok := evt.(*gomavlib.EventFrame); ok {
-				r.handleFrame(evt)
+				r.handleFrame(evt, name)
+			} else {
+				log.Printf("unsupported event type: %T", evt)
+				continue
 			}
 		}
 	}
 }
 
 // handleFrame processes a MAVLink frame
-func (r *Relay) handleFrame(evt *gomavlib.EventFrame) {
+func (r *Relay) handleFrame(evt *gomavlib.EventFrame, name string) {
 	// Determine source endpoint name from the frame
-	sourceName := r.getSourceName(evt)
 
 	switch msg := evt.Frame.GetMessage().(type) {
 	case *common.MessageHeartbeat:
-		r.handleHeartbeat(msg, sourceName)
+		r.handleHeartbeat(msg, name)
 	case *common.MessageGlobalPositionInt:
-		r.handleGlobalPosition(msg, sourceName)
+		r.handleGlobalPosition(msg, name)
 	case *common.MessageAttitude:
-		r.handleAttitude(msg, sourceName)
+		r.handleAttitude(msg, name)
 	case *common.MessageVfrHud:
-		r.handleVfrHud(msg, sourceName)
+		r.handleVfrHud(msg, name)
 	case *common.MessageSysStatus:
-		r.handleSysStatus(msg, sourceName)
+		r.handleSysStatus(msg, name)
 	}
-}
-
-// getSourceName determines the source endpoint name from the frame
-func (r *Relay) getSourceName(evt *gomavlib.EventFrame) string {
-	// For now, we'll use a simple mapping based on system ID
-	// In a more sophisticated implementation, you might want to track
-	// which endpoint each system ID is associated with
-	systemID := evt.Frame.GetSystemID()
-	return fmt.Sprintf("system-%d", systemID)
 }
 
 // handleHeartbeat processes heartbeat messages
