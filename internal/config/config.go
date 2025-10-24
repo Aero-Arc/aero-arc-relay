@@ -41,6 +41,7 @@ type MAVLinkEndpoint struct {
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
 	S3    *S3Config    `yaml:"s3,omitempty"`
+	GCS   *GCSConfig   `yaml:"gcs,omitempty"`
 	Kafka *KafkaConfig `yaml:"kafka,omitempty"`
 	File  *FileConfig  `yaml:"file,omitempty"`
 }
@@ -52,6 +53,14 @@ type S3Config struct {
 	AccessKey string `yaml:"access_key"`
 	SecretKey string `yaml:"secret_key"`
 	Prefix    string `yaml:"prefix"`
+}
+
+// GCSConfig contains Google Cloud Storage sink configuration
+type GCSConfig struct {
+	Bucket      string `yaml:"bucket"`
+	ProjectID   string `yaml:"project_id"`
+	Credentials string `yaml:"credentials"` // Path to service account JSON file
+	Prefix      string `yaml:"prefix"`
 }
 
 // KafkaConfig contains Kafka sink configuration

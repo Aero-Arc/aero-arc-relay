@@ -8,6 +8,7 @@ A high-performance Go-based telemetry relay system that connects to edge agents,
 - **Multiple Connection Types**: Supports UDP, TCP, and Serial connections
 - **Flexible Data Sinks**: 
   - AWS S3 for cloud storage
+  - Google Cloud Storage for cloud storage
   - Apache Kafka for real-time streaming
   - File-based storage with rotation
 - **High Performance**: Concurrent processing with configurable workers
@@ -124,6 +125,16 @@ sinks:
     region: "us-west-2"
     access_key: "${AWS_ACCESS_KEY_ID}"
     secret_key: "${AWS_SECRET_ACCESS_KEY}"
+    prefix: "telemetry"
+```
+
+#### Google Cloud Storage Configuration
+```yaml
+sinks:
+  gcs:
+    bucket: "your-gcs-telemetry-bucket"
+    project_id: "your-gcp-project"
+    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     prefix: "telemetry"
 ```
 

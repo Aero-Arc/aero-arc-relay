@@ -25,6 +25,12 @@ sinks:
     secret_key: "${AWS_SECRET_ACCESS_KEY}"
     prefix: "telemetry"
   
+  gcs:
+    bucket: "your-gcs-telemetry-bucket"
+    project_id: "your-gcp-project"
+    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
+    prefix: "telemetry"
+  
   kafka:
     brokers:
       - "localhost:9092"

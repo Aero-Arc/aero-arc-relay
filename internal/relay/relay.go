@@ -95,6 +95,15 @@ func (r *Relay) initializeSinks() error {
 		r.sinks = append(r.sinks, s3Sink)
 	}
 
+	// Initialize GCS sink if configured
+	if r.config.Sinks.GCS != nil {
+		gcsSink, err := sinks.NewGCSSink(r.config.Sinks.GCS)
+		if err != nil {
+			return fmt.Errorf("failed to create GCS sink: %w", err)
+		}
+		r.sinks = append(r.sinks, gcsSink)
+	}
+
 	// Initialize Kafka sink if configured
 	if r.config.Sinks.Kafka != nil {
 		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)
