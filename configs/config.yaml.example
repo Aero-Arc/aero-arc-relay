@@ -48,6 +48,35 @@ sinks:
     batch_size: 100
     flush_interval: "30s"
   
+  influxdb:
+    url: "http://localhost:8086"
+    database: "telemetry"  # For InfluxDB 1.x
+    username: "admin"
+    password: "password"
+    # For InfluxDB 2.x, use these instead:
+    # token: "your-influxdb-token"
+    # organization: "your-org"
+    # bucket: "telemetry"
+    batch_size: 1000
+    flush_interval: "30s"
+  
+  prometheus:
+    url: "http://localhost:9090"
+    job: "aero-arc-relay"
+    instance: "drone-fleet"
+    batch_size: 1000
+    flush_interval: "30s"
+  
+  elasticsearch:
+    urls:
+      - "http://localhost:9200"
+    index: "mavlink-telemetry"
+    username: "elastic"  # Optional
+    password: "password"  # Optional
+    # api_key: "your-api-key"  # Alternative to username/password
+    batch_size: 1000
+    flush_interval: "30s"
+  
   kafka:
     brokers:
       - "localhost:9092"

@@ -11,6 +11,9 @@ A high-performance Go-based telemetry relay system that connects to edge agents,
   - Google Cloud Storage for cloud storage
   - Google BigQuery for analytics and data warehousing
   - AWS Timestream for time-series analytics
+  - InfluxDB for time-series database
+  - Prometheus for metrics collection
+  - Elasticsearch for search and log analytics
   - Apache Kafka for real-time streaming
   - File-based storage with rotation
 - **High Performance**: Concurrent processing with configurable workers
@@ -162,6 +165,47 @@ sinks:
     access_key: "${AWS_ACCESS_KEY_ID}"  # Optional: uses IAM role if not provided
     secret_key: "${AWS_SECRET_ACCESS_KEY}"  # Optional: uses IAM role if not provided
     batch_size: 100
+    flush_interval: "30s"
+```
+
+#### InfluxDB Configuration
+```yaml
+sinks:
+  influxdb:
+    url: "http://localhost:8086"
+    database: "telemetry"  # For InfluxDB 1.x
+    username: "admin"
+    password: "password"
+    # For InfluxDB 2.x, use these instead:
+    # token: "your-influxdb-token"
+    # organization: "your-org"
+    # bucket: "telemetry"
+    batch_size: 1000
+    flush_interval: "30s"
+```
+
+#### Prometheus Configuration
+```yaml
+sinks:
+  prometheus:
+    url: "http://localhost:9090"
+    job: "aero-arc-relay"
+    instance: "drone-fleet"
+    batch_size: 1000
+    flush_interval: "30s"
+```
+
+#### Elasticsearch Configuration
+```yaml
+sinks:
+  elasticsearch:
+    urls:
+      - "http://localhost:9200"
+    index: "mavlink-telemetry"
+    username: "elastic"  # Optional
+    password: "password"  # Optional
+    # api_key: "your-api-key"  # Alternative to username/password
+    batch_size: 1000
     flush_interval: "30s"
 ```
 

@@ -122,6 +122,33 @@ func (r *Relay) initializeSinks() error {
 		r.sinks = append(r.sinks, timestreamSink)
 	}
 
+	// Initialize InfluxDB sink if configured
+	if r.config.Sinks.InfluxDB != nil {
+		influxdbSink, err := sinks.NewInfluxDBSink(r.config.Sinks.InfluxDB)
+		if err != nil {
+			return fmt.Errorf("failed to create InfluxDB sink: %w", err)
+		}
+		r.sinks = append(r.sinks, influxdbSink)
+	}
+
+	// Initialize Prometheus sink if configured
+	if r.config.Sinks.Prometheus != nil {
+		prometheusSink, err := sinks.NewPrometheusSink(r.config.Sinks.Prometheus)
+		if err != nil {
+			return fmt.Errorf("failed to create Prometheus sink: %w", err)
+		}
+		r.sinks = append(r.sinks, prometheusSink)
+	}
+
+	// Initialize Elasticsearch sink if configured
+	if r.config.Sinks.Elasticsearch != nil {
+		elasticsearchSink, err := sinks.NewElasticsearchSink(r.config.Sinks.Elasticsearch)
+		if err != nil {
+			return fmt.Errorf("failed to create Elasticsearch sink: %w", err)
+		}
+		r.sinks = append(r.sinks, elasticsearchSink)
+	}
+
 	// Initialize Kafka sink if configured
 	if r.config.Sinks.Kafka != nil {
 		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)

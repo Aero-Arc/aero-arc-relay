@@ -40,12 +40,15 @@ type MAVLinkEndpoint struct {
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
-	S3         *S3Config         `yaml:"s3,omitempty"`
-	GCS        *GCSConfig        `yaml:"gcs,omitempty"`
-	BigQuery   *BigQueryConfig   `yaml:"bigquery,omitempty"`
-	Timestream *TimestreamConfig `yaml:"timestream,omitempty"`
-	Kafka      *KafkaConfig      `yaml:"kafka,omitempty"`
-	File       *FileConfig       `yaml:"file,omitempty"`
+	S3            *S3Config            `yaml:"s3,omitempty"`
+	GCS           *GCSConfig           `yaml:"gcs,omitempty"`
+	BigQuery      *BigQueryConfig      `yaml:"bigquery,omitempty"`
+	Timestream    *TimestreamConfig    `yaml:"timestream,omitempty"`
+	InfluxDB      *InfluxDBConfig      `yaml:"influxdb,omitempty"`
+	Prometheus    *PrometheusConfig    `yaml:"prometheus,omitempty"`
+	Elasticsearch *ElasticsearchConfig `yaml:"elasticsearch,omitempty"`
+	Kafka         *KafkaConfig         `yaml:"kafka,omitempty"`
+	File          *FileConfig          `yaml:"file,omitempty"`
 }
 
 // S3Config contains S3 sink configuration
@@ -85,6 +88,39 @@ type TimestreamConfig struct {
 	SessionToken  string `yaml:"session_token,omitempty"` // For temporary credentials
 	BatchSize     int    `yaml:"batch_size"`              // Number of records to batch
 	FlushInterval string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
+}
+
+// InfluxDBConfig contains InfluxDB sink configuration
+type InfluxDBConfig struct {
+	URL           string `yaml:"url"`
+	Database      string `yaml:"database"`
+	Username      string `yaml:"username"`
+	Password      string `yaml:"password"`
+	Token         string `yaml:"token"`        // For InfluxDB 2.x
+	Organization  string `yaml:"organization"` // For InfluxDB 2.x
+	Bucket        string `yaml:"bucket"`       // For InfluxDB 2.x
+	BatchSize     int    `yaml:"batch_size"`
+	FlushInterval string `yaml:"flush_interval"`
+}
+
+// PrometheusConfig contains Prometheus sink configuration
+type PrometheusConfig struct {
+	URL           string `yaml:"url"`
+	Job           string `yaml:"job"`
+	Instance      string `yaml:"instance"`
+	BatchSize     int    `yaml:"batch_size"`
+	FlushInterval string `yaml:"flush_interval"`
+}
+
+// ElasticsearchConfig contains Elasticsearch sink configuration
+type ElasticsearchConfig struct {
+	URLs          []string `yaml:"urls"`
+	Index         string   `yaml:"index"`
+	Username      string   `yaml:"username"`
+	Password      string   `yaml:"password"`
+	APIKey        string   `yaml:"api_key"`
+	BatchSize     int      `yaml:"batch_size"`
+	FlushInterval string   `yaml:"flush_interval"`
 }
 
 // KafkaConfig contains Kafka sink configuration
