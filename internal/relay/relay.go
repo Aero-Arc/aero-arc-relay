@@ -113,6 +113,15 @@ func (r *Relay) initializeSinks() error {
 		r.sinks = append(r.sinks, bigquerySink)
 	}
 
+	// Initialize Timestream sink if configured
+	if r.config.Sinks.Timestream != nil {
+		timestreamSink, err := sinks.NewTimestreamSink(r.config.Sinks.Timestream)
+		if err != nil {
+			return fmt.Errorf("failed to create Timestream sink: %w", err)
+		}
+		r.sinks = append(r.sinks, timestreamSink)
+	}
+
 	// Initialize Kafka sink if configured
 	if r.config.Sinks.Kafka != nil {
 		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)

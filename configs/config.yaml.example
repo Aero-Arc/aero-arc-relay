@@ -39,6 +39,15 @@ sinks:
     batch_size: 1000
     flush_interval: "30s"
   
+  timestream:
+    database: "telemetry"
+    table: "mavlink_messages"
+    region: "us-west-2"
+    access_key: "${AWS_ACCESS_KEY_ID}"  # Optional: uses IAM role if not provided
+    secret_key: "${AWS_SECRET_ACCESS_KEY}"  # Optional: uses IAM role if not provided
+    batch_size: 100
+    flush_interval: "30s"
+  
   kafka:
     brokers:
       - "localhost:9092"

@@ -40,11 +40,12 @@ type MAVLinkEndpoint struct {
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
-	S3       *S3Config       `yaml:"s3,omitempty"`
-	GCS      *GCSConfig      `yaml:"gcs,omitempty"`
-	BigQuery *BigQueryConfig `yaml:"bigquery,omitempty"`
-	Kafka    *KafkaConfig    `yaml:"kafka,omitempty"`
-	File     *FileConfig     `yaml:"file,omitempty"`
+	S3         *S3Config         `yaml:"s3,omitempty"`
+	GCS        *GCSConfig        `yaml:"gcs,omitempty"`
+	BigQuery   *BigQueryConfig   `yaml:"bigquery,omitempty"`
+	Timestream *TimestreamConfig `yaml:"timestream,omitempty"`
+	Kafka      *KafkaConfig      `yaml:"kafka,omitempty"`
+	File       *FileConfig       `yaml:"file,omitempty"`
 }
 
 // S3Config contains S3 sink configuration
@@ -72,6 +73,18 @@ type BigQueryConfig struct {
 	Credentials   string `yaml:"credentials"`    // Path to service account JSON file
 	BatchSize     int    `yaml:"batch_size"`     // Number of messages to batch before insert
 	FlushInterval string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
+}
+
+// TimestreamConfig contains AWS Timestream sink configuration
+type TimestreamConfig struct {
+	Database      string `yaml:"database"`
+	Table         string `yaml:"table"`
+	Region        string `yaml:"region"`
+	AccessKey     string `yaml:"access_key"`
+	SecretKey     string `yaml:"secret_key"`
+	SessionToken  string `yaml:"session_token,omitempty"` // For temporary credentials
+	BatchSize     int    `yaml:"batch_size"`              // Number of records to batch
+	FlushInterval string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
 }
 
 // KafkaConfig contains Kafka sink configuration
