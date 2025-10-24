@@ -9,6 +9,7 @@ A high-performance Go-based telemetry relay system that connects to edge agents,
 - **Flexible Data Sinks**: 
   - AWS S3 for cloud storage
   - Google Cloud Storage for cloud storage
+  - Google BigQuery for analytics and data warehousing
   - Apache Kafka for real-time streaming
   - File-based storage with rotation
 - **High Performance**: Concurrent processing with configurable workers
@@ -136,6 +137,18 @@ sinks:
     project_id: "your-gcp-project"
     credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     prefix: "telemetry"
+```
+
+#### Google BigQuery Configuration
+```yaml
+sinks:
+  bigquery:
+    project_id: "your-gcp-project"
+    dataset: "telemetry"
+    table: "mavlink_messages"
+    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
+    batch_size: 1000
+    flush_interval: "30s"
 ```
 
 #### Kafka Configuration

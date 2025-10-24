@@ -104,6 +104,15 @@ func (r *Relay) initializeSinks() error {
 		r.sinks = append(r.sinks, gcsSink)
 	}
 
+	// Initialize BigQuery sink if configured
+	if r.config.Sinks.BigQuery != nil {
+		bigquerySink, err := sinks.NewBigQuerySink(r.config.Sinks.BigQuery)
+		if err != nil {
+			return fmt.Errorf("failed to create BigQuery sink: %w", err)
+		}
+		r.sinks = append(r.sinks, bigquerySink)
+	}
+
 	// Initialize Kafka sink if configured
 	if r.config.Sinks.Kafka != nil {
 		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)

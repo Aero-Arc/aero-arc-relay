@@ -31,6 +31,14 @@ sinks:
     credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     prefix: "telemetry"
   
+  bigquery:
+    project_id: "your-gcp-project"
+    dataset: "telemetry"
+    table: "mavlink_messages"
+    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
+    batch_size: 1000
+    flush_interval: "30s"
+  
   kafka:
     brokers:
       - "localhost:9092"

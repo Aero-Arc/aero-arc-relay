@@ -40,10 +40,11 @@ type MAVLinkEndpoint struct {
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
-	S3    *S3Config    `yaml:"s3,omitempty"`
-	GCS   *GCSConfig   `yaml:"gcs,omitempty"`
-	Kafka *KafkaConfig `yaml:"kafka,omitempty"`
-	File  *FileConfig  `yaml:"file,omitempty"`
+	S3       *S3Config       `yaml:"s3,omitempty"`
+	GCS      *GCSConfig      `yaml:"gcs,omitempty"`
+	BigQuery *BigQueryConfig `yaml:"bigquery,omitempty"`
+	Kafka    *KafkaConfig    `yaml:"kafka,omitempty"`
+	File     *FileConfig     `yaml:"file,omitempty"`
 }
 
 // S3Config contains S3 sink configuration
@@ -61,6 +62,16 @@ type GCSConfig struct {
 	ProjectID   string `yaml:"project_id"`
 	Credentials string `yaml:"credentials"` // Path to service account JSON file
 	Prefix      string `yaml:"prefix"`
+}
+
+// BigQueryConfig contains BigQuery sink configuration
+type BigQueryConfig struct {
+	ProjectID     string `yaml:"project_id"`
+	Dataset       string `yaml:"dataset"`
+	Table         string `yaml:"table"`
+	Credentials   string `yaml:"credentials"`    // Path to service account JSON file
+	BatchSize     int    `yaml:"batch_size"`     // Number of messages to batch before insert
+	FlushInterval string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
 }
 
 // KafkaConfig contains Kafka sink configuration
