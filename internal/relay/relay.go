@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/bluenviron/gomavlib/v2"
@@ -208,16 +209,44 @@ func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []err
 
 // createEndpointConf converts a config endpoint to gomavlib endpoint configuration
 func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.EndpointConf, error) {
+	mode := strings.ToLower(endpoint.Mode)
+	if mode == "" {
+		mode = "server"
+	}
+
 	switch endpoint.Protocol {
 	case "udp":
-		return &gomavlib.EndpointUDPClient{
-			Address: fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port),
-		}, nil
+		address := fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)
+		switch mode {
+		case "server":
+			return &gomavlib.EndpointUDPServer{
+				Address: address,
+			}, nil
+		case "client":
+			return &gomavlib.EndpointUDPClient{
+				Address: address,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unsupported mode %q for UDP endpoint %s", endpoint.Mode, endpoint.Name)
+		}
 	case "tcp":
-		return &gomavlib.EndpointTCPClient{
-			Address: fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port),
-		}, nil
+		address := fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)
+		switch mode {
+		case "server":
+			return &gomavlib.EndpointTCPServer{
+				Address: address,
+			}, nil
+		case "client":
+			return &gomavlib.EndpointTCPClient{
+				Address: address,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unsupported mode %q for TCP endpoint %s", endpoint.Mode, endpoint.Name)
+		}
 	case "serial":
+		if mode != "server" && mode != "client" && mode != "" {
+			return nil, fmt.Errorf("unsupported mode %q for serial endpoint %s", endpoint.Mode, endpoint.Name)
+		}
 		return &gomavlib.EndpointSerial{
 			Device: endpoint.Address,
 			Baud:   endpoint.BaudRate,
@@ -229,6 +258,7 @@ func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.En
 
 // processMessages processes incoming MAVLink messages
 func (r *Relay) processMessages(ctx context.Context, name string) {
+	log.Printf("processing messages for %s", name)
 	conn, ok := r.connections.Load(name)
 	if !ok {
 		log.Fatalf("connection %s not found", name)
@@ -238,17 +268,27 @@ func (r *Relay) processMessages(ctx context.Context, name string) {
 		log.Fatalf("connection %s is not a valid MAVLink node", name)
 	}
 
-	for {
+	for evt := range node.Events() {
 		select {
 		case <-ctx.Done():
 			return
-		case evt := <-node.Events():
-			if evt, ok := evt.(*gomavlib.EventFrame); ok {
-				r.handleFrame(evt, name)
-			} else {
-				log.Printf("unsupported event type: %T", evt)
+		default:
+			if frameEvt, ok := evt.(*gomavlib.EventFrame); ok {
+				r.handleFrame(frameEvt, name)
 				continue
 			}
+
+			if _, ok := evt.(*gomavlib.EventChannelOpen); ok {
+				log.Printf("channel open for %s", name)
+				continue
+			}
+
+			if _, ok := evt.(*gomavlib.EventChannelClose); ok {
+				log.Printf("channel closed for %s", name)
+				continue
+			}
+
+			log.Printf("unsupported event type: %T", evt)
 		}
 	}
 }
@@ -256,7 +296,6 @@ func (r *Relay) processMessages(ctx context.Context, name string) {
 // handleFrame processes a MAVLink frame
 func (r *Relay) handleFrame(evt *gomavlib.EventFrame, name string) {
 	// Determine source endpoint name from the frame
-
 	switch msg := evt.Frame.GetMessage().(type) {
 	case *common.MessageHeartbeat:
 		r.handleHeartbeat(msg, name)

@@ -3,9 +3,16 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/all"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/ardupilotmega"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/development"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/minimal"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/paparazzi"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/standard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,15 +31,16 @@ type RelayConfig struct {
 
 // MAVLinkConfig contains MAVLink connection settings
 type MAVLinkConfig struct {
-	Dialect   *dialect.Dialect
-	dialect   string            `yaml:"dialect"` // common, ardupilot, px4, etc.
-	Endpoints []MAVLinkEndpoint `yaml:"endpoints"`
+	DialectName string            `yaml:"dialect"` // common, ardupilot, px4, etc.
+	Dialect     *dialect.Dialect  `yaml:"-"`       // resolved at load time
+	Endpoints   []MAVLinkEndpoint `yaml:"endpoints"`
 }
 
 // MAVLinkEndpoint represents a single MAVLink connection
 type MAVLinkEndpoint struct {
 	Name     string `yaml:"name"`
 	Protocol string `yaml:"protocol"` // udp, tcp, serial
+	Mode     string `yaml:"mode,omitempty"`
 	Address  string `yaml:"address"`
 	Port     int    `yaml:"port,omitempty"`
 	BaudRate int    `yaml:"baud_rate,omitempty"`
@@ -160,9 +168,15 @@ func Load(path string) (*Config, error) {
 	if config.Relay.BufferSize == 0 {
 		config.Relay.BufferSize = 1000
 	}
-	if config.MAVLink.dialect == "" {
-		config.MAVLink.Dialect = common.Dialect
+	if config.MAVLink.DialectName == "" {
+		config.MAVLink.DialectName = "common"
 	}
+
+	d, err := resolveDialect(config.MAVLink.DialectName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MAVLink dialect %q: %w", config.MAVLink.DialectName, err)
+	}
+	config.MAVLink.Dialect = d
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
 	}
@@ -174,4 +188,26 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// resolveDialect returns the gomavlib dialect for the provided name.
+func resolveDialect(name string) (*dialect.Dialect, error) {
+	switch strings.ToLower(name) {
+	case "common":
+		return common.Dialect, nil
+	case "minimal":
+		return minimal.Dialect, nil
+	case "ardupilot", "ardupilotmega", "apm":
+		return ardupilotmega.Dialect, nil
+	case "paparazzi":
+		return paparazzi.Dialect, nil
+	case "standard":
+		return standard.Dialect, nil
+	case "all":
+		return all.Dialect, nil
+	case "development", "dev":
+		return development.Dialect, nil
+	default:
+		return nil, fmt.Errorf("unsupported dialect")
+	}
 }
