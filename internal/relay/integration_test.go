@@ -38,9 +38,9 @@ func TestRelayIntegration(t *testing.T) {
 		},
 		Sinks: config.SinksConfig{
 			File: &config.FileConfig{
-				Path:     "/tmp/test-telemetry",
-				Format:   "json",
-				Rotation: "daily",
+				Path:             "/tmp/test-telemetry",
+				Format:           "json",
+				RotationInterval: 24 * time.Hour,
 			},
 		},
 		Logging: config.LoggingConfig{

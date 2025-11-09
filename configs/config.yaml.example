@@ -24,6 +24,7 @@ sinks:
     access_key: "${AWS_ACCESS_KEY_ID}"
     secret_key: "${AWS_SECRET_ACCESS_KEY}"
     prefix: "telemetry"
+    flush_interval: "1m"
   
   gcs:
     bucket: "your-gcs-telemetry-bucket"
@@ -84,9 +85,10 @@ sinks:
     topic: "telemetry-data"
   
   file:
-    path: "/var/log/aero-arc-relay/telemetry"
+    path: "/var/log/aero-arc-relay"
+    prefix: "telemetry"
     format: "json"
-    rotation: "daily"
+    rotation_interval: "24h"
 
 logging:
   level: "info"

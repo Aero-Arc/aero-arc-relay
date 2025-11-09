@@ -170,9 +170,9 @@ func TestSinkAfterClose(t *testing.T) {
 // TestFileSinkConfiguration tests file sink configuration
 func TestFileSinkConfiguration(t *testing.T) {
 	cfg := &config.FileConfig{
-		Path:     "/tmp/test-telemetry",
-		Format:   "json",
-		Rotation: "daily",
+		Path:             "/tmp/test-telemetry",
+		Format:           "json",
+		RotationInterval: 24 * time.Hour,
 	}
 
 	// This test would require actual file system access
@@ -183,8 +183,8 @@ func TestFileSinkConfiguration(t *testing.T) {
 	if cfg.Format != "json" {
 		t.Errorf("Expected format 'json', got '%s'", cfg.Format)
 	}
-	if cfg.Rotation != "daily" {
-		t.Errorf("Expected rotation 'daily', got '%s'", cfg.Rotation)
+	if cfg.RotationInterval != 24*time.Hour {
+		t.Errorf("Expected rotation '24h', got '%s'", cfg.RotationInterval)
 	}
 }
 
