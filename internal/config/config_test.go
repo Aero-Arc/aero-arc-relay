@@ -45,7 +45,7 @@ sinks:
   file:
     path: "/var/log/telemetry"
     format: "json"
-    rotation: "daily"
+    rotation_interval: "24h"
 
 logging:
   level: "debug"

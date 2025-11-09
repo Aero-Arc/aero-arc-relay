@@ -141,7 +141,8 @@ type KafkaConfig struct {
 
 // FileConfig contains file-based sink configuration
 type FileConfig struct {
-	Path             string        `yaml:"path"`
+	Path             string        `yaml:"path"`              // Path to the file, without the filename
+	Prefix           string        `yaml:"prefix"`            // Prefix for the filename, will be appended to the path
 	Format           string        `yaml:"format"`            // json, csv, binary
 	RotationInterval time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
 }

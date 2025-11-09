@@ -24,12 +24,12 @@ type FileSink struct {
 // NewFileSink creates a new file sink
 func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0755); err != nil {
+	if err := os.MkdirAll(cfg.Path, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Generate filename with timestamp
-	filename := generateFilename(cfg.Path, cfg.Format)
+	filename := generateFilename(cfg.Path, cfg.Prefix, cfg.Format)
 
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -57,7 +57,7 @@ func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 
 	// Check if rotation is needed
 	if f.needsRotation() {
-		if err := f.rotateFile(); err != nil {
+		if err := f.rotateFileLocked(); err != nil {
 			return fmt.Errorf("failed to rotate file: %w", err)
 		}
 	}
@@ -75,13 +75,43 @@ func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 	}
 }
 
+// GetFilename returns the filename of the file sink
+func (f *FileSink) GetFilename() string {
+	return filepath.Base(f.file.Name())
+}
+
+// GetPath returns the path of the file sink
+func (f *FileSink) GetPath() string {
+	return f.config.Path
+}
+
+// GetPrefix returns the prefix of the file sink
+func (f *FileSink) GetPrefix() string {
+	return f.config.Prefix
+}
+
+// GetFormat returns the format of the file sink
+func (f *FileSink) GetFormat() string {
+	return f.config.Format
+}
+
+// GetRotationInterval returns the rotation interval of the file sink
+func (f *FileSink) GetRotationInterval() time.Duration {
+	return f.config.RotationInterval
+}
+
+// GetLastRotation returns the last rotation time of the file sink
+func (f *FileSink) GetLastRotation() time.Time {
+	return f.lastRotation
+}
+
 // Close closes the file sink
 func (f *FileSink) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.writer != nil {
-		f.writer.Flush()
+	if err := f.flushLocked(); err != nil {
+		return err
 	}
 	return f.file.Close()
 }
@@ -176,16 +206,44 @@ func (f *FileSink) needsRotation() bool {
 
 // rotateFile performs file rotation
 func (f *FileSink) rotateFile() error {
-	// Close current file
+	return f.rotateFileLocked()
+}
+
+// generateFilename creates a filename with timestamp
+func generateFilename(basePath, prefix, format string) string {
+	timestamp := time.Now().UTC().Unix()
+	ext := format
+	if format == "json" {
+		ext = "json"
+	} else if format == "csv" {
+		ext = "csv"
+	} else if format == "binary" {
+		ext = "bin"
+	}
+
+	return fmt.Sprintf("%s/%s_%d.%s", basePath, prefix, timestamp, ext)
+}
+
+func (f *FileSink) flushLocked() error {
 	if f.writer != nil {
 		f.writer.Flush()
+		if err := f.writer.Error(); err != nil {
+			return err
+		}
 	}
-	f.file.Close()
+	return nil
+}
 
-	// Generate new filename
-	filename := generateFilename(f.config.Path, f.config.Format)
+func (f *FileSink) rotateFileLocked() error {
+	if err := f.flushLocked(); err != nil {
+		return err
+	}
+	if err := f.file.Close(); err != nil {
+		return err
+	}
 
-	// Open new file
+	filename := generateFilename(f.config.Path, f.config.Prefix, f.config.Format)
+
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -198,19 +256,4 @@ func (f *FileSink) rotateFile() error {
 	f.lastRotation = time.Now()
 
 	return nil
-}
-
-// generateFilename creates a filename with timestamp
-func generateFilename(basePath, format string) string {
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	ext := format
-	if format == "json" {
-		ext = "json"
-	} else if format == "csv" {
-		ext = "csv"
-	} else if format == "binary" {
-		ext = "bin"
-	}
-
-	return fmt.Sprintf("%s_%s.%s", basePath, timestamp, ext)
 }
