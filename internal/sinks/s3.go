@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"path/filepath"
+	"io"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -16,9 +18,11 @@ import (
 
 // S3Sink implements Sink interface for AWS S3
 type S3Sink struct {
-	client *s3.S3
-	bucket string
-	prefix string
+	client   *s3.S3
+	bucket   string
+	prefix   string
+	fileSink *FileSink
+	mu       sync.Mutex
 }
 
 // NewS3Sink creates a new S3 sink
@@ -35,38 +39,70 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 		return nil, fmt.Errorf("failed to create AWS session: %w", err)
 	}
 
-	return &S3Sink{
-		client: s3.New(sess),
-		bucket: cfg.Bucket,
-		prefix: cfg.Prefix,
-	}, nil
+	fileSink, err := NewFileSink(&config.FileConfig{
+		Path:   fmt.Sprintf("/tmp/s3-sink-%v.log", time.Now().Unix()),
+		Format: "json",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file sink: %w", err)
+	}
+
+	s := &S3Sink{
+		client:   s3.New(sess),
+		bucket:   cfg.Bucket,
+		prefix:   cfg.Prefix,
+		fileSink: fileSink,
+	}
+
+	go func() {
+		timer := time.NewTimer(cfg.FlushInterval)
+		for {
+			select {
+			case <-timer.C:
+				s.RotateAndUpload()
+			}
+		}
+	}()
+
+	return s, nil
 }
 
 // WriteMessage uploads telemetry message to S3
 func (s *S3Sink) WriteMessage(msg telemetry.TelemetryMessage) error {
-	// Serialize message to JSON
-	jsonData, err := msg.ToJSON()
-	if err != nil {
-		return fmt.Errorf("failed to serialize message: %w", err)
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.fileSink.WriteMessage(msg)
+}
+
+// RotateFile rotates the file
+func (s *S3Sink) RotateAndUpload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Generate object key with timestamp and message type
-	timestamp := msg.GetTimestamp().UTC()
-	key := filepath.Join(s.prefix, timestamp.Format("2006/01/02"),
-		fmt.Sprintf("%s_%s_%d.json", msg.GetSource(), msg.GetMessageType(), timestamp.Unix()))
+	key := s.fileSink.config.Path
+	fileData, err := io.ReadAll(s.fileSink.file)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
 
 	// Upload to S3
 	_, err = s.client.PutObjectWithContext(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
-		Body:        bytes.NewReader(jsonData),
+		Body:        bytes.NewReader(fileData),
 		ContentType: aws.String("application/json"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
+	s.fileSink.rotateFile()
+
 	return nil
+
+	return s.fileSink.rotateFile()
 }
 
 // Close closes the S3 sink

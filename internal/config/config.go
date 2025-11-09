@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/all"
@@ -61,11 +62,12 @@ type SinksConfig struct {
 
 // S3Config contains S3 sink configuration
 type S3Config struct {
-	Bucket    string `yaml:"bucket"`
-	Region    string `yaml:"region"`
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	Prefix    string `yaml:"prefix"`
+	Bucket        string        `yaml:"bucket"`
+	Region        string        `yaml:"region"`
+	AccessKey     string        `yaml:"access_key"`
+	SecretKey     string        `yaml:"secret_key"`
+	Prefix        string        `yaml:"prefix"`
+	FlushInterval time.Duration `yaml:"flush_interval"`
 }
 
 // GCSConfig contains Google Cloud Storage sink configuration
@@ -139,9 +141,9 @@ type KafkaConfig struct {
 
 // FileConfig contains file-based sink configuration
 type FileConfig struct {
-	Path     string `yaml:"path"`
-	Format   string `yaml:"format"`   // json, csv, binary
-	Rotation string `yaml:"rotation"` // daily, hourly, size-based
+	Path             string        `yaml:"path"`
+	Format           string        `yaml:"format"`            // json, csv, binary
+	RotationInterval time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
 }
 
 // LoggingConfig contains logging configuration

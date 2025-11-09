@@ -14,17 +14,11 @@ import (
 
 // FileSink implements Sink interface for file-based storage
 type FileSink struct {
-	config   *config.FileConfig
-	file     *os.File
-	writer   *csv.Writer
-	mu       sync.Mutex
-	rotation *FileRotation
-}
-
-// FileRotation handles file rotation logic
-type FileRotation struct {
+	config       *config.FileConfig
+	file         *os.File
+	writer       *csv.Writer
+	mu           sync.Mutex
 	lastRotation time.Time
-	rotationType string
 }
 
 // NewFileSink creates a new file sink
@@ -43,12 +37,9 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 	}
 
 	sink := &FileSink{
-		config: cfg,
-		file:   file,
-		rotation: &FileRotation{
-			lastRotation: time.Now(),
-			rotationType: cfg.Rotation,
-		},
+		config:       cfg,
+		file:         file,
+		lastRotation: time.Now(),
 	}
 
 	// Initialize writer based on format
@@ -180,14 +171,7 @@ func (f *FileSink) writeBinary(msg telemetry.TelemetryMessage) error {
 
 // needsRotation checks if file rotation is needed
 func (f *FileSink) needsRotation() bool {
-	switch f.rotation.rotationType {
-	case "daily":
-		return time.Since(f.rotation.lastRotation) >= 24*time.Hour
-	case "hourly":
-		return time.Since(f.rotation.lastRotation) >= time.Hour
-	default:
-		return false
-	}
+	return time.Since(f.lastRotation) >= f.config.RotationInterval
 }
 
 // rotateFile performs file rotation
@@ -211,7 +195,7 @@ func (f *FileSink) rotateFile() error {
 	if f.config.Format == "csv" {
 		f.writer = csv.NewWriter(file)
 	}
-	f.rotation.lastRotation = time.Now()
+	f.lastRotation = time.Now()
 
 	return nil
 }

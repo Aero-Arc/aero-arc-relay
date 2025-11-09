@@ -43,9 +43,9 @@ func TestRelayCreation(t *testing.T) {
 
 	// Test with mock sink
 	cfg.Sinks.File = &config.FileConfig{
-		Path:     "/tmp/test",
-		Format:   "json",
-		Rotation: "daily",
+		Path:             "/tmp/test",
+		Format:           "json",
+		RotationInterval: 24 * time.Hour,
 	}
 
 	relay, err := New(cfg)

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // TestConfigLoad tests loading configuration from YAML
@@ -154,8 +155,8 @@ logging:
 		if cfg.Sinks.File.Format != "json" {
 			t.Errorf("Expected file format 'json', got '%s'", cfg.Sinks.File.Format)
 		}
-		if cfg.Sinks.File.Rotation != "daily" {
-			t.Errorf("Expected file rotation 'daily', got '%s'", cfg.Sinks.File.Rotation)
+		if cfg.Sinks.File.RotationInterval != 24*time.Hour {
+			t.Errorf("Expected file rotation '24h', got '%s'", cfg.Sinks.File.RotationInterval)
 		}
 	}
 
