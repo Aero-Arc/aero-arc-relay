@@ -31,7 +31,7 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 	// Generate filename with timestamp
 	filename := generateFilename(cfg.Path, cfg.Prefix, cfg.Format)
 
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -244,7 +244,7 @@ func (f *FileSink) rotateFileLocked() error {
 
 	filename := generateFilename(f.config.Path, f.config.Prefix, f.config.Format)
 
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}

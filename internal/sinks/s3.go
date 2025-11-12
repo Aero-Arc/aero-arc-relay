@@ -1,7 +1,6 @@
 package sinks
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -46,7 +45,7 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 	}
 
 	fileSink, err := NewFileSink(&config.FileConfig{
-		Path:             "/tmp/",
+		Path:             "/tmp",
 		Prefix:           "s3-sink",
 		Format:           "json",
 		RotationInterval: cfg.FlushInterval,
@@ -146,17 +145,12 @@ func (s *S3Sink) uploadAndMaybeRotateLocked(rotate bool) error {
 		return fmt.Errorf("failed to seek file: %w", err)
 	}
 
-	fileData, err := io.ReadAll(f.file)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
 	key := path.Join(s.prefix, filepath.Base(f.file.Name()))
 
 	_, err = s.client.PutObjectWithContext(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
-		Body:        bytes.NewReader(fileData),
+		Body:        f.file,
 		ContentType: aws.String("application/json"),
 	})
 	if err != nil {
