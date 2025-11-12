@@ -72,10 +72,11 @@ type S3Config struct {
 
 // GCSConfig contains Google Cloud Storage sink configuration
 type GCSConfig struct {
-	Bucket      string `yaml:"bucket"`
-	ProjectID   string `yaml:"project_id"`
-	Credentials string `yaml:"credentials"` // Path to service account JSON file
-	Prefix      string `yaml:"prefix"`
+	Bucket        string        `yaml:"bucket"`
+	ProjectID     string        `yaml:"project_id"`
+	Credentials   string        `yaml:"credentials"` // Path to service account JSON file
+	Prefix        string        `yaml:"prefix"`
+	FlushInterval time.Duration `yaml:"flush_interval"` // How often to flush buffered data (e.g., "30s")
 }
 
 // BigQueryConfig contains BigQuery sink configuration
