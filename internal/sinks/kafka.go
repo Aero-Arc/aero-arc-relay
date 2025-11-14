@@ -2,34 +2,50 @@ package sinks
 
 import (
 	"fmt"
+	"log"
+	"strings"
+	"time"
 
-	"github.com/IBM/sarama"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
+	"gopkg.in/confluentinc/confluent-kafka-go.v1/kafka"
 )
 
 // KafkaSink implements Sink interface for Apache Kafka
 type KafkaSink struct {
-	producer sarama.SyncProducer
+	producer *kafka.Producer
 	topic    string
 }
 
 // NewKafkaSink creates a new Kafka sink
 func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
-	config := sarama.NewConfig()
-	config.Producer.RequiredAcks = sarama.WaitForAll
-	config.Producer.Retry.Max = 3
-	config.Producer.Return.Successes = true
+	// Convert brokers slice to comma-separated string
+	bootstrapServers := strings.Join(cfg.Brokers, ",")
 
-	producer, err := sarama.NewSyncProducer(cfg.Brokers, config)
+	// Create producer configuration
+	configMap := kafka.ConfigMap{
+		"bootstrap.servers": bootstrapServers,
+		"acks":              "all",    // Wait for all replicas to acknowledge
+		"retries":           3,        // Retry up to 3 times
+		"retry.backoff.ms":  100,      // Wait 100ms between retries
+		"compression.type":  "snappy", // Use snappy compression
+		"linger.ms":         10,       // Wait up to 10ms to batch messages
+		"batch.size":        16384,    // 16KB batch size
+	}
+
+	producer, err := kafka.NewProducer(&configMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
 	}
 
-	return &KafkaSink{
+	log.Printf("Kafka producer created successfully")
+	sink := &KafkaSink{
 		producer: producer,
 		topic:    cfg.Topic,
-	}, nil
+	}
+	log.Printf("Kafka sink created successfully")
+
+	return sink, nil
 }
 
 // WriteMessage sends telemetry message to Kafka
@@ -41,27 +57,53 @@ func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 	}
 
 	// Create Kafka message
-	message := &sarama.ProducerMessage{
-		Topic:     k.topic,
-		Key:       sarama.StringEncoder(msg.GetSource()),
-		Value:     sarama.ByteEncoder(jsonData),
-		Timestamp: msg.GetTimestamp(),
+	// Note: Timestamp is set by Kafka broker automatically
+	// If you need to preserve the original timestamp, consider using headers
+	message := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &k.topic,
+			Partition: kafka.PartitionAny,
+		},
+		Key:   []byte(msg.GetSource()),
+		Value: jsonData,
+		Headers: []kafka.Header{
+			{
+				Key:   "original_timestamp",
+				Value: []byte(msg.GetTimestamp().Format(time.RFC3339Nano)),
+			},
+		},
 	}
 
-	// Send message
-	partition, offset, err := k.producer.SendMessage(message)
+	// Send message asynchronously
+	deliveryChan := make(chan kafka.Event, 1)
+	err = k.producer.Produce(message, deliveryChan)
 	if err != nil {
-		return fmt.Errorf("failed to send message to Kafka: %w", err)
+		return fmt.Errorf("failed to produce message to Kafka: %w", err)
 	}
 
-	// Log successful send (optional)
-	_ = partition
-	_ = offset
+	// Wait for delivery report with timeout
+	select {
+	case e := <-deliveryChan:
+		switch ev := e.(type) {
+		case *kafka.Message:
+			if ev.TopicPartition.Error != nil {
+				return fmt.Errorf("delivery failed: %w", ev.TopicPartition.Error)
+			}
+			// Message delivered successfully
+		case kafka.Error:
+			return fmt.Errorf("producer error: %w", ev)
+		}
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for message delivery")
+	}
 
 	return nil
 }
 
 // Close closes the Kafka sink
 func (k *KafkaSink) Close() error {
-	return k.producer.Close()
+	// Flush any remaining messages before closing
+	k.producer.Flush(15 * 1000) // Wait up to 15 seconds
+	k.producer.Close()
+	return nil
 }
