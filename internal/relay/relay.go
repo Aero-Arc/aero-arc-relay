@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
@@ -49,37 +52,45 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	// Start new goroutines for extracting messages from the nodes
-	wg := sync.WaitGroup{}
 	for _, name := range processed {
-		wg.Add(1)
 		go func(name string) {
-			defer wg.Done()
 			r.processMessages(ctx, name)
 		}(name)
 	}
 
-	// Wait for context cancellation
-	<-ctx.Done()
-	wg.Wait()
-	log.Println("Shutting down relay...")
+	// Wait for context cancellation or signal to shut down
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
-	// Stop MAVLink nodes
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	shutdown := func() {
+		r.connections.Range(func(key, value any) bool {
+			node, ok := value.(*gomavlib.Node)
+			if !ok {
+				return true
+			}
 
-	r.connections.Range(func(key, value any) bool {
-		node, ok := value.(*gomavlib.Node)
-		if !ok {
+			node.Close()
 			return true
+		})
+
+		for _, sink := range r.sinks {
+			sink.Close()
 		}
 
-		node.Close()
-		return true
-	})
+	}
 
-	// Close all sinks
-	for _, sink := range r.sinks {
-		sink.Close()
+	go func() {
+		<-ctx.Done()
+		signals <- syscall.SIGTERM
+	}()
+
+	for signal := range signals {
+		if signal == os.Interrupt || signal == syscall.SIGTERM {
+			log.Println("Received signal to shut down relay...")
+			shutdown()
+			break
+		}
 	}
 
 	return nil
