@@ -44,7 +44,7 @@ func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
 		producer: producer,
 		topic:    cfg.Topic,
 	}
-	sink.BaseAsyncSink = NewBaseAsyncSink(1000, sink.handleMessage)
+	sink.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, sink.handleMessage)
 
 	log.Printf("Kafka sink created successfully")
 

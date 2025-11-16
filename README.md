@@ -131,6 +131,9 @@ sinks:
     access_key: "${AWS_ACCESS_KEY_ID}"
     secret_key: "${AWS_SECRET_ACCESS_KEY}"
     prefix: "telemetry"
+    flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### Google Cloud Storage Configuration
@@ -141,6 +144,9 @@ sinks:
     project_id: "your-gcp-project"
     credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     prefix: "telemetry"
+    flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### Google BigQuery Configuration
@@ -153,6 +159,8 @@ sinks:
     credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     batch_size: 1000
     flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### AWS Timestream Configuration
@@ -166,6 +174,8 @@ sinks:
     secret_key: "${AWS_SECRET_ACCESS_KEY}"  # Optional: uses IAM role if not provided
     batch_size: 100
     flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### InfluxDB Configuration
@@ -182,6 +192,8 @@ sinks:
     # bucket: "telemetry"
     batch_size: 1000
     flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### Prometheus Configuration
@@ -193,6 +205,8 @@ sinks:
     instance: "drone-fleet"
     batch_size: 1000
     flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### Elasticsearch Configuration
@@ -207,6 +221,8 @@ sinks:
     # api_key: "your-api-key"  # Alternative to username/password
     batch_size: 1000
     flush_interval: "30s"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### Kafka Configuration
@@ -216,6 +232,8 @@ sinks:
     brokers:
       - "localhost:9092"
     topic: "telemetry-data"
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 #### File Configuration
@@ -225,6 +243,8 @@ sinks:
     path: "/var/log/telemetry"
     format: "json"  # json, csv, binary
     rotation: "daily"  # daily, hourly
+    queue_size: 1000
+    backpressure_policy: "drop"
 ```
 
 ## Telemetry Data Format

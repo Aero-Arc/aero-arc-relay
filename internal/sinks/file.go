@@ -48,7 +48,7 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 		sink.writer = csv.NewWriter(file)
 	}
 
-	sink.BaseAsyncSink = NewBaseAsyncSink(1000, sink.handleMessage)
+	sink.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, sink.handleMessage)
 
 	return sink, nil
 }

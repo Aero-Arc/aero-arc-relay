@@ -46,10 +46,12 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 	}
 
 	fileSink, err := NewFileSink(&config.FileConfig{
-		Path:             "/tmp",
-		Prefix:           "s3-sink",
-		Format:           "json",
-		RotationInterval: cfg.FlushInterval,
+		Path:               "/tmp",
+		Prefix:             "s3-sink",
+		Format:             "json",
+		RotationInterval:   cfg.FlushInterval,
+		QueueSize:          cfg.QueueSize,
+		BackpressurePolicy: cfg.BackpressurePolicy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file sink: %w", err)
@@ -62,7 +64,7 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
-	s.BaseAsyncSink = NewBaseAsyncSink(1000, s.handleMessage)
+	s.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, s.handleMessage)
 
 	s.wg.Add(1)
 	go func(closeCh <-chan struct{}) {

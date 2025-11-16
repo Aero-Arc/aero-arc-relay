@@ -55,10 +55,12 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 	}
 
 	fileSink, err := NewFileSink(&config.FileConfig{
-		Path:             "/tmp",
-		Prefix:           "gcs-sink",
-		Format:           "json",
-		RotationInterval: flushInterval,
+		Path:               "/tmp",
+		Prefix:             "gcs-sink",
+		Format:             "json",
+		RotationInterval:   flushInterval,
+		QueueSize:          cfg.QueueSize,
+		BackpressurePolicy: cfg.BackpressurePolicy,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file sink: %w", err)
@@ -71,7 +73,7 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
-	g.BaseAsyncSink = NewBaseAsyncSink(1000, g.handleMessage)
+	g.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, g.handleMessage)
 
 	g.wg.Add(1)
 	go func(closeCh <-chan struct{}) {

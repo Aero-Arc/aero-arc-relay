@@ -2,6 +2,8 @@ package sinks
 
 import (
 	"errors"
+	"log"
+	"strings"
 	"sync"
 
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
@@ -9,20 +11,50 @@ import (
 
 // BaseSink implements Sink interface
 type BaseAsyncSink struct {
-	wg    sync.WaitGroup
-	queue chan telemetry.TelemetryMessage
+	wg     sync.WaitGroup
+	queue  chan telemetry.TelemetryMessage
+	policy BackpressurePolicy
 }
 
-func NewBaseAsyncSink(buffer int, worker func(telemetry.TelemetryMessage) error) *BaseAsyncSink {
+type BackpressurePolicy string
+
+const (
+	BackpressurePolicyDrop  BackpressurePolicy = "drop"
+	BackpressurePolicyBlock BackpressurePolicy = "block"
+
+	defaultQueueSize = 1000
+)
+
+var (
+	ErrQueueFull = errors.New("queue is full")
+)
+
+func normalizeBackpressurePolicy(policy string) BackpressurePolicy {
+	switch strings.ToLower(policy) {
+	case string(BackpressurePolicyBlock):
+		return BackpressurePolicyBlock
+	default:
+		return BackpressurePolicyDrop
+	}
+}
+
+func NewBaseAsyncSink(buffer int, policy string, worker func(telemetry.TelemetryMessage) error) *BaseAsyncSink {
+	if buffer <= 0 {
+		buffer = defaultQueueSize
+	}
+
 	b := &BaseAsyncSink{
-		queue: make(chan telemetry.TelemetryMessage, buffer),
+		queue:  make(chan telemetry.TelemetryMessage, buffer),
+		policy: normalizeBackpressurePolicy(policy),
 	}
 	b.wg.Add(1)
 
 	go func() {
 		defer b.wg.Done()
 		for msg := range b.queue {
-			worker(msg)
+			if err := worker(msg); err != nil {
+				log.Printf("async sink worker error: %v", err)
+			}
 		}
 	}()
 
@@ -30,11 +62,19 @@ func NewBaseAsyncSink(buffer int, worker func(telemetry.TelemetryMessage) error)
 }
 
 func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryMessage) error {
-	select {
-	case b.queue <- msg:
+	switch b.policy {
+	case BackpressurePolicyBlock:
+		b.queue <- msg
 		return nil
+	case BackpressurePolicyDrop:
+		fallthrough
 	default:
-		return errors.New("queue is full")
+		select {
+		case b.queue <- msg:
+			return nil
+		default:
+			return ErrQueueFull
+		}
 	}
 }
 
