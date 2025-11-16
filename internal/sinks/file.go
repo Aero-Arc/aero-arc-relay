@@ -19,6 +19,7 @@ type FileSink struct {
 	writer       *csv.Writer
 	mu           sync.Mutex
 	lastRotation time.Time
+	*BaseAsyncSink
 }
 
 // NewFileSink creates a new file sink
@@ -47,32 +48,14 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 		sink.writer = csv.NewWriter(file)
 	}
 
+	sink.BaseAsyncSink = NewBaseAsyncSink(1000, sink.handleMessage)
+
 	return sink, nil
 }
 
 // WriteMessage writes telemetry message to file
 func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// Check if rotation is needed
-	if f.needsRotation() {
-		if err := f.rotateFileLocked(); err != nil {
-			return fmt.Errorf("failed to rotate file: %w", err)
-		}
-	}
-
-	// Write message based on format
-	switch f.config.Format {
-	case "json":
-		return f.writeJSON(msg)
-	case "csv":
-		return f.writeCSV(msg)
-	case "binary":
-		return f.writeBinary(msg)
-	default:
-		return fmt.Errorf("unsupported format: %s", f.config.Format)
-	}
+	return f.BaseAsyncSink.Enqueue(msg)
 }
 
 // GetFilename returns the filename of the file sink
@@ -107,6 +90,8 @@ func (f *FileSink) GetLastRotation() time.Time {
 
 // Close closes the file sink
 func (f *FileSink) Close() error {
+	f.BaseAsyncSink.Close()
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -114,6 +99,30 @@ func (f *FileSink) Close() error {
 		return err
 	}
 	return f.file.Close()
+}
+
+func (f *FileSink) handleMessage(msg telemetry.TelemetryMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// Check if rotation is needed
+	if f.needsRotation() {
+		if err := f.rotateFileLocked(); err != nil {
+			return fmt.Errorf("failed to rotate file: %w", err)
+		}
+	}
+
+	// Write message based on format
+	switch f.config.Format {
+	case "json":
+		return f.writeJSON(msg)
+	case "csv":
+		return f.writeCSV(msg)
+	case "binary":
+		return f.writeBinary(msg)
+	default:
+		return fmt.Errorf("unsupported format: %s", f.config.Format)
+	}
 }
 
 // writeJSON writes message in JSON format

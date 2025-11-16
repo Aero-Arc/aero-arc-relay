@@ -15,6 +15,7 @@ import (
 type KafkaSink struct {
 	producer *kafka.Producer
 	topic    string
+	*BaseAsyncSink
 }
 
 // NewKafkaSink creates a new Kafka sink
@@ -43,6 +44,8 @@ func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
 		producer: producer,
 		topic:    cfg.Topic,
 	}
+	sink.BaseAsyncSink = NewBaseAsyncSink(1000, sink.handleMessage)
+
 	log.Printf("Kafka sink created successfully")
 
 	return sink, nil
@@ -50,6 +53,14 @@ func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
 
 // WriteMessage sends telemetry message to Kafka
 func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+	err := k.BaseAsyncSink.Enqueue(msg)
+	if err != nil {
+		return fmt.Errorf("failed to enqueue message: %w", err)
+	}
+	return nil
+}
+
+func (k *KafkaSink) handleMessage(msg telemetry.TelemetryMessage) error {
 	// Serialize message to JSON
 	jsonData, err := msg.ToJSON()
 	if err != nil {
@@ -102,6 +113,8 @@ func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 
 // Close closes the Kafka sink
 func (k *KafkaSink) Close() error {
+	k.BaseAsyncSink.Close()
+
 	// Flush any remaining messages before closing
 	k.producer.Flush(15 * 1000) // Wait up to 15 seconds
 	k.producer.Close()

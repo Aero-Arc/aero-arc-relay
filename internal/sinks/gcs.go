@@ -26,6 +26,7 @@ type GCSSink struct {
 	closeChan chan struct{}
 	stopOnce  sync.Once
 	wg        sync.WaitGroup
+	*BaseAsyncSink
 }
 
 // NewGCSSink creates a new GCS sink
@@ -70,6 +71,7 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
+	g.BaseAsyncSink = NewBaseAsyncSink(1000, g.handleMessage)
 
 	g.wg.Add(1)
 	go func(closeCh <-chan struct{}) {
@@ -95,6 +97,15 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 
 // WriteMessage writes telemetry messages by buffering locally before upload
 func (g *GCSSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+	err := g.BaseAsyncSink.Enqueue(msg)
+	if err != nil {
+		return fmt.Errorf("failed to enqueue message: %w", err)
+	}
+
+	return nil
+}
+
+func (g *GCSSink) handleMessage(msg telemetry.TelemetryMessage) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -116,6 +127,8 @@ func (g *GCSSink) Close() error {
 	})
 
 	g.wg.Wait()
+
+	g.BaseAsyncSink.Close()
 
 	g.mu.Lock()
 	defer g.mu.Unlock()

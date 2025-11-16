@@ -28,6 +28,7 @@ type S3Sink struct {
 	closeChan chan struct{}
 	stopOnce  sync.Once
 	wg        sync.WaitGroup
+	*BaseAsyncSink
 }
 
 // NewS3Sink creates a new S3 sink
@@ -61,6 +62,7 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
+	s.BaseAsyncSink = NewBaseAsyncSink(1000, s.handleMessage)
 
 	s.wg.Add(1)
 	go func(closeCh <-chan struct{}) {
@@ -86,10 +88,19 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 
 // WriteMessage uploads telemetry message to S3
 func (s *S3Sink) WriteMessage(msg telemetry.TelemetryMessage) error {
+	return s.BaseAsyncSink.Enqueue(msg)
+}
+
+func (s *S3Sink) handleMessage(msg telemetry.TelemetryMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.fileSink.WriteMessage(msg)
+	err := s.fileSink.WriteMessage(msg)
+	if err != nil {
+		return fmt.Errorf("failed to write message to file sink: %w", err)
+	}
+
+	return nil
 }
 
 // RotateFile rotates the file
@@ -107,6 +118,8 @@ func (s *S3Sink) Close() error {
 	})
 
 	s.wg.Wait()
+
+	s.BaseAsyncSink.Close()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
