@@ -48,6 +48,16 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 		sink.writer = csv.NewWriter(file)
 	}
 
+	if cfg.RotationInterval == 0 {
+		cfg.RotationInterval = 60 * time.Second
+	}
+	if cfg.QueueSize == 0 {
+		cfg.QueueSize = 1000
+	}
+	if cfg.BackpressurePolicy == "" {
+		cfg.BackpressurePolicy = "drop"
+	}
+
 	sink.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, sink.handleMessage)
 
 	return sink, nil
