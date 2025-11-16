@@ -3,6 +3,7 @@ package telemetry
 import (
 	"encoding/binary"
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -157,15 +158,15 @@ func (p *PositionMessage) encodeBinary() ([]byte, error) {
 	offset += len(sourceBytes)
 
 	// Latitude (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(p.Latitude))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(p.Latitude))
 	offset += 8
 
 	// Longitude (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(p.Longitude))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(p.Longitude))
 	offset += 8
 
 	// Altitude (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(p.Altitude))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(p.Altitude))
 
 	return data, nil
 }
@@ -186,15 +187,15 @@ func (a *AttitudeMessage) encodeBinary() ([]byte, error) {
 	offset += len(sourceBytes)
 
 	// Roll (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(a.Roll))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(a.Roll))
 	offset += 8
 
 	// Pitch (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(a.Pitch))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(a.Pitch))
 	offset += 8
 
 	// Yaw (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(a.Yaw))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(a.Yaw))
 
 	return data, nil
 }
@@ -215,15 +216,15 @@ func (v *VfrHudMessage) encodeBinary() ([]byte, error) {
 	offset += len(sourceBytes)
 
 	// Speed (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(v.Speed))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(v.Speed))
 	offset += 8
 
 	// Altitude (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(v.Altitude))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(v.Altitude))
 	offset += 8
 
 	// Heading (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(v.Heading))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(v.Heading))
 
 	return data, nil
 }
@@ -244,11 +245,11 @@ func (b *BatteryMessage) encodeBinary() ([]byte, error) {
 	offset += len(sourceBytes)
 
 	// Battery (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(b.Battery))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(b.Battery))
 	offset += 8
 
 	// Voltage (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], uint64(b.Voltage))
+	binary.BigEndian.PutUint64(data[offset:], math.Float64bits(b.Voltage))
 
 	return data, nil
 }
