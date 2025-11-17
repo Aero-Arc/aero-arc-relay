@@ -58,7 +58,7 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 		cfg.BackpressurePolicy = "drop"
 	}
 
-	sink.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, sink.handleMessage)
+	sink.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, "file", sink.handleMessage)
 
 	return sink, nil
 }
@@ -232,12 +232,15 @@ func (f *FileSink) rotateFile() error {
 func generateFilename(basePath, prefix, format string) string {
 	timestamp := time.Now().UTC().Unix()
 	ext := format
-	if format == "json" {
+	switch format {
+	case "json":
 		ext = "json"
-	} else if format == "csv" {
+	case "csv":
 		ext = "csv"
-	} else if format == "binary" {
+	case "binary":
 		ext = "bin"
+	default:
+		return fmt.Sprintf("%s/%s_%d.%s", basePath, prefix, timestamp, format)
 	}
 
 	return fmt.Sprintf("%s/%s_%d.%s", basePath, prefix, timestamp, ext)

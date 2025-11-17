@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Relay manages MAVLink connections and data forwarding to sinks
@@ -23,8 +27,19 @@ type Relay struct {
 	config      *config.Config
 	sinks       []sinks.Sink
 	connections sync.Map // map[string]*gomavlib.Node
-	mu          sync.RWMutex
 }
+
+var (
+	relayMessagesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_messages_total",
+		Help: "Telemetry messages handled by the relay.",
+	}, []string{"source", "message_type"})
+
+	relaySinkWriteErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_sink_errors_total",
+		Help: "Errors returned while forwarding telemetry to sinks.",
+	}, []string{"sink"})
+)
 
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
@@ -79,6 +94,13 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 
 	}
+
+	http.Handle("/metrics", promhttp.Handler())
+	go func() {
+		if err := http.ListenAndServe(":2112", nil); err != nil && err != http.ErrServerClosed {
+			log.Printf("metrics server stopped: %v", err)
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -430,10 +452,21 @@ func (r *Relay) getFlightMode(customMode uint32) string {
 
 // handleTelemetryMessage processes incoming telemetry messages
 func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryMessage) {
+	relayMessagesTotal.WithLabelValues(msg.GetSource(), msg.GetMessageType()).Inc()
+
 	// Forward to all sinks
 	for _, sink := range r.sinks {
 		if err := sink.WriteMessage(msg); err != nil {
+			relaySinkWriteErrorsTotal.WithLabelValues(sinkNameForMetrics(sink)).Inc()
 			log.Printf("Failed to write message to sink: %v", err)
 		}
 	}
+}
+
+func sinkNameForMetrics(s sinks.Sink) string {
+	typeName := fmt.Sprintf("%T", s)
+	if idx := strings.LastIndex(typeName, "."); idx != -1 {
+		return typeName[idx+1:]
+	}
+	return typeName
 }

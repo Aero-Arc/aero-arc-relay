@@ -73,7 +73,7 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
-	g.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, g.handleMessage)
+	g.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, "gcs", g.handleMessage)
 
 	g.wg.Add(1)
 	go func(closeCh <-chan struct{}) {

@@ -64,7 +64,7 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 		fileSink:  fileSink,
 		closeChan: make(chan struct{}),
 	}
-	s.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, s.handleMessage)
+	s.BaseAsyncSink = NewBaseAsyncSink(cfg.QueueSize, cfg.BackpressurePolicy, "s3", s.handleMessage)
 
 	s.wg.Add(1)
 	go func(closeCh <-chan struct{}) {
