@@ -1,24 +1,23 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Aero Arc Relay logo" style="max-width: 50%; height: auto;">
+</p>
+
 # Aero Arc Relay
 
-A high-performance Go-based telemetry relay system that connects to edge agents, drones, and other MAVLink-enabled devices to forward telemetry data to various data sinks including S3, Kafka, and file-based storage.
+A Go-based telemetry relay that ingests MAVLink traffic and fans it out to cloud storage. v0.1 focuses on production-ready sinks for:
 
-## Features
+- **AWS S3** – cloud persistence with file rotation buffering
+- **Google Cloud Storage** – mirrored flow for GCS buckets
+- **Kafka** – streaming fan-out to downstream consumers
+- **Local File** – JSON rotation for on-disk retention
 
-- **MAVLink Integration**: Uses gomavlib for robust MAVLink protocol support
-- **Multiple Connection Types**: Supports UDP, TCP, and Serial connections
-- **Flexible Data Sinks**: 
-  - AWS S3 for cloud storage
-  - Google Cloud Storage for cloud storage
-  - Google BigQuery for analytics and data warehousing
-  - AWS Timestream for time-series analytics
-  - InfluxDB for time-series database
-  - Prometheus for metrics collection
-  - Elasticsearch for search and log analytics
-  - Apache Kafka for real-time streaming
-  - File-based storage with rotation
-- **High Performance**: Concurrent processing with configurable workers
-- **Structured Logging**: JSON-formatted logs with configurable levels
-- **Docker Support**: Containerized deployment with docker-compose
+## Highlights
+
+- **MAVLink ingest** via gomavlib (UDP/TCP/Serial)
+- **Buffered sinks** with async queues/backpressure controls
+- **Prometheus metrics** at `/metrics`
+- **Health/ready probes** at `/healthz` and `/readyz`
+- **Structured logging** with configurable levels/outputs
 
 ## Architecture
 
@@ -101,7 +100,7 @@ Open http://localhost:8080 in your browser
 
 ## Configuration
 
-The application is configured via YAML files. See `configs/config.yaml` for a complete example.
+Edit `configs/config.yaml` to enable only the sinks you plan to run.
 
 ### MAVLink Endpoints
 
@@ -144,82 +143,6 @@ sinks:
     project_id: "your-gcp-project"
     credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
     prefix: "telemetry"
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### Google BigQuery Configuration
-```yaml
-sinks:
-  bigquery:
-    project_id: "your-gcp-project"
-    dataset: "telemetry"
-    table: "mavlink_messages"
-    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
-    batch_size: 1000
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### AWS Timestream Configuration
-```yaml
-sinks:
-  timestream:
-    database: "telemetry"
-    table: "mavlink_messages"
-    region: "us-west-2"
-    access_key: "${AWS_ACCESS_KEY_ID}"  # Optional: uses IAM role if not provided
-    secret_key: "${AWS_SECRET_ACCESS_KEY}"  # Optional: uses IAM role if not provided
-    batch_size: 100
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### InfluxDB Configuration
-```yaml
-sinks:
-  influxdb:
-    url: "http://localhost:8086"
-    database: "telemetry"  # For InfluxDB 1.x
-    username: "admin"
-    password: "password"
-    # For InfluxDB 2.x, use these instead:
-    # token: "your-influxdb-token"
-    # organization: "your-org"
-    # bucket: "telemetry"
-    batch_size: 1000
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### Prometheus Configuration
-```yaml
-sinks:
-  prometheus:
-    url: "http://localhost:9090"
-    job: "aero-arc-relay"
-    instance: "drone-fleet"
-    batch_size: 1000
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### Elasticsearch Configuration
-```yaml
-sinks:
-  elasticsearch:
-    urls:
-      - "http://localhost:9200"
-    index: "mavlink-telemetry"
-    username: "elastic"  # Optional
-    password: "password"  # Optional
-    # api_key: "your-api-key"  # Alternative to username/password
-    batch_size: 1000
     flush_interval: "30s"
     queue_size: 1000
     backpressure_policy: "drop"
@@ -307,10 +230,6 @@ go test -cover ./...
 
 ## Monitoring
 
-### Health Checks
-
-The application supports health checks via HTTP endpoint (future enhancement).
-
 ### Logging
 
 Structured JSON logging with configurable levels:
@@ -325,10 +244,15 @@ logging:
 
 ### Metrics
 
-Telemetry data includes performance metrics:
-- Connection status
-- Message processing rates
-- Sink write success/failure rates
+- `/metrics`: Prometheus exposition format
+- `/healthz`: liveness probe (always 200 if the process is running)
+- `/readyz`: readiness probe (200 once sinks initialize)
+- Key series:
+  - `aero_relay_messages_total{source,message_type}`
+  - `aero_relay_sink_errors_total{sink}`
+  - `aero_sink_queue_length{sink}`
+  - `aero_sink_enqueued_total{sink}`
+  - `aero_sink_dropped_total{sink}`
 
 ## Contributing
 

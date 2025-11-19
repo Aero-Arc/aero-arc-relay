@@ -24,9 +24,10 @@ import (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
-	config      *config.Config
-	sinks       []sinks.Sink
-	connections sync.Map // map[string]*gomavlib.Node
+	config           *config.Config
+	sinks            []sinks.Sink
+	connections      sync.Map // map[string]*gomavlib.Node
+	sinksInitialized bool
 }
 
 var (
@@ -92,10 +93,24 @@ func (r *Relay) Start(ctx context.Context) error {
 		for _, sink := range r.sinks {
 			sink.Close()
 		}
-
 	}
 
 	http.Handle("/metrics", promhttp.Handler())
+	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	http.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !r.ready() {
+			http.Error(w, `{"status":"not ready"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+
 	go func() {
 		if err := http.ListenAndServe(":2112", nil); err != nil && err != http.ErrServerClosed {
 			log.Printf("metrics server stopped: %v", err)
@@ -116,6 +131,10 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (r *Relay) ready() bool {
+	return r.sinksInitialized
 }
 
 // initializeSinks sets up all configured data sinks
@@ -204,7 +223,7 @@ func (r *Relay) initializeSinks() error {
 	if len(r.sinks) == 0 {
 		return fmt.Errorf("no sinks configured")
 	}
-
+	r.sinksInitialized = true
 	return nil
 }
 
