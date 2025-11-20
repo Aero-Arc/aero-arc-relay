@@ -4,91 +4,40 @@ relay:
 mavlink:
   dialect: "common"  # common, ardupilot, px4, etc.
   endpoints:
-    - name: "drone-1"
+    - name: "drone-udp"
       protocol: "udp"
-      address: "192.168.1.100"
+      mode: "server"
+      address: "0.0.0.0"
       port: 14550
-    - name: "drone-2"
-      protocol: "tcp"
-      address: "192.168.1.101"
-      port: 5760
-    - name: "ground-station"
-      protocol: "serial"
-      address: "/dev/ttyUSB0"
-      baud_rate: 57600
+    # - name: "drone-tcp"
+    #   protocol: "tcp"
+    #   mode: "server"
+    #   address: "0.0.0.0"
+    #   port: 5760
 
 sinks:
+  # file:
+  #   path: "/var/log/aero-arc-relay"
+  #   prefix: "telemetry"
+  #   format: "json"
+  #   rotation_interval: "24h"
+  # gcs:
+  #   bucket: "aero-arc-telemetry-data-dev"
+  #   project_id: "aero-arc-relay"
+  #   credentials: "/path/to/service-account.json"  # Path to GCP service account JSON file
+  #   prefix: "telemetry"
+  #   flush_interval: "30s"
   s3:
     bucket: "your-telemetry-bucket"
     region: "us-west-2"
-    access_key: "${AWS_ACCESS_KEY_ID}"
+    access_key: "${AWS_ACCESS_KEY_ID}"  # Use environment variables, never hardcode
     secret_key: "${AWS_SECRET_ACCESS_KEY}"
     prefix: "telemetry"
     flush_interval: "1m"
-  
-  gcs:
-    bucket: "your-gcs-telemetry-bucket"
-    project_id: "your-gcp-project"
-    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
-    prefix: "telemetry"
-  
-  bigquery:
-    project_id: "your-gcp-project"
-    dataset: "telemetry"
-    table: "mavlink_messages"
-    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
-    batch_size: 1000
-    flush_interval: "30s"
-  
-  timestream:
-    database: "telemetry"
-    table: "mavlink_messages"
-    region: "us-west-2"
-    access_key: "${AWS_ACCESS_KEY_ID}"  # Optional: uses IAM role if not provided
-    secret_key: "${AWS_SECRET_ACCESS_KEY}"  # Optional: uses IAM role if not provided
-    batch_size: 100
-    flush_interval: "30s"
-  
-  influxdb:
-    url: "http://localhost:8086"
-    database: "telemetry"  # For InfluxDB 1.x
-    username: "admin"
-    password: "password"
-    # For InfluxDB 2.x, use these instead:
-    # token: "your-influxdb-token"
-    # organization: "your-org"
-    # bucket: "telemetry"
-    batch_size: 1000
-    flush_interval: "30s"
-  
-  prometheus:
-    url: "http://localhost:9090"
-    job: "aero-arc-relay"
-    instance: "drone-fleet"
-    batch_size: 1000
-    flush_interval: "30s"
-  
-  elasticsearch:
-    urls:
-      - "http://localhost:9200"
-    index: "mavlink-telemetry"
-    username: "elastic"  # Optional
-    password: "password"  # Optional
-    # api_key: "your-api-key"  # Alternative to username/password
-    batch_size: 1000
-    flush_interval: "30s"
-  
-  kafka:
-    brokers:
-      - "localhost:9092"
-      - "localhost:9093"
-    topic: "telemetry-data"
-  
-  file:
-    path: "/var/log/aero-arc-relay"
-    prefix: "telemetry"
-    format: "json"
-    rotation_interval: "24h"
+  # kafka:
+  #   brokers:
+  #     - "localhost:9092"  # For local Kafka container
+  #   topic: "quickstart-events"  # Choose your topic name
 
 logging:
   level: "info"
