@@ -1,42 +1,35 @@
+############################
 # Build stage
-FROM golang:1.21-alpine AS builder
+############################
+FROM golang:1.24-bullseye AS builder
+
+WORKDIR /src
+
+# Copy go module manifests first so we can cache deps
+COPY go.mod go.sum ./
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config librdkafka-dev build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN go mod download
+
+# Copy the rest of the source
+COPY . .
+
+# Build the relay binary
+RUN GOOS=linux GOARCH=amd64 go build -o /out/aero-arc-relay ./cmd/aero-arc-relay
+
+############################
+# Runtime stage
+############################
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 WORKDIR /app
 
-# Install dependencies
-RUN apk add --no-cache git
+COPY --from=builder /out/aero-arc-relay /usr/local/bin/aero-arc-relay
+COPY --from=builder /src/configs/config.yaml /etc/aero-arc-relay/config.yaml
+# Optional: copy default configs (override via mounted volume or env)
+# COPY configs /etc/aero-arc-relay/
 
-# Copy go mod files
-COPY go.mod go.sum ./
+EXPOSE 2112
 
-# Download dependencies
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o aero-arc-relay ./cmd/aero-arc-relay
-
-# Runtime stage
-FROM alpine:latest
-
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
-
-WORKDIR /root/
-
-# Copy the binary
-COPY --from=builder /app/aero-arc-relay .
-
-# Copy configuration
-COPY --from=builder /app/configs ./configs
-
-# Create log directory
-RUN mkdir -p /var/log/aero-arc-relay
-
-# Expose port (if needed for health checks)
-EXPOSE 8080
-
-# Run the application
-CMD ["./aero-arc-relay", "-config", "configs/config.yaml"]
+ENTRYPOINT ["/usr/local/bin/aero-arc-relay"]
+CMD ["-config", "/etc/aero-arc-relay/config.yaml"]
