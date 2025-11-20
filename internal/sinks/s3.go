@@ -33,14 +33,23 @@ type S3Sink struct {
 
 // NewS3Sink creates a new S3 sink
 func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
-	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String(cfg.Region),
-		Credentials: credentials.NewStaticCredentials(
-			cfg.AccessKey,
-			cfg.SecretKey,
-			"",
-		),
-	})
+	var sess *session.Session
+	var err error
+
+	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+		sess, err = session.NewSession(&aws.Config{
+			Region: aws.String(cfg.Region),
+			Credentials: credentials.NewStaticCredentials(
+				cfg.AccessKey,
+				cfg.SecretKey,
+				"",
+			),
+		})
+	} else {
+		sess, err = session.NewSession(&aws.Config{
+			Region: aws.String(cfg.Region),
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session: %w", err)
 	}
