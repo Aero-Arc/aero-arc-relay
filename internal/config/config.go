@@ -2,15 +2,14 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/all"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/ardupilotmega"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/development"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/minimal"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/paparazzi"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/standard"
@@ -39,13 +38,39 @@ type MAVLinkConfig struct {
 
 // MAVLinkEndpoint represents a single MAVLink connection
 type MAVLinkEndpoint struct {
-	Name     string `yaml:"name"`
-	Protocol string `yaml:"protocol"` // udp, tcp, serial
-	Mode     string `yaml:"mode,omitempty"`
-	Address  string `yaml:"address"`
-	Port     int    `yaml:"port,omitempty"`
-	BaudRate int    `yaml:"baud_rate,omitempty"`
+	Name         string                  `yaml:"name"`
+	DroneID      string                  `yaml:"drone_id,omitempty"`
+	ProtocolName string                  `yaml:"protocol"` // udp, tcp, serial
+	Protocol     MAVLinkEndpointProtocol `yaml:"-"`        // resolved at load time
+	ModeName     string                  `yaml:"mode,omitempty"`
+	Mode         MAVLinkMode             `yaml:"-"` // resolved at load time
+	Port         int                     `yaml:"port,omitempty"`
+	BaudRate     int                     `yaml:"baud_rate,omitempty"`
 }
+
+// MAVLinkEndpointProtocol represents a MAVLink endpoint protocol
+type MAVLinkEndpointProtocol string
+
+const (
+	MAVLinkEndpointProtocolUDP    MAVLinkEndpointProtocol = "udp"
+	MAVLinkEndpointProtocolTCP    MAVLinkEndpointProtocol = "tcp"
+	MAVLinkEndpointProtocolSerial MAVLinkEndpointProtocol = "serial"
+)
+
+// MAVLinkMode represents a MAVLink mode
+type MAVLinkMode string
+
+const (
+	MAVLinkMode1To1  MAVLinkMode = "1:1"
+	MAVLinkModeMulti MAVLinkMode = "multi"
+)
+
+var (
+	MAVLinkModeNames = map[MAVLinkMode]string{
+		MAVLinkMode1To1:  "1:1",
+		MAVLinkModeMulti: "multi",
+	}
+)
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
@@ -178,13 +203,32 @@ type LoggingConfig struct {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedToReadConfigFile, err)
 	}
 
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedToParseConfigFile, err)
 	}
+
+	if len(config.MAVLink.Endpoints) == 0 {
+		return nil, ErrNoEndpoints
+	}
+
+	processedEndpoints := []MAVLinkEndpoint{}
+	for _, endpoint := range config.MAVLink.Endpoints {
+		if err := validateEndpoint(&endpoint); err != nil {
+			slog.Warn("invalid MAVLink endpoint", "name", endpoint.Name, "error", err.Error())
+			continue
+		}
+		processedEndpoints = append(processedEndpoints, endpoint)
+	}
+
+	if len(processedEndpoints) == 0 {
+		return nil, ErrNoValidEndpoints
+	}
+
+	config.MAVLink.Endpoints = processedEndpoints
 
 	// Set defaults
 	if config.Relay.BufferSize == 0 {
@@ -194,11 +238,11 @@ func Load(path string) (*Config, error) {
 		config.MAVLink.DialectName = "common"
 	}
 
-	d, err := resolveDialect(config.MAVLink.DialectName)
+	err = validateMavLinkDialect(&config.MAVLink)
 	if err != nil {
 		return nil, fmt.Errorf("invalid MAVLink dialect %q: %w", config.MAVLink.DialectName, err)
 	}
-	config.MAVLink.Dialect = d
+
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
 	}
@@ -213,23 +257,68 @@ func Load(path string) (*Config, error) {
 }
 
 // resolveDialect returns the gomavlib dialect for the provided name.
-func resolveDialect(name string) (*dialect.Dialect, error) {
-	switch strings.ToLower(name) {
+func validateMavLinkDialect(mavLink *MAVLinkConfig) error {
+	switch strings.ToLower(mavLink.DialectName) {
 	case "common":
-		return common.Dialect, nil
+		mavLink.Dialect = common.Dialect
+		return nil
 	case "minimal":
-		return minimal.Dialect, nil
+		mavLink.Dialect = minimal.Dialect
+		return nil
 	case "ardupilot", "ardupilotmega", "apm":
-		return ardupilotmega.Dialect, nil
+		mavLink.Dialect = ardupilotmega.Dialect
+		return nil
 	case "paparazzi":
-		return paparazzi.Dialect, nil
+		mavLink.Dialect = paparazzi.Dialect
+		return nil
 	case "standard":
-		return standard.Dialect, nil
-	case "all":
-		return all.Dialect, nil
-	case "development", "dev":
-		return development.Dialect, nil
+		mavLink.Dialect = standard.Dialect
+		return nil
 	default:
-		return nil, fmt.Errorf("unsupported dialect")
+		return fmt.Errorf("%w: %s", ErrInvalidDialect, mavLink.DialectName)
+	}
+}
+
+func validateEndpoint(endpoint *MAVLinkEndpoint) error {
+	if err := validateEndpointMode(endpoint); err != nil {
+		return err
+	}
+
+	if err := validateEndPointProtocol(endpoint); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateEndpointMode(endpoint *MAVLinkEndpoint) error {
+	switch endpoint.ModeName {
+	case "1:1":
+		endpoint.Mode = MAVLinkMode1To1
+		if endpoint.DroneID == "" {
+			return ErrDroneIDRequired
+		}
+		return nil
+	case "multi":
+		endpoint.Mode = MAVLinkModeMulti
+		return ErrMultiModeNotSupported
+	default:
+		return fmt.Errorf("%w: %s", ErrInvalidMode, endpoint.ModeName)
+	}
+}
+
+func validateEndPointProtocol(endPoint *MAVLinkEndpoint) error {
+	switch endPoint.ProtocolName {
+	case "udp":
+		endPoint.Protocol = MAVLinkEndpointProtocolUDP
+		return nil
+	case "tcp":
+		endPoint.Protocol = MAVLinkEndpointProtocolTCP
+		return nil
+	case "serial":
+		endPoint.Protocol = MAVLinkEndpointProtocolSerial
+		return nil
+	default:
+		return fmt.Errorf("%w: %s", ErrInvalidProtocol, endPoint.ProtocolName)
 	}
 }

@@ -17,15 +17,15 @@ mavlink:
   endpoints:
     - name: "drone-1"
       protocol: "udp"
-      address: "192.168.1.100"
+      mode: "1:1"
       port: 14550
     - name: "drone-2"
       protocol: "tcp"
-      address: "192.168.1.101"
+      mode: "multi"
       port: 5760
     - name: "ground-station"
       protocol: "serial"
-      address: "/dev/ttyUSB0"
+      mode: "1:1"
       baud_rate: 57600
 
 sinks:
@@ -89,14 +89,14 @@ logging:
 	// Test endpoints
 	expectedEndpoints := []struct {
 		name     string
-		protocol string
-		address  string
+		protocol MAVLinkEndpointProtocol
+		mode     MAVLinkMode
 		port     int
 		baudRate int
 	}{
-		{"drone-1", "udp", "192.168.1.100", 14550, 0},
-		{"drone-2", "tcp", "192.168.1.101", 5760, 0},
-		{"ground-station", "serial", "/dev/ttyUSB0", 0, 57600},
+		{"drone-1", MAVLinkEndpointProtocolUDP, MAVLinkMode1To1, 14550, 0},
+		{"drone-2", MAVLinkEndpointProtocolTCP, MAVLinkModeMulti, 5760, 0},
+		{"ground-station", MAVLinkEndpointProtocolSerial, MAVLinkMode1To1, 0, 57600},
 	}
 
 	for i, expected := range expectedEndpoints {
@@ -107,8 +107,8 @@ logging:
 		if endpoint.Protocol != expected.protocol {
 			t.Errorf("Endpoint %d: Expected protocol '%s', got '%s'", i, expected.protocol, endpoint.Protocol)
 		}
-		if endpoint.Address != expected.address {
-			t.Errorf("Endpoint %d: Expected address '%s', got '%s'", i, expected.address, endpoint.Address)
+		if endpoint.Mode != expected.mode {
+			t.Errorf("Endpoint %d: Expected mode '%s', got '%s'", i, expected.mode, endpoint.Mode)
 		}
 		if endpoint.Port != expected.port {
 			t.Errorf("Endpoint %d: Expected port %d, got %d", i, expected.port, endpoint.Port)
@@ -183,7 +183,7 @@ mavlink:
   endpoints:
     - name: "drone-1"
       protocol: "udp"
-      address: "192.168.1.100"
+      mode: "1:1"
       port: 14550
 
 sinks:
@@ -252,13 +252,12 @@ sinks:
 	}
 	tmpFile.Close()
 
-	cfg, err := Load(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
+	_, err = Load(tmpFile.Name())
+	if err == nil {
+		t.Fatalf("Expected error for empty endpoint list")
 	}
-
-	if len(cfg.MAVLink.Endpoints) != 0 {
-		t.Errorf("Expected 0 endpoints, got %d", len(cfg.MAVLink.Endpoints))
+	if err != ErrNoEndpoints {
+		t.Fatalf("Expected ErrNoEndpoints, got %v", err)
 	}
 }
 
@@ -309,15 +308,15 @@ mavlink:
   endpoints:
     - name: "udp-endpoint"
       protocol: "udp"
-      address: "192.168.1.100"
+      mode: "multi"
       port: 14550
     - name: "tcp-endpoint"
       protocol: "tcp"
-      address: "192.168.1.101"
+      mode: "1:1"
       port: 5760
     - name: "serial-endpoint"
       protocol: "serial"
-      address: "/dev/ttyUSB0"
+      mode: "1:1"
       baud_rate: 57600
 
 sinks:
@@ -344,8 +343,11 @@ sinks:
 
 	// Test UDP endpoint
 	udpEndpoint := cfg.MAVLink.Endpoints[0]
-	if udpEndpoint.Protocol != "udp" {
+	if udpEndpoint.Protocol != MAVLinkEndpointProtocolUDP {
 		t.Errorf("Expected UDP protocol, got %s", udpEndpoint.Protocol)
+	}
+	if udpEndpoint.Mode != MAVLinkModeMulti {
+		t.Errorf("Expected UDP endpoint mode '%s', got '%s'", MAVLinkModeMulti, udpEndpoint.Mode)
 	}
 	if udpEndpoint.Port != 14550 {
 		t.Errorf("Expected port 14550, got %d", udpEndpoint.Port)
@@ -353,8 +355,11 @@ sinks:
 
 	// Test TCP endpoint
 	tcpEndpoint := cfg.MAVLink.Endpoints[1]
-	if tcpEndpoint.Protocol != "tcp" {
+	if tcpEndpoint.Protocol != MAVLinkEndpointProtocolTCP {
 		t.Errorf("Expected TCP protocol, got %s", tcpEndpoint.Protocol)
+	}
+	if tcpEndpoint.Mode != MAVLinkMode1To1 {
+		t.Errorf("Expected TCP endpoint mode '%s', got '%s'", MAVLinkMode1To1, tcpEndpoint.Mode)
 	}
 	if tcpEndpoint.Port != 5760 {
 		t.Errorf("Expected port 5760, got %d", tcpEndpoint.Port)
@@ -362,8 +367,11 @@ sinks:
 
 	// Test serial endpoint
 	serialEndpoint := cfg.MAVLink.Endpoints[2]
-	if serialEndpoint.Protocol != "serial" {
+	if serialEndpoint.Protocol != MAVLinkEndpointProtocolSerial {
 		t.Errorf("Expected serial protocol, got %s", serialEndpoint.Protocol)
+	}
+	if serialEndpoint.Mode != MAVLinkMode1To1 {
+		t.Errorf("Expected serial endpoint mode '%s', got '%s'", MAVLinkMode1To1, serialEndpoint.Mode)
 	}
 	if serialEndpoint.BaudRate != 57600 {
 		t.Errorf("Expected baud rate 57600, got %d", serialEndpoint.BaudRate)
