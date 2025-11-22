@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -13,7 +14,58 @@ type TelemetryMessage interface {
 	GetTimestamp() time.Time
 	GetMessageType() string
 	ToJSON() ([]byte, error)
+	ToEnvelope() TelemetryEnvelope
 	ToBinary() ([]byte, error)
+}
+
+type RawPayload string
+
+type TelemetryEnvelope struct {
+	DroneID         string         `json:"drone_id"`
+	Source          string         `json:"source"`
+	TimestampRelay  time.Time      `json:"timestamp_relay"`
+	TimestampDevice float64        `json:"timestamp_device"`
+	MsgID           uint32         `json:"msg_id"`
+	MsgName         string         `json:"msg_name"`
+	SystemID        uint8          `json:"system_id"`
+	ComponentID     uint8          `json:"component_id"`
+	Sequence        uint16         `json:"sequence"`
+	Fields          map[string]any `json:"fields"`
+	Raw             RawPayload     `json:"raw"`
+}
+
+func (e TelemetryEnvelope) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+func (e TelemetryEnvelope) ToBinary() ([]byte, error) {
+	return e.ToJSON()
+}
+
+func (e TelemetryEnvelope) ToEnvelope() TelemetryEnvelope {
+	return e
+}
+
+func (e TelemetryEnvelope) GetSource() string {
+	return e.Source
+}
+
+func (e TelemetryEnvelope) GetTimestamp() time.Time {
+	if !e.TimestampRelay.IsZero() {
+		return e.TimestampRelay
+	}
+
+	if e.TimestampDevice != 0 {
+		secs := int64(e.TimestampDevice)
+		nanos := int64((e.TimestampDevice - float64(secs)) * 1e9)
+		return time.Unix(secs, nanos).UTC()
+	}
+
+	return time.Time{}
+}
+
+func (e TelemetryEnvelope) GetMessageType() string {
+	return e.MsgName
 }
 
 // HeartbeatMessage represents MAVLink HEARTBEAT message
@@ -69,6 +121,24 @@ func (h *HeartbeatMessage) GetSource() string       { return h.Source }
 func (h *HeartbeatMessage) GetTimestamp() time.Time { return h.Timestamp }
 func (h *HeartbeatMessage) GetMessageType() string  { return h.Type }
 func (h *HeartbeatMessage) ToJSON() ([]byte, error) { return json.Marshal(h) }
+func (h *HeartbeatMessage) ToEnvelope() TelemetryEnvelope {
+	fields := map[string]any{
+		"status":       h.Status,
+		"flight_mode":  h.Mode,
+		"message_type": h.Type,
+	}
+
+	return TelemetryEnvelope{
+		DroneID:         h.Source,
+		Source:          h.Source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: float64(h.Timestamp.UnixNano()) / 1e9,
+		MsgName:         strings.ToUpper(h.Type),
+		Fields:          fields,
+	}
+}
+
+// func (h *HeartbeatMessage) BuildEnvelope
 func (h *HeartbeatMessage) ToBinary() ([]byte, error) {
 	return h.encodeBinary()
 }
@@ -78,6 +148,22 @@ func (p *PositionMessage) GetSource() string       { return p.Source }
 func (p *PositionMessage) GetTimestamp() time.Time { return p.Timestamp }
 func (p *PositionMessage) GetMessageType() string  { return p.Type }
 func (p *PositionMessage) ToJSON() ([]byte, error) { return json.Marshal(p) }
+func (p *PositionMessage) ToEnvelope() TelemetryEnvelope {
+	fields := map[string]any{
+		"latitude":  p.Latitude,
+		"longitude": p.Longitude,
+		"altitude":  p.Altitude,
+	}
+
+	return TelemetryEnvelope{
+		DroneID:         p.Source,
+		Source:          p.Source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: float64(p.Timestamp.UnixNano()) / 1e9,
+		MsgName:         strings.ToUpper(p.Type),
+		Fields:          fields,
+	}
+}
 func (p *PositionMessage) ToBinary() ([]byte, error) {
 	return p.encodeBinary()
 }
@@ -87,6 +173,22 @@ func (a *AttitudeMessage) GetSource() string       { return a.Source }
 func (a *AttitudeMessage) GetTimestamp() time.Time { return a.Timestamp }
 func (a *AttitudeMessage) GetMessageType() string  { return a.Type }
 func (a *AttitudeMessage) ToJSON() ([]byte, error) { return json.Marshal(a) }
+func (a *AttitudeMessage) ToEnvelope() TelemetryEnvelope {
+	fields := map[string]any{
+		"roll":  a.Roll,
+        "pitch": a.Pitch,
+		"yaw":   a.Yaw,
+	}
+
+	return TelemetryEnvelope{
+		DroneID:         a.Source,
+		Source:          a.Source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: float64(a.Timestamp.UnixNano()) / 1e9,
+		MsgName:         strings.ToUpper(a.Type),
+		Fields:          fields,
+	}
+}
 func (a *AttitudeMessage) ToBinary() ([]byte, error) {
 	return a.encodeBinary()
 }
@@ -96,6 +198,22 @@ func (v *VfrHudMessage) GetSource() string       { return v.Source }
 func (v *VfrHudMessage) GetTimestamp() time.Time { return v.Timestamp }
 func (v *VfrHudMessage) GetMessageType() string  { return v.Type }
 func (v *VfrHudMessage) ToJSON() ([]byte, error) { return json.Marshal(v) }
+func (v *VfrHudMessage) ToEnvelope() TelemetryEnvelope {
+	fields := map[string]any{
+		"speed":   v.Speed,
+		"altitude": v.Altitude,
+		"heading": v.Heading,
+	}
+
+	return TelemetryEnvelope{
+		DroneID:         v.Source,
+		Source:          v.Source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: float64(v.Timestamp.UnixNano()) / 1e9,
+		MsgName:         strings.ToUpper(v.Type),
+		Fields:          fields,
+	}
+}
 func (v *VfrHudMessage) ToBinary() ([]byte, error) {
 	return v.encodeBinary()
 }
@@ -105,6 +223,21 @@ func (b *BatteryMessage) GetSource() string       { return b.Source }
 func (b *BatteryMessage) GetTimestamp() time.Time { return b.Timestamp }
 func (b *BatteryMessage) GetMessageType() string  { return b.Type }
 func (b *BatteryMessage) ToJSON() ([]byte, error) { return json.Marshal(b) }
+func (b *BatteryMessage) ToEnvelope() TelemetryEnvelope {
+	fields := map[string]any{
+		"battery": b.Battery,
+		"voltage": b.Voltage,
+	}
+
+	return TelemetryEnvelope{
+		DroneID:         b.Source,
+		Source:          b.Source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: float64(b.Timestamp.UnixNano()) / 1e9,
+		MsgName:         strings.ToUpper(b.Type),
+		Fields:          fields,
+	}
+}
 func (b *BatteryMessage) ToBinary() ([]byte, error) {
 	return b.encodeBinary()
 }

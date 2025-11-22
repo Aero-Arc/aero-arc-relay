@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
@@ -261,63 +263,40 @@ func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []err
 
 // createEndpointConf converts a config endpoint to gomavlib endpoint configuration
 func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.EndpointConf, error) {
-	mode := strings.ToLower(endpoint.Mode)
-	if mode == "" {
-		mode = "server"
-	}
-
 	switch endpoint.Protocol {
-	case "udp":
-		address := fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)
-		switch mode {
-		case "server":
-			return &gomavlib.EndpointUDPServer{
-				Address: address,
-			}, nil
-		case "client":
-			return &gomavlib.EndpointUDPClient{
-				Address: address,
-			}, nil
-		default:
-			return nil, fmt.Errorf("unsupported mode %q for UDP endpoint %s", endpoint.Mode, endpoint.Name)
-		}
-	case "tcp":
-		address := fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)
-		switch mode {
-		case "server":
-			return &gomavlib.EndpointTCPServer{
-				Address: address,
-			}, nil
-		case "client":
-			return &gomavlib.EndpointTCPClient{
-				Address: address,
-			}, nil
-		default:
-			return nil, fmt.Errorf("unsupported mode %q for TCP endpoint %s", endpoint.Mode, endpoint.Name)
-		}
-	case "serial":
-		if mode != "server" && mode != "client" && mode != "" {
-			return nil, fmt.Errorf("unsupported mode %q for serial endpoint %s", endpoint.Mode, endpoint.Name)
-		}
+	case config.MAVLinkEndpointProtocolUDP:
+		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
+		return &gomavlib.EndpointUDPServer{
+			Address: address,
+		}, nil
+
+	case config.MAVLinkEndpointProtocolTCP:
+		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
+		return &gomavlib.EndpointTCPServer{
+			Address: address,
+		}, nil
+	case config.MAVLinkEndpointProtocolSerial:
 		return &gomavlib.EndpointSerial{
-			Device: endpoint.Address,
+			Device: fmt.Sprintf("/dev/ttyUSB%d", endpoint.Port),
 			Baud:   endpoint.BaudRate,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", endpoint.Protocol)
+		return nil, fmt.Errorf("%w: %s", config.ErrInvalidProtocol, endpoint.Protocol)
 	}
 }
 
 // processMessages processes incoming MAVLink messages
-func (r *Relay) processMessages(ctx context.Context, name string) {
-	log.Printf("processing messages for %s", name)
-	conn, ok := r.connections.Load(name)
+func (r *Relay) processMessages(ctx context.Context, endpoint string) {
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "processing messages for endpoint", slog.String("endpoint", endpoint))
+	conn, ok := r.connections.Load(endpoint)
 	if !ok {
-		log.Fatalf("connection %s not found", name)
+		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection not found. returning from processMessages", slog.String("endpoint", endpoint))
+		return
 	}
 	node, ok := conn.(*gomavlib.Node)
 	if !ok {
-		log.Fatalf("connection %s is not a valid MAVLink node", name)
+		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection is not a valid MAVLink node. returning from processMessages", slog.String("endpoint", endpoint))
+		return
 	}
 
 	for evt := range node.Events() {
@@ -326,83 +305,163 @@ func (r *Relay) processMessages(ctx context.Context, name string) {
 			return
 		default:
 			if frameEvt, ok := evt.(*gomavlib.EventFrame); ok {
-				r.handleFrame(frameEvt, name)
+				r.handleFrame(frameEvt, endpoint)
 				continue
 			}
 
 			if _, ok := evt.(*gomavlib.EventChannelOpen); ok {
-				log.Printf("channel open for %s", name)
+				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel open for endpoint", slog.String("endpoint", endpoint))
 				continue
 			}
 
 			if _, ok := evt.(*gomavlib.EventChannelClose); ok {
-				log.Printf("channel closed for %s", name)
+				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel closed for endpoint", slog.String("endpoint", endpoint))
 				continue
 			}
 
-			log.Printf("unsupported event type: %T", evt)
+			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
 		}
 	}
 }
 
 // handleFrame processes a MAVLink frame
-func (r *Relay) handleFrame(evt *gomavlib.EventFrame, name string) {
+func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
 	// Determine source endpoint name from the frame
 	switch msg := evt.Frame.GetMessage().(type) {
 	case *common.MessageHeartbeat:
-		r.handleHeartbeat(msg, name)
+		r.handleHeartbeat(msg, endpoint)
 	case *common.MessageGlobalPositionInt:
-		r.handleGlobalPosition(msg, name)
+		r.handleGlobalPosition(msg, endpoint)
 	case *common.MessageAttitude:
-		r.handleAttitude(msg, name)
+		r.handleAttitude(msg, endpoint)
 	case *common.MessageVfrHud:
-		r.handleVfrHud(msg, name)
+		r.handleVfrHud(msg, endpoint)
 	case *common.MessageSysStatus:
-		r.handleSysStatus(msg, name)
+		r.handleSysStatus(msg, endpoint)
 	}
 }
 
 // handleHeartbeat processes heartbeat messages
-func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, sourceName string) {
-	heartbeatMsg := telemetry.NewHeartbeatMessage(sourceName)
-	heartbeatMsg.Status = "connected"
-	heartbeatMsg.Mode = r.getFlightMode(msg.CustomMode)
-	r.handleTelemetryMessage(heartbeatMsg)
+func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string) {
+	envelope := telemetry.TelemetryEnvelope{
+		DroneID:         endpoint,
+		Source:          endpoint,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: 0,
+		// TODO: add fields from message
+	}
+	r.handleTelemetryMessage(envelope)
 }
 
 // handleGlobalPosition processes global position messages
-func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, sourceName string) {
-	positionMsg := telemetry.NewPositionMessage(sourceName)
-	positionMsg.Latitude = float64(msg.Lat) / 1e7
-	positionMsg.Longitude = float64(msg.Lon) / 1e7
-	positionMsg.Altitude = float64(msg.Alt) / 1000.0 // Convert mm to meters
-	r.handleTelemetryMessage(positionMsg)
+func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, source string) {
+	envelope := telemetry.TelemetryEnvelope{
+		DroneID:         source,
+		Source:          source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: 0,
+		MsgID:           msg.GetID(),
+		MsgName:         "GlobalPositionInt",
+		SystemID:        0,
+		ComponentID:     0,
+		Sequence:        0,
+		Fields: map[string]any{
+			"latitude":     msg.Lat,
+			"longitude":    msg.Lon,
+			"altitude":     msg.Alt,
+			"relative_alt": msg.RelativeAlt,
+			"vx":           msg.Vx,
+			"vy":           msg.Vy,
+			"vz":           msg.Vz,
+			"heading":      msg.Hdg,
+		},
+	}
+
+	r.handleTelemetryMessage(envelope)
 }
 
 // handleAttitude processes attitude messages
-func (r *Relay) handleAttitude(msg *common.MessageAttitude, sourceName string) {
-	attitudeMsg := telemetry.NewAttitudeMessage(sourceName)
-	attitudeMsg.Roll = float64(msg.Roll * 180.0 / 3.14159)   // Convert to degrees
-	attitudeMsg.Pitch = float64(msg.Pitch * 180.0 / 3.14159) // Convert to degrees
-	attitudeMsg.Yaw = float64(msg.Yaw * 180.0 / 3.14159)     // Convert to degrees
-	r.handleTelemetryMessage(attitudeMsg)
+func (r *Relay) handleAttitude(msg *common.MessageAttitude, source string) {
+	envelope := telemetry.TelemetryEnvelope{
+		DroneID:         source,
+		Source:          source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: 0,
+		MsgID:           msg.GetID(),
+		MsgName:         "Attitude",
+		SystemID:        0,
+		ComponentID:     0,
+		Sequence:        0,
+		Fields: map[string]any{
+			"pitch":       msg.Pitch,
+			"roll":        msg.Roll,
+			"yaw":         msg.Yaw,
+			"pitch_speed": msg.Pitchspeed,
+			"roll_speed":  msg.Rollspeed,
+			"yaw_speed":   msg.Yawspeed,
+		},
+		// TODO: add fields from message
+	}
+
+	r.handleTelemetryMessage(envelope)
 }
 
 // handleVfrHud processes VFR HUD messages
-func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, sourceName string) {
-	vfrHudMsg := telemetry.NewVfrHudMessage(sourceName)
-	vfrHudMsg.Speed = float64(msg.Groundspeed)
-	vfrHudMsg.Altitude = float64(msg.Alt)
-	vfrHudMsg.Heading = float64(msg.Heading)
-	r.handleTelemetryMessage(vfrHudMsg)
+func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, source string) {
+	envelope := telemetry.TelemetryEnvelope{
+		DroneID:         source,
+		Source:          source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: 0,
+		MsgID:           msg.GetID(),
+		MsgName:         "VFR HUD",
+		SystemID:        0,
+		ComponentID:     0,
+		Sequence:        0,
+		Fields: map[string]any{
+			"ground_speed": msg.Groundspeed,
+			"altitude":     msg.Alt,
+			"heading":      msg.Heading,
+			"throttle":     msg.Throttle,
+			"climb_rate":   msg.Climb,
+		},
+	}
+
+	r.handleTelemetryMessage(envelope)
 }
 
 // handleSysStatus processes system status messages
-func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, sourceName string) {
-	batteryMsg := telemetry.NewBatteryMessage(sourceName)
-	batteryMsg.Battery = float64(msg.BatteryRemaining) / 100.0 // Convert to percentage
-	batteryMsg.Voltage = float64(msg.VoltageBattery) / 1000.0  // Convert mV to V
-	r.handleTelemetryMessage(batteryMsg)
+func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, source string) {
+	envelope := telemetry.TelemetryEnvelope{
+		DroneID:         source,
+		Source:          source,
+		TimestampRelay:  time.Now().UTC(),
+		TimestampDevice: 0,
+		MsgID:           msg.GetID(),
+		MsgName:         "SystemStatus",
+		SystemID:        0,
+		ComponentID:     0,
+		Sequence:        0,
+		Fields: map[string]any{
+			"battery_remaining":               msg.BatteryRemaining,
+			"voltage_battery":                 msg.VoltageBattery,
+			"onboard_control_sensors_present": msg.OnboardControlSensorsPresent.String(),
+			"onboard_control_sensors_enabled": msg.OnboardControlSensorsEnabled.String(),
+			"onboard_control_sensors_health":  msg.OnboardControlSensorsHealth.String(),
+			"load":                            msg.Load,
+			"drop_rate_comm":                  msg.DropRateComm,
+			"errors_comm":                     msg.ErrorsComm,
+			"errors_count1":                   msg.ErrorsCount1,
+			"errors_count2":                   msg.ErrorsCount2,
+			"errors_count3":                   msg.ErrorsCount3,
+			"errors_count4":                   msg.ErrorsCount4,
+			"sensors_present_extended":        msg.OnboardControlSensorsPresentExtended.String(),
+			"sensors_enabled_extended":        msg.OnboardControlSensorsEnabledExtended.String(),
+			"sensors_health_extended":         msg.OnboardControlSensorsHealthExtended.String(),
+		},
+	}
+
+	r.handleTelemetryMessage(envelope)
 }
 
 // getFlightMode converts custom mode to flight mode string
@@ -470,8 +529,8 @@ func (r *Relay) getFlightMode(customMode uint32) string {
 }
 
 // handleTelemetryMessage processes incoming telemetry messages
-func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryMessage) {
-	relayMessagesTotal.WithLabelValues(msg.GetSource(), msg.GetMessageType()).Inc()
+func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
+	relayMessagesTotal.WithLabelValues(msg.DroneID, msg.MsgName).Inc()
 
 	// Forward to all sinks
 	for _, sink := range r.sinks {

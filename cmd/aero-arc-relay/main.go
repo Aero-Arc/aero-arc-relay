@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,13 +21,15 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to load configuration", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	// Create relay instance
 	relayInstance, err := relay.New(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create relay: %v", err)
+		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to create relay", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	// Create context for graceful shutdown
@@ -46,6 +48,7 @@ func main() {
 
 	// Start the relay
 	if err := relayInstance.Start(ctx); err != nil {
-		log.Fatalf("Failed to start relay: %v", err)
+		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to start relay", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 }
