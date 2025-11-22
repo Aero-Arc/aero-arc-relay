@@ -42,7 +42,7 @@ logs/
 configs/config.yaml
 configs/*.yaml
 !configs/config.yaml.example
-
+secrets/*
 # Docker volumes
 docker-data/
 

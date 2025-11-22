@@ -20,9 +20,14 @@ RUN GOOS=linux GOARCH=amd64 go build -o /out/aero-arc-relay ./cmd/aero-arc-relay
 ############################
 # Runtime stage
 ############################
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM debian:12-slim
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates bash && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/aero-arc-relay /usr/local/bin/aero-arc-relay
 COPY --from=builder /src/configs/config.yaml /etc/aero-arc-relay/config.yaml
