@@ -2,122 +2,138 @@ package telemetry
 
 import (
 	"testing"
+	"time"
 )
 
-func TestTelemetryMessageInterface(t *testing.T) {
-	// Test HeartbeatMessage
-	heartbeat := NewHeartbeatMessage("drone-1")
-	heartbeat.Status = "connected"
-	heartbeat.Mode = "AUTO"
-
-	// Test interface methods
-	if heartbeat.GetSource() != "drone-1" {
-		t.Errorf("Expected source 'drone-1', got '%s'", heartbeat.GetSource())
-	}
-
-	if heartbeat.GetMessageType() != "heartbeat" {
-		t.Errorf("Expected message type 'heartbeat', got '%s'", heartbeat.GetMessageType())
-	}
-
-	// Test JSON serialization
-	jsonData, err := heartbeat.ToJSON()
-	if err != nil {
-		t.Errorf("Failed to serialize heartbeat to JSON: %v", err)
-	}
-
-	if len(jsonData) == 0 {
-		t.Error("JSON data is empty")
-	}
-
-	// Test PositionMessage
-	position := NewPositionMessage("drone-1")
-	position.Latitude = 37.7749
-	position.Longitude = -122.4194
-	position.Altitude = 100.5
-
-	if position.GetSource() != "drone-1" {
-		t.Errorf("Expected source 'drone-1', got '%s'", position.GetSource())
-	}
-
-	if position.GetMessageType() != "position" {
-		t.Errorf("Expected message type 'position', got '%s'", position.GetMessageType())
-	}
-
-	// Test JSON serialization
-	jsonData, err = position.ToJSON()
-	if err != nil {
-		t.Errorf("Failed to serialize position to JSON: %v", err)
-	}
-
-	if len(jsonData) == 0 {
-		t.Error("JSON data is empty")
+func makeTestEnvelope(source, msgName string, fields map[string]any) TelemetryEnvelope {
+	return TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
 	}
 }
 
-func TestMessageTypes(t *testing.T) {
-	// Test all message types implement the interface
-	var messages []TelemetryMessage
+func TestTelemetryEnvelopeBasics(t *testing.T) {
+	envelope := makeTestEnvelope("drone-1", "heartbeat", map[string]any{
+		"status": "connected",
+		"mode":   "AUTO",
+	})
 
-	heartbeat := NewHeartbeatMessage("test")
-	heartbeat.Status = "connected"
-	heartbeat.Mode = "AUTO"
-	messages = append(messages, heartbeat)
+	if got := envelope.GetSource(); got != "drone-1" {
+		t.Errorf("GetSource() = %q, want %q", got, "drone-1")
+	}
 
-	position := NewPositionMessage("test")
-	position.Latitude = 37.7749
-	position.Longitude = -122.4194
-	position.Altitude = 100.5
-	messages = append(messages, position)
+	if got := envelope.GetMessageType(); got != "heartbeat" {
+		t.Errorf("GetMessageType() = %q, want %q", got, "heartbeat")
+	}
 
-	attitude := NewAttitudeMessage("test")
-	attitude.Roll = 10.5
-	attitude.Pitch = -5.2
-	attitude.Yaw = 180.0
-	messages = append(messages, attitude)
+	jsonData, err := envelope.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON() error = %v", err)
+	}
+	if len(jsonData) == 0 {
+		t.Fatal("ToJSON() returned empty payload")
+	}
 
-	vfrHud := NewVfrHudMessage("test")
-	vfrHud.Speed = 15.2
-	vfrHud.Altitude = 100.5
-	vfrHud.Heading = 180.0
-	messages = append(messages, vfrHud)
+	binaryData, err := envelope.ToBinary()
+	if err != nil {
+		t.Fatalf("ToBinary() error = %v", err)
+	}
+	if len(binaryData) == 0 {
+		t.Fatal("ToBinary() returned empty payload")
+	}
 
-	battery := NewBatteryMessage("test")
-	battery.Battery = 85.5
-	battery.Voltage = 12.6
-	messages = append(messages, battery)
+	timestamp := envelope.GetTimestamp()
+	if timestamp.IsZero() {
+		t.Fatal("GetTimestamp() returned zero value")
+	}
+}
 
-	// Test that all messages implement the interface correctly
+func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
+	now := time.Now().UTC()
+	messages := []TelemetryMessage{
+		TelemetryEnvelope{
+			DroneID:        "test",
+			Source:         "test",
+			TimestampRelay: now,
+			MsgName:        "heartbeat",
+			Fields: map[string]any{
+				"status": "connected",
+			},
+		},
+		TelemetryEnvelope{
+			DroneID:        "test",
+			Source:         "test",
+			TimestampRelay: now,
+			MsgName:        "position",
+			Fields: map[string]any{
+				"latitude":  37.7749,
+				"longitude": -122.4194,
+				"altitude":  100.5,
+			},
+		},
+		TelemetryEnvelope{
+			DroneID:        "test",
+			Source:         "test",
+			TimestampRelay: now,
+			MsgName:        "attitude",
+			Fields: map[string]any{
+				"roll":  10.5,
+				"pitch": -5.2,
+				"yaw":   180.0,
+			},
+		},
+		TelemetryEnvelope{
+			DroneID:        "test",
+			Source:         "test",
+			TimestampRelay: now,
+			MsgName:        "vfr_hud",
+			Fields: map[string]any{
+				"speed":   15.2,
+				"heading": 180.0,
+			},
+		},
+		TelemetryEnvelope{
+			DroneID:        "test",
+			Source:         "test",
+			TimestampRelay: now,
+			MsgName:        "battery",
+			Fields: map[string]any{
+				"battery": 85.5,
+				"voltage": 12.6,
+			},
+		},
+	}
+
 	for i, msg := range messages {
 		if msg.GetSource() != "test" {
-			t.Errorf("Message %d: Expected source 'test', got '%s'", i, msg.GetSource())
+			t.Errorf("message[%d].GetSource() = %q, want %q", i, msg.GetSource(), "test")
 		}
 
 		if msg.GetTimestamp().IsZero() {
-			t.Errorf("Message %d: Timestamp is zero", i)
+			t.Errorf("message[%d].GetTimestamp() returned zero value", i)
 		}
 
 		if msg.GetMessageType() == "" {
-			t.Errorf("Message %d: Message type is empty", i)
+			t.Errorf("message[%d].GetMessageType() returned empty string", i)
 		}
 
-		// Test JSON serialization
-		jsonData, err := msg.ToJSON()
+		payload, err := msg.ToJSON()
 		if err != nil {
-			t.Errorf("Message %d: Failed to serialize to JSON: %v", i, err)
+			t.Errorf("message[%d].ToJSON() error = %v", i, err)
+		}
+		if len(payload) == 0 {
+			t.Errorf("message[%d].ToJSON() returned empty payload", i)
 		}
 
-		if len(jsonData) == 0 {
-			t.Errorf("Message %d: JSON data is empty", i)
-		}
-
-		// Test binary serialization
-		binaryData, err := msg.ToBinary()
+		blob, err := msg.ToBinary()
 		if err != nil {
-			t.Errorf("Message %d: Failed to serialize to binary: %v", i, err)
+			t.Errorf("message[%d].ToBinary() error = %v", i, err)
 		}
-
-		if len(binaryData) == 0 {
-			t.Errorf("Message %d: Binary data is empty", i)
+		if len(blob) == 0 {
+			t.Errorf("message[%d].ToBinary() returned empty payload", i)
 		}
 	}
 }

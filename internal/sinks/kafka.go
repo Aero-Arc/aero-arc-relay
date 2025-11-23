@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -52,7 +53,7 @@ func NewKafkaSink(cfg *config.KafkaConfig) (*KafkaSink, error) {
 }
 
 // WriteMessage sends telemetry message to Kafka
-func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	err := k.BaseAsyncSink.Enqueue(msg)
 	if err != nil {
 		return fmt.Errorf("failed to enqueue message: %w", err)
@@ -60,9 +61,9 @@ func (k *KafkaSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 	return nil
 }
 
-func (k *KafkaSink) handleMessage(msg telemetry.TelemetryMessage) error {
+func (k *KafkaSink) handleMessage(msg telemetry.TelemetryEnvelope) error {
 	// Serialize message to JSON
-	jsonData, err := msg.ToJSON()
+	jsonData, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to serialize message: %w", err)
 	}
@@ -75,12 +76,12 @@ func (k *KafkaSink) handleMessage(msg telemetry.TelemetryMessage) error {
 			Topic:     &k.topic,
 			Partition: kafka.PartitionAny,
 		},
-		Key:   []byte(msg.GetSource()),
+		Key:   []byte(msg.Source),
 		Value: jsonData,
 		Headers: []kafka.Header{
 			{
 				Key:   "original_timestamp",
-				Value: []byte(msg.GetTimestamp().Format(time.RFC3339Nano)),
+				Value: []byte(msg.TimestampRelay.Format(time.RFC3339Nano)),
 			},
 		},
 	}

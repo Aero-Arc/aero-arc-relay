@@ -2,10 +2,21 @@ package sinks
 
 import (
 	"testing"
+	"time"
 
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
+
+func makeInfluxEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
+	return telemetry.TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
+	}
+}
 
 func TestInfluxDBSinkConfiguration(t *testing.T) {
 	cfg := &config.InfluxDBConfig{
@@ -50,7 +61,9 @@ func TestInfluxDBSinkMessageHandling(t *testing.T) {
 	}
 
 	// Test message creation
-	msg := telemetry.NewHeartbeatMessage("test-drone")
+	msg := makeInfluxEnvelope("test-drone", "heartbeat", map[string]any{
+		"status": "connected",
+	})
 
 	// Test message properties
 	if msg.GetSource() != "test-drone" {
@@ -68,7 +81,9 @@ func TestInfluxDBSinkMessageHandling(t *testing.T) {
 
 func TestInfluxDBSinkPointConversion(t *testing.T) {
 	// Test point conversion logic
-	msg := telemetry.NewPositionMessage("test-drone")
+	msg := makeInfluxEnvelope("test-drone", "position", map[string]any{
+		"latitude": 37.7749,
+	})
 
 	// Test message properties
 	if msg.GetSource() != "test-drone" {
@@ -100,9 +115,9 @@ func TestInfluxDBSinkBatching(t *testing.T) {
 
 func TestInfluxDBSinkSchema(t *testing.T) {
 	// Test different message types
-	heartbeatMsg := telemetry.NewHeartbeatMessage("drone-1")
-	positionMsg := telemetry.NewPositionMessage("drone-1")
-	attitudeMsg := telemetry.NewAttitudeMessage("drone-1")
+	heartbeatMsg := makeInfluxEnvelope("drone-1", "heartbeat", nil)
+	positionMsg := makeInfluxEnvelope("drone-1", "position", nil)
+	attitudeMsg := makeInfluxEnvelope("drone-1", "attitude", nil)
 
 	// Test message types
 	if heartbeatMsg.GetMessageType() != "heartbeat" {

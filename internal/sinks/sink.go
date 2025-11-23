@@ -6,7 +6,7 @@ import (
 
 // Sink defines the interface for data sinks
 type Sink interface {
-	WriteMessage(msg telemetry.TelemetryMessage) error
+	WriteMessage(msg telemetry.TelemetryEnvelope) error
 	Close() error
 }
 

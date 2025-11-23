@@ -10,6 +10,16 @@ import (
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
 
+func makeTimestreamEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
+	return telemetry.TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
+	}
+}
+
 // TestTimestreamSinkConfiguration tests Timestream sink configuration
 func TestTimestreamSinkConfiguration(t *testing.T) {
 	cfg := &config.TimestreamConfig{
@@ -101,8 +111,8 @@ func TestTimestreamConfigDefaults(t *testing.T) {
 // TestTimestreamMessageHandling tests Timestream sink message handling (without actual Timestream calls)
 func TestTimestreamMessageHandling(t *testing.T) {
 	// Create test messages
-	heartbeatMsg := telemetry.NewHeartbeatMessage("test-drone")
-	positionMsg := telemetry.NewPositionMessage("test-drone")
+	heartbeatMsg := makeTimestreamEnvelope("test-drone", "heartbeat", map[string]any{"status": "connected"})
+	positionMsg := makeTimestreamEnvelope("test-drone", "position", map[string]any{"latitude": 37.7749})
 
 	// Test message properties
 	if heartbeatMsg.GetSource() != "test-drone" {
@@ -143,7 +153,7 @@ func TestTimestreamRecordConversion(t *testing.T) {
 	sink := &TimestreamSink{}
 
 	// Test heartbeat message conversion
-	heartbeatMsg := telemetry.NewHeartbeatMessage("drone-1")
+	heartbeatMsg := makeTimestreamEnvelope("drone-1", "heartbeat", map[string]any{"status": "connected"})
 	records := sink.convertToTimestreamRecords(heartbeatMsg)
 
 	if len(records) == 0 {
@@ -170,7 +180,10 @@ func TestTimestreamRecordConversion(t *testing.T) {
 	}
 
 	// Test position message conversion
-	positionMsg := telemetry.NewPositionMessage("drone-1")
+	positionMsg := makeTimestreamEnvelope("drone-1", "position", map[string]any{
+		"latitude":  37.7749,
+		"longitude": -122.4194,
+	})
 	records = sink.convertToTimestreamRecords(positionMsg)
 
 	if len(records) == 0 {

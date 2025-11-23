@@ -2,10 +2,21 @@ package sinks
 
 import (
 	"testing"
+	"time"
 
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
+
+func makePromEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
+	return telemetry.TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
+	}
+}
 
 func TestPrometheusSinkConfiguration(t *testing.T) {
 	cfg := &config.PrometheusConfig{
@@ -50,7 +61,9 @@ func TestPrometheusSinkMessageHandling(t *testing.T) {
 	}
 
 	// Test message creation
-	msg := telemetry.NewHeartbeatMessage("test-drone")
+	msg := makePromEnvelope("test-drone", "heartbeat", map[string]any{
+		"status": "connected",
+	})
 
 	// Test message properties
 	if msg.GetSource() != "test-drone" {
@@ -68,7 +81,9 @@ func TestPrometheusSinkMessageHandling(t *testing.T) {
 
 func TestPrometheusSinkSampleConversion(t *testing.T) {
 	// Test sample conversion logic
-	msg := telemetry.NewPositionMessage("test-drone")
+	msg := makePromEnvelope("test-drone", "position", map[string]any{
+		"latitude": 37.7749,
+	})
 
 	// Test message properties
 	if msg.GetSource() != "test-drone" {
@@ -99,9 +114,9 @@ func TestPrometheusSinkBatching(t *testing.T) {
 
 func TestPrometheusSinkSchema(t *testing.T) {
 	// Test different message types
-	heartbeatMsg := telemetry.NewHeartbeatMessage("drone-1")
-	positionMsg := telemetry.NewPositionMessage("drone-1")
-	attitudeMsg := telemetry.NewAttitudeMessage("drone-1")
+	heartbeatMsg := makePromEnvelope("drone-1", "heartbeat", nil)
+	positionMsg := makePromEnvelope("drone-1", "position", nil)
+	attitudeMsg := makePromEnvelope("drone-1", "attitude", nil)
 
 	// Test message types
 	if heartbeatMsg.GetMessageType() != "heartbeat" {

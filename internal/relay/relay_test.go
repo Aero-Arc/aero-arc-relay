@@ -22,8 +22,8 @@ func TestRelayCreation(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "test-drone",
+					DroneID:  "test-drone",
 					Protocol: "udp",
-					Address:  "127.0.0.1",
 					Port:     14550,
 				},
 			},
@@ -74,8 +74,8 @@ func TestRelayWithMockSink(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "test-drone",
+					DroneID:  "test-drone",
 					Protocol: "udp",
-					Address:  "127.0.0.1",
 					Port:     14550,
 				},
 			},
@@ -94,12 +94,11 @@ func TestRelayWithMockSink(t *testing.T) {
 	}
 
 	// Test message handling
-	heartbeatMsg := telemetry.NewHeartbeatMessage("test-drone")
-	heartbeatMsg.Status = "connected"
-	heartbeatMsg.Mode = "AUTO"
+	heartbeatMsg := telemetry.BuildHeartbeatEnvelope("test-drone", &common.MessageHeartbeat{
+		CustomMode: 3,
+	})
 
 	relay.handleTelemetryMessage(heartbeatMsg)
-
 	// Verify message was processed
 	mockSink := relay.sinks[0].(*mock.MockSink)
 	if mockSink.GetMessageCount() != 1 {
@@ -111,8 +110,8 @@ func TestRelayWithMockSink(t *testing.T) {
 		t.Errorf("Expected source 'test-drone', got '%s'", receivedMsg.GetSource())
 	}
 
-	if receivedMsg.GetMessageType() != "heartbeat" {
-		t.Errorf("Expected message type 'heartbeat', got '%s'", receivedMsg.GetMessageType())
+	if receivedMsg.GetMessageType() != "Heartbeat" {
+		t.Errorf("Expected message type 'Heartbeat', got '%s'", receivedMsg.GetMessageType())
 	}
 }
 
@@ -180,8 +179,11 @@ func TestMessageHandlers(t *testing.T) {
 	}
 
 	msg := mockSink.GetMessages()[0]
-	if msg.GetMessageType() != "heartbeat" {
+	if msg.GetMessageType() != "Heartbeat" {
 		t.Errorf("Expected heartbeat message type, got %s", msg.GetMessageType())
+	}
+	if _, ok := msg.Fields["type"]; !ok {
+		t.Error("Expected heartbeat envelope to include type field")
 	}
 
 	// Test position handler
@@ -196,6 +198,14 @@ func TestMessageHandlers(t *testing.T) {
 		t.Errorf("Expected 2 messages after position, got %d", mockSink.GetMessageCount())
 	}
 
+	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
+	if msg.MsgName != "GlobalPositionInt" {
+		t.Errorf("Expected GlobalPositionInt message, got %s", msg.MsgName)
+	}
+	if _, ok := msg.Fields["latitude"]; !ok {
+		t.Error("Expected position envelope to include latitude field")
+	}
+
 	// Test attitude handler
 	attitude := &common.MessageAttitude{
 		Roll:  0.1,  // ~5.7 degrees
@@ -206,6 +216,14 @@ func TestMessageHandlers(t *testing.T) {
 
 	if mockSink.GetMessageCount() != 3 {
 		t.Errorf("Expected 3 messages after attitude, got %d", mockSink.GetMessageCount())
+	}
+
+	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
+	if msg.MsgName != "Attitude" {
+		t.Errorf("Expected Attitude message, got %s", msg.MsgName)
+	}
+	if _, ok := msg.Fields["roll"]; !ok {
+		t.Error("Expected attitude envelope to include roll field")
 	}
 
 	// Test VFR HUD handler
@@ -220,6 +238,14 @@ func TestMessageHandlers(t *testing.T) {
 		t.Errorf("Expected 4 messages after VFR HUD, got %d", mockSink.GetMessageCount())
 	}
 
+	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
+	if msg.MsgName != "VFR_HUD" {
+		t.Errorf("Expected VFR_HUD message, got %s", msg.MsgName)
+	}
+	if _, ok := msg.Fields["ground_speed"]; !ok {
+		t.Error("Expected VFR_HUD envelope to include ground_speed field")
+	}
+
 	// Test system status handler
 	sysStatus := &common.MessageSysStatus{
 		BatteryRemaining: 85,
@@ -230,6 +256,14 @@ func TestMessageHandlers(t *testing.T) {
 	if mockSink.GetMessageCount() != 5 {
 		t.Errorf("Expected 5 messages after sys status, got %d", mockSink.GetMessageCount())
 	}
+
+	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
+	if msg.MsgName != "SystemStatus" {
+		t.Errorf("Expected SystemStatus message, got %s", msg.MsgName)
+	}
+	if _, ok := msg.Fields["battery_remaining"]; !ok {
+		t.Error("Expected system status envelope to include battery_remaining field")
+	}
 }
 
 // TestMessageTypeSpecificData tests that message handlers create correct message types
@@ -238,7 +272,7 @@ func TestMessageTypeSpecificData(t *testing.T) {
 		sinks: []sinks.Sink{mock.NewMockSink()},
 	}
 
-	// Test heartbeat creates HeartbeatMessage
+	// Test heartbeat creates Heartbeat envelope with basic metadata
 	heartbeat := &common.MessageHeartbeat{
 		CustomMode: 3,
 	}
@@ -247,38 +281,40 @@ func TestMessageTypeSpecificData(t *testing.T) {
 	mockSink := relay.sinks[0].(*mock.MockSink)
 	msg := mockSink.GetMessages()[0]
 
-	if heartbeatMsg, ok := msg.(*telemetry.HeartbeatMessage); ok {
-		if heartbeatMsg.Status != "connected" {
-			t.Errorf("Expected status 'connected', got '%s'", heartbeatMsg.Status)
-		}
-		if heartbeatMsg.Mode != "AUTO" {
-			t.Errorf("Expected mode 'AUTO', got '%s'", heartbeatMsg.Mode)
-		}
-	} else {
-		t.Error("Expected HeartbeatMessage type")
+	if msg.MsgName != "Heartbeat" {
+		t.Fatalf("Expected Heartbeat message, got %s", msg.MsgName)
+	}
+	if msg.Source != "test-drone" {
+		t.Errorf("Expected source 'test-drone', got '%s'", msg.Source)
+	}
+	if _, ok := msg.Fields["type"]; !ok {
+		t.Error("Expected heartbeat envelope to contain type field")
 	}
 
-	// Test position creates PositionMessage
+	// Test position creates GlobalPositionInt envelope with raw values
 	position := &common.MessageGlobalPositionInt{
 		Lat: 377749000,
-		Lon: -1224194000,
+		Lon: -122419400,
 		Alt: 100500,
 	}
 	relay.handleGlobalPosition(position, "test-drone")
 
 	msg = mockSink.GetMessages()[1]
-	if positionMsg, ok := msg.(*telemetry.PositionMessage); ok {
-		if positionMsg.Latitude != 37.7749 {
-			t.Errorf("Expected latitude 37.7749, got %f", positionMsg.Latitude)
-		}
-		if positionMsg.Longitude != -122.4194 {
-			t.Errorf("Expected longitude -122.4194, got %f", positionMsg.Longitude)
-		}
-		if positionMsg.Altitude != 100.5 {
-			t.Errorf("Expected altitude 100.5, got %f", positionMsg.Altitude)
-		}
-	} else {
-		t.Error("Expected PositionMessage type")
+	if msg.MsgName != "GlobalPositionInt" {
+		t.Fatalf("Expected GlobalPositionInt message, got %s", msg.MsgName)
+	}
+	if msg.Source != "test-drone" {
+		t.Errorf("Expected source 'test-drone', got '%s'", msg.Source)
+	}
+
+	if lat, ok := msg.Fields["latitude"].(int32); !ok || lat != position.Lat {
+		t.Errorf("Expected latitude %d, got %v", position.Lat, msg.Fields["latitude"])
+	}
+	if lon, ok := msg.Fields["longitude"].(int32); !ok || lon != position.Lon {
+		t.Errorf("Expected longitude %d, got %v", position.Lon, msg.Fields["longitude"])
+	}
+	if alt, ok := msg.Fields["altitude"].(int32); !ok || alt != position.Alt {
+		t.Errorf("Expected altitude %d, got %v", position.Alt, msg.Fields["altitude"])
 	}
 }
 

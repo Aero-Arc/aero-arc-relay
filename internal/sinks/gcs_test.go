@@ -8,6 +8,16 @@ import (
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
 
+func makeGCSEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
+	return telemetry.TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
+	}
+}
+
 // TestGCSSinkConfiguration tests GCS sink configuration
 func TestGCSSinkConfiguration(t *testing.T) {
 	cfg := &config.GCSConfig{
@@ -85,7 +95,7 @@ func TestGCSConfigDefaults(t *testing.T) {
 // TestGCSMessageHandling tests GCS sink message handling (without actual GCS calls)
 func TestGCSMessageHandling(t *testing.T) {
 	// Create a test message
-	msg := telemetry.NewHeartbeatMessage("test-drone")
+	msg := makeGCSEnvelope("test-drone", "heartbeat", map[string]any{"status": "connected"})
 
 	// Test message properties
 	if msg.GetSource() != "test-drone" {

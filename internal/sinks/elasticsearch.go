@@ -20,7 +20,7 @@ type ElasticsearchSink struct {
 	index         string
 	batchSize     int
 	flushInterval time.Duration
-	buffer        []telemetry.TelemetryMessage
+	buffer        []telemetry.TelemetryEnvelope
 	mu            sync.Mutex
 	lastFlush     time.Time
 	ctx           context.Context
@@ -68,7 +68,7 @@ func NewElasticsearchSink(cfg *config.ElasticsearchConfig) (*ElasticsearchSink, 
 		index:         index,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
-		buffer:        make([]telemetry.TelemetryMessage, 0, batchSize),
+		buffer:        make([]telemetry.TelemetryEnvelope, 0, batchSize),
 		lastFlush:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -81,7 +81,7 @@ func NewElasticsearchSink(cfg *config.ElasticsearchConfig) (*ElasticsearchSink, 
 }
 
 // WriteMessage adds a telemetry message to the batch
-func (e *ElasticsearchSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (e *ElasticsearchSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -123,49 +123,17 @@ func (e *ElasticsearchSink) flushUnsafe() error {
 }
 
 // convertToElasticsearchDocument converts a telemetry message to an Elasticsearch document
-func (e *ElasticsearchSink) convertToElasticsearchDocument(msg telemetry.TelemetryMessage) map[string]interface{} {
+// TODO implement this
+func (e *ElasticsearchSink) convertToElasticsearchDocument(msg telemetry.TelemetryEnvelope) map[string]interface{} {
 	// Base document structure
-	doc := map[string]interface{}{
-		"@timestamp": msg.GetTimestamp(),
-		"source":     msg.GetSource(),
-		"type":       msg.GetMessageType(),
-		"message":    msg.GetMessageType(),
+	_ = map[string]interface{}{ //nolint:govet
+		"@timestamp": msg.TimestampRelay,
+		"source":     msg.Source,
+		"type":       msg.MsgName,
+		"message":    msg.MsgName,
 	}
 
-	// Type-specific field extraction
-	switch m := msg.(type) {
-	case *telemetry.PositionMessage:
-		doc["location"] = map[string]interface{}{
-			"lat": m.Latitude,
-			"lon": m.Longitude,
-		}
-		doc["altitude"] = m.Altitude
-
-	case *telemetry.AttitudeMessage:
-		doc["attitude"] = map[string]interface{}{
-			"roll":  m.Roll,
-			"pitch": m.Pitch,
-			"yaw":   m.Yaw,
-		}
-
-	case *telemetry.VfrHudMessage:
-		doc["speed"] = m.Speed
-		doc["altitude"] = m.Altitude
-		doc["heading"] = m.Heading
-
-	case *telemetry.BatteryMessage:
-		doc["battery"] = map[string]interface{}{
-			"level":   m.Battery,
-			"voltage": m.Voltage,
-		}
-
-	case *telemetry.HeartbeatMessage:
-		doc["heartbeat"] = true
-		doc["flight_mode"] = m.Mode
-		doc["status"] = m.Status
-	}
-
-	return doc
+	return nil
 }
 
 // bulkIndex performs bulk indexing of documents

@@ -98,7 +98,7 @@ func NewGCSSink(cfg *config.GCSConfig) (*GCSSink, error) {
 }
 
 // WriteMessage writes telemetry messages by buffering locally before upload
-func (g *GCSSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (g *GCSSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	err := g.BaseAsyncSink.Enqueue(msg)
 	if err != nil {
 		return fmt.Errorf("failed to enqueue message: %w", err)
@@ -107,7 +107,7 @@ func (g *GCSSink) WriteMessage(msg telemetry.TelemetryMessage) error {
 	return nil
 }
 
-func (g *GCSSink) handleMessage(msg telemetry.TelemetryMessage) error {
+func (g *GCSSink) handleMessage(msg telemetry.TelemetryEnvelope) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 

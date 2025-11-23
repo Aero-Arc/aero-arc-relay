@@ -21,7 +21,7 @@ type TimestreamSink struct {
 	table         string
 	batchSize     int
 	flushInterval time.Duration
-	buffer        []telemetry.TelemetryMessage
+	buffer        []telemetry.TelemetryEnvelope
 	mu            sync.Mutex
 	lastFlush     time.Time
 	ctx           context.Context
@@ -91,7 +91,7 @@ func NewTimestreamSink(cfg *config.TimestreamConfig) (*TimestreamSink, error) {
 		table:         cfg.Table,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
-		buffer:        make([]telemetry.TelemetryMessage, 0, batchSize),
+		buffer:        make([]telemetry.TelemetryEnvelope, 0, batchSize),
 		lastFlush:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -104,7 +104,7 @@ func NewTimestreamSink(cfg *config.TimestreamConfig) (*TimestreamSink, error) {
 }
 
 // WriteMessage adds a telemetry message to the batch
-func (t *TimestreamSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (t *TimestreamSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -153,166 +153,167 @@ func (t *TimestreamSink) flushUnsafe() error {
 }
 
 // convertToTimestreamRecords converts a telemetry message to Timestream records
-func (t *TimestreamSink) convertToTimestreamRecords(msg telemetry.TelemetryMessage) []*timestreamwrite.Record {
-	records := make([]*timestreamwrite.Record, 0)
-	timestamp := msg.GetTimestamp().UnixMilli()
+// TODO: implement this
+func (t *TimestreamSink) convertToTimestreamRecords(msg telemetry.TelemetryEnvelope) []*timestreamwrite.Record {
+	_ = make([]*timestreamwrite.Record, 0) //nolint:govet
+	// timestamp := msg.TimestampRelay.UnixMilli()
 
 	// Common dimensions for all records
-	dimensions := []*timestreamwrite.Dimension{
+	_ = []*timestreamwrite.Dimension{ //nolint:govet
 		{
 			Name:  aws.String("source"),
-			Value: aws.String(msg.GetSource()),
+			Value: aws.String(msg.Source),
 		},
 		{
 			Name:  aws.String("message_type"),
-			Value: aws.String(msg.GetMessageType()),
+			Value: aws.String(msg.MsgName),
 		},
 	}
 
 	// Type-specific measurements
-	switch m := msg.(type) {
-	case *telemetry.PositionMessage:
-		// Latitude measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("latitude"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.7f", m.Latitude)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// switch m := msg.(type) {
+	// case *telemetry.PositionMessage:
+	// 	// Latitude measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("latitude"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.7f", m.Latitude)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Longitude measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("longitude"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.7f", m.Longitude)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Longitude measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("longitude"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.7f", m.Longitude)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Altitude measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("altitude"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Altitude)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Altitude measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("altitude"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Altitude)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-	case *telemetry.AttitudeMessage:
-		// Roll measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("roll"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Roll)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// case *telemetry.AttitudeMessage:
+	// 	// Roll measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("roll"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Roll)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Pitch measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("pitch"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Pitch)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Pitch measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("pitch"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Pitch)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Yaw measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("yaw"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Yaw)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Yaw measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("yaw"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.4f", m.Yaw)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-	case *telemetry.VfrHudMessage:
-		// Speed measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("speed"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Speed)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// case *telemetry.VfrHudMessage:
+	// 	// Speed measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("speed"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Speed)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Altitude measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("altitude"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Altitude)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Altitude measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("altitude"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Altitude)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Heading measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("heading"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Heading)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Heading measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("heading"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Heading)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-	case *telemetry.BatteryMessage:
-		// Battery level measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("battery_level"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Battery)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// case *telemetry.BatteryMessage:
+	// 	// Battery level measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("battery_level"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Battery)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Voltage measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("voltage"),
-			MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Voltage)),
-			MeasureValueType: aws.String("DOUBLE"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// 	// Voltage measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("voltage"),
+	// 		MeasureValue:     aws.String(fmt.Sprintf("%.2f", m.Voltage)),
+	// 		MeasureValueType: aws.String("DOUBLE"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-	case *telemetry.HeartbeatMessage:
-		// Heartbeat as a status measurement
-		records = append(records, &timestreamwrite.Record{
-			Dimensions:       dimensions,
-			MeasureName:      aws.String("heartbeat"),
-			MeasureValue:     aws.String("1"),
-			MeasureValueType: aws.String("BIGINT"),
-			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-			TimeUnit:         aws.String("MILLISECONDS"),
-		})
+	// case *telemetry.HeartbeatMessage:
+	// 	// Heartbeat as a status measurement
+	// 	records = append(records, &timestreamwrite.Record{
+	// 		Dimensions:       dimensions,
+	// 		MeasureName:      aws.String("heartbeat"),
+	// 		MeasureValue:     aws.String("1"),
+	// 		MeasureValueType: aws.String("BIGINT"),
+	// 		Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 		TimeUnit:         aws.String("MILLISECONDS"),
+	// 	})
 
-		// Flight mode as a dimension (if needed as measurement)
-		if m.Mode != "" {
-			records = append(records, &timestreamwrite.Record{
-				Dimensions: append(dimensions, &timestreamwrite.Dimension{
-					Name:  aws.String("flight_mode"),
-					Value: aws.String(m.Mode),
-				}),
-				MeasureName:      aws.String("flight_mode_status"),
-				MeasureValue:     aws.String("1"),
-				MeasureValueType: aws.String("BIGINT"),
-				Time:             aws.String(fmt.Sprintf("%d", timestamp)),
-				TimeUnit:         aws.String("MILLISECONDS"),
-			})
-		}
-	}
+	// 	// Flight mode as a dimension (if needed as measurement)
+	// 	if m.Mode != "" {
+	// 		records = append(records, &timestreamwrite.Record{
+	// 			Dimensions: append(dimensions, &timestreamwrite.Dimension{
+	// 				Name:  aws.String("flight_mode"),
+	// 				Value: aws.String(m.Mode),
+	// 			}),
+	// 			MeasureName:      aws.String("flight_mode_status"),
+	// 			MeasureValue:     aws.String("1"),
+	// 			MeasureValueType: aws.String("BIGINT"),
+	// 			Time:             aws.String(fmt.Sprintf("%d", timestamp)),
+	// 			TimeUnit:         aws.String("MILLISECONDS"),
+	// 		})
+	// 	}
+	// }
 
-	return records
+	return nil
 }
 
 // backgroundFlusher periodically flushes the buffer

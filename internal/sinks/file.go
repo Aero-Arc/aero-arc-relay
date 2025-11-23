@@ -66,7 +66,7 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 }
 
 // WriteMessage writes telemetry message to file
-func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (f *FileSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	return f.BaseAsyncSink.Enqueue(msg)
 }
 
@@ -113,8 +113,7 @@ func (f *FileSink) Close() error {
 	return f.file.Close()
 }
 
-func (f *FileSink) handleMessage(msg telemetry.TelemetryMessage) error {
-	envelope := msg.ToEnvelope()
+func (f *FileSink) handleMessage(envelope telemetry.TelemetryEnvelope) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

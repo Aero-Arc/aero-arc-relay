@@ -8,7 +8,7 @@ import (
 
 // MockSink implements the Sink interface for testing
 type MockSink struct {
-	messages []telemetry.TelemetryMessage
+	messages []telemetry.TelemetryEnvelope
 	closed   bool
 	mu       sync.RWMutex
 }
@@ -16,13 +16,13 @@ type MockSink struct {
 // NewMockSink creates a new mock sink for testing
 func NewMockSink() *MockSink {
 	return &MockSink{
-		messages: make([]telemetry.TelemetryMessage, 0),
+		messages: make([]telemetry.TelemetryEnvelope, 0),
 		closed:   false,
 	}
 }
 
 // WriteMessage implements the sinks.Sink interface
-func (m *MockSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (m *MockSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -43,12 +43,12 @@ func (m *MockSink) Close() error {
 }
 
 // GetMessages returns a copy of all messages received by the sink
-func (m *MockSink) GetMessages() []telemetry.TelemetryMessage {
+func (m *MockSink) GetMessages() []telemetry.TelemetryEnvelope {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	// Return a copy to avoid race conditions
-	messages := make([]telemetry.TelemetryMessage, len(m.messages))
+	messages := make([]telemetry.TelemetryEnvelope, len(m.messages))
 	copy(messages, m.messages)
 	return messages
 }
@@ -66,7 +66,7 @@ func (m *MockSink) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.messages = make([]telemetry.TelemetryMessage, 0)
+	m.messages = make([]telemetry.TelemetryEnvelope, 0)
 }
 
 // IsClosed returns whether the sink has been closed
@@ -77,28 +77,14 @@ func (m *MockSink) IsClosed() bool {
 	return m.closed
 }
 
-// GetMessagesByType returns messages filtered by message type
-func (m *MockSink) GetMessagesByType(msgType string) []telemetry.TelemetryMessage {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var filtered []telemetry.TelemetryMessage
-	for _, msg := range m.messages {
-		if msg.GetMessageType() == msgType {
-			filtered = append(filtered, msg)
-		}
-	}
-	return filtered
-}
-
 // GetMessagesBySource returns messages filtered by source
-func (m *MockSink) GetMessagesBySource(source string) []telemetry.TelemetryMessage {
+func (m *MockSink) GetMessagesBySource(source string) []telemetry.TelemetryEnvelope {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var filtered []telemetry.TelemetryMessage
+	var filtered []telemetry.TelemetryEnvelope
 	for _, msg := range m.messages {
-		if msg.GetSource() == source {
+		if msg.Source == source {
 			filtered = append(filtered, msg)
 		}
 	}
@@ -106,23 +92,23 @@ func (m *MockSink) GetMessagesBySource(source string) []telemetry.TelemetryMessa
 }
 
 // GetLastMessage returns the most recently received message
-func (m *MockSink) GetLastMessage() telemetry.TelemetryMessage {
+func (m *MockSink) GetLastMessage() telemetry.TelemetryEnvelope {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if len(m.messages) == 0 {
-		return nil
+		return telemetry.TelemetryEnvelope{}
 	}
 	return m.messages[len(m.messages)-1]
 }
 
 // GetFirstMessage returns the first received message
-func (m *MockSink) GetFirstMessage() telemetry.TelemetryMessage {
+func (m *MockSink) GetFirstMessage() telemetry.TelemetryEnvelope {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if len(m.messages) == 0 {
-		return nil
+		return telemetry.TelemetryEnvelope{}
 	}
 	return m.messages[0]
 }

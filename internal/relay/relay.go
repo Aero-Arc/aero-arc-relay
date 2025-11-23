@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
@@ -343,124 +342,32 @@ func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
 
 // handleHeartbeat processes heartbeat messages
 func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string) {
-	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         endpoint,
-		Source:          endpoint,
-		TimestampRelay:  time.Now().UTC(),
-		TimestampDevice: 0,
-		// TODO: add fields from message
-	}
+	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleGlobalPosition processes global position messages
 func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, source string) {
-	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         source,
-		Source:          source,
-		TimestampRelay:  time.Now().UTC(),
-		TimestampDevice: 0,
-		MsgID:           msg.GetID(),
-		MsgName:         "GlobalPositionInt",
-		SystemID:        0,
-		ComponentID:     0,
-		Sequence:        0,
-		Fields: map[string]any{
-			"latitude":     msg.Lat,
-			"longitude":    msg.Lon,
-			"altitude":     msg.Alt,
-			"relative_alt": msg.RelativeAlt,
-			"vx":           msg.Vx,
-			"vy":           msg.Vy,
-			"vz":           msg.Vz,
-			"heading":      msg.Hdg,
-		},
-	}
-
+	envelope := telemetry.BuildGlobalPositionIntEnvelope(source, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleAttitude processes attitude messages
 func (r *Relay) handleAttitude(msg *common.MessageAttitude, source string) {
-	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         source,
-		Source:          source,
-		TimestampRelay:  time.Now().UTC(),
-		TimestampDevice: 0,
-		MsgID:           msg.GetID(),
-		MsgName:         "Attitude",
-		SystemID:        0,
-		ComponentID:     0,
-		Sequence:        0,
-		Fields: map[string]any{
-			"pitch":       msg.Pitch,
-			"roll":        msg.Roll,
-			"yaw":         msg.Yaw,
-			"pitch_speed": msg.Pitchspeed,
-			"roll_speed":  msg.Rollspeed,
-			"yaw_speed":   msg.Yawspeed,
-		},
-		// TODO: add fields from message
-	}
-
+	envelope := telemetry.BuildAttitudeEnvelope(source, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleVfrHud processes VFR HUD messages
 func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, source string) {
-	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         source,
-		Source:          source,
-		TimestampRelay:  time.Now().UTC(),
-		TimestampDevice: 0,
-		MsgID:           msg.GetID(),
-		MsgName:         "VFR HUD",
-		SystemID:        0,
-		ComponentID:     0,
-		Sequence:        0,
-		Fields: map[string]any{
-			"ground_speed": msg.Groundspeed,
-			"altitude":     msg.Alt,
-			"heading":      msg.Heading,
-			"throttle":     msg.Throttle,
-			"climb_rate":   msg.Climb,
-		},
-	}
+	envelope := telemetry.BuildVfrHudEnvelope(source, msg)
 
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleSysStatus processes system status messages
 func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, source string) {
-	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         source,
-		Source:          source,
-		TimestampRelay:  time.Now().UTC(),
-		TimestampDevice: 0,
-		MsgID:           msg.GetID(),
-		MsgName:         "SystemStatus",
-		SystemID:        0,
-		ComponentID:     0,
-		Sequence:        0,
-		Fields: map[string]any{
-			"battery_remaining":               msg.BatteryRemaining,
-			"voltage_battery":                 msg.VoltageBattery,
-			"onboard_control_sensors_present": msg.OnboardControlSensorsPresent.String(),
-			"onboard_control_sensors_enabled": msg.OnboardControlSensorsEnabled.String(),
-			"onboard_control_sensors_health":  msg.OnboardControlSensorsHealth.String(),
-			"load":                            msg.Load,
-			"drop_rate_comm":                  msg.DropRateComm,
-			"errors_comm":                     msg.ErrorsComm,
-			"errors_count1":                   msg.ErrorsCount1,
-			"errors_count2":                   msg.ErrorsCount2,
-			"errors_count3":                   msg.ErrorsCount3,
-			"errors_count4":                   msg.ErrorsCount4,
-			"sensors_present_extended":        msg.OnboardControlSensorsPresentExtended.String(),
-			"sensors_enabled_extended":        msg.OnboardControlSensorsEnabledExtended.String(),
-			"sensors_health_extended":         msg.OnboardControlSensorsHealthExtended.String(),
-		},
-	}
-
+	envelope := telemetry.BuildSysStatusEnvelope(source, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
