@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/github/license/Aero-Arc/aero-arc-relay)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/Aero-Arc/aero-arc-relay?include_prereleases)](https://github.com/Aero-Arc/aero-arc-relay/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Aero-Arc/aero-arc-relay)](https://goreportcard.com/report/github.com/Aero-Arc/aero-arc-relay)
+[![codecov](https://codecov.io/gh/Aero-Arc/aero-arc-relay/branch/main/graph/badge.svg)](https://codecov.io/gh/Aero-Arc/aero-arc-relay)
+
 
 Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.  
 It provides reliable ingest, structured envelopes, multi-cloud fan-out, and operational visibility — without requiring teams to build brittle one-off pipelines.
