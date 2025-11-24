@@ -14,7 +14,7 @@ import (
 // BaseSink implements Sink interface
 type BaseAsyncSink struct {
 	wg      sync.WaitGroup
-	queue   chan telemetry.TelemetryMessage
+	queue   chan telemetry.TelemetryEnvelope
 	policy  BackpressurePolicy
 	metrics *asyncSinkMetrics
 }
@@ -68,7 +68,7 @@ func normalizeBackpressurePolicy(policy string) BackpressurePolicy {
 	}
 }
 
-func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(telemetry.TelemetryMessage) error) *BaseAsyncSink {
+func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(telemetry.TelemetryEnvelope) error) *BaseAsyncSink {
 	if buffer <= 0 {
 		buffer = defaultQueueSize
 	}
@@ -76,7 +76,7 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 	labels := prometheus.Labels{"sink": sinkName}
 
 	b := &BaseAsyncSink{
-		queue:  make(chan telemetry.TelemetryMessage, buffer),
+		queue:  make(chan telemetry.TelemetryEnvelope, buffer),
 		policy: normalizeBackpressurePolicy(policy),
 		metrics: &asyncSinkMetrics{
 			enqueued: sinkEnqueuedTotal.With(labels),
@@ -103,7 +103,7 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 	return b
 }
 
-func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryMessage) error {
+func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryEnvelope) error {
 	switch b.policy {
 	case BackpressurePolicyBlock:
 		b.queue <- msg

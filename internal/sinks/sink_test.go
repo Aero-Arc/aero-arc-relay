@@ -9,14 +9,25 @@ import (
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
 
+func makeEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
+	return telemetry.TelemetryEnvelope{
+		DroneID:        source,
+		Source:         source,
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        msgName,
+		Fields:         fields,
+	}
+}
+
 // TestSinkInterface tests the basic sink interface functionality
 func TestSinkInterface(t *testing.T) {
 	mockSink := mock.NewMockSink()
 
 	// Test WriteMessage
-	heartbeatMsg := telemetry.NewHeartbeatMessage("test-drone")
-	heartbeatMsg.Status = "connected"
-	heartbeatMsg.Mode = "AUTO"
+	heartbeatMsg := makeEnvelope("test-drone", "heartbeat", map[string]any{
+		"status": "connected",
+		"mode":   "AUTO",
+	})
 
 	err := mockSink.WriteMessage(heartbeatMsg)
 	if err != nil {
@@ -43,48 +54,53 @@ func TestMultipleMessageTypes(t *testing.T) {
 	mockSink := mock.NewMockSink()
 
 	// Test HeartbeatMessage
-	heartbeat := telemetry.NewHeartbeatMessage("drone-1")
-	heartbeat.Status = "connected"
-	heartbeat.Mode = "AUTO"
+	heartbeat := makeEnvelope("drone-1", "heartbeat", map[string]any{
+		"status": "connected",
+		"mode":   "AUTO",
+	})
 	err := mockSink.WriteMessage(heartbeat)
 	if err != nil {
 		t.Errorf("Failed to write heartbeat: %v", err)
 	}
 
 	// Test PositionMessage
-	position := telemetry.NewPositionMessage("drone-1")
-	position.Latitude = 37.7749
-	position.Longitude = -122.4194
-	position.Altitude = 100.5
+	position := makeEnvelope("drone-1", "position", map[string]any{
+		"latitude":  37.7749,
+		"longitude": -122.4194,
+		"altitude":  100.5,
+	})
 	err = mockSink.WriteMessage(position)
 	if err != nil {
 		t.Errorf("Failed to write position: %v", err)
 	}
 
 	// Test AttitudeMessage
-	attitude := telemetry.NewAttitudeMessage("drone-1")
-	attitude.Roll = 10.5
-	attitude.Pitch = -5.2
-	attitude.Yaw = 180.0
+	attitude := makeEnvelope("drone-1", "attitude", map[string]any{
+		"roll":  10.5,
+		"pitch": -5.2,
+		"yaw":   180.0,
+	})
 	err = mockSink.WriteMessage(attitude)
 	if err != nil {
 		t.Errorf("Failed to write attitude: %v", err)
 	}
 
 	// Test VfrHudMessage
-	vfrHud := telemetry.NewVfrHudMessage("drone-1")
-	vfrHud.Speed = 15.2
-	vfrHud.Altitude = 100.5
-	vfrHud.Heading = 180.0
+	vfrHud := makeEnvelope("drone-1", "vfr_hud", map[string]any{
+		"speed":    15.2,
+		"altitude": 100.5,
+		"heading":  180.0,
+	})
 	err = mockSink.WriteMessage(vfrHud)
 	if err != nil {
 		t.Errorf("Failed to write VFR HUD: %v", err)
 	}
 
 	// Test BatteryMessage
-	battery := telemetry.NewBatteryMessage("drone-1")
-	battery.Battery = 85.5
-	battery.Voltage = 12.6
+	battery := makeEnvelope("drone-1", "battery", map[string]any{
+		"battery": 85.5,
+		"voltage": 12.6,
+	})
 	err = mockSink.WriteMessage(battery)
 	if err != nil {
 		t.Errorf("Failed to write battery: %v", err)
@@ -115,9 +131,10 @@ func TestConcurrentWrites(t *testing.T) {
 	// Send messages concurrently
 	for i := 0; i < numMessages; i++ {
 		go func(id int) {
-			heartbeat := telemetry.NewHeartbeatMessage("test-drone")
-			heartbeat.Status = "connected"
-			heartbeat.Mode = "AUTO"
+			heartbeat := makeEnvelope("test-drone", "heartbeat", map[string]any{
+				"status": "connected",
+				"mode":   "AUTO",
+			})
 
 			err := mockSink.WriteMessage(heartbeat)
 			if err != nil {
@@ -142,7 +159,7 @@ func TestSinkAfterClose(t *testing.T) {
 	mockSink := mock.NewMockSink()
 
 	// Write a message before closing
-	heartbeat := telemetry.NewHeartbeatMessage("test-drone")
+	heartbeat := makeEnvelope("test-drone", "heartbeat", map[string]any{})
 	err := mockSink.WriteMessage(heartbeat)
 	if err != nil {
 		t.Errorf("Failed to write message before close: %v", err)
@@ -155,7 +172,7 @@ func TestSinkAfterClose(t *testing.T) {
 	}
 
 	// Try to write after closing (should not error but also not store)
-	position := telemetry.NewPositionMessage("test-drone")
+	position := makeEnvelope("test-drone", "position", map[string]any{})
 	err = mockSink.WriteMessage(position)
 	if err != nil {
 		t.Errorf("Write after close should not error: %v", err)
@@ -229,9 +246,10 @@ func TestKafkaSinkConfiguration(t *testing.T) {
 
 // TestMessageSerialization tests that messages can be serialized to JSON
 func TestMessageSerialization(t *testing.T) {
-	heartbeat := telemetry.NewHeartbeatMessage("test-drone")
-	heartbeat.Status = "connected"
-	heartbeat.Mode = "AUTO"
+	heartbeat := makeEnvelope("test-drone", "heartbeat", map[string]any{
+		"status": "connected",
+		"mode":   "AUTO",
+	})
 
 	jsonData, err := heartbeat.ToJSON()
 	if err != nil {
@@ -257,10 +275,11 @@ func TestMessageSerialization(t *testing.T) {
 
 // TestMessageBinarySerialization tests that messages can be serialized to binary
 func TestMessageBinarySerialization(t *testing.T) {
-	position := telemetry.NewPositionMessage("test-drone")
-	position.Latitude = 37.7749
-	position.Longitude = -122.4194
-	position.Altitude = 100.5
+	position := makeEnvelope("test-drone", "position", map[string]any{
+		"latitude":  37.7749,
+		"longitude": -122.4194,
+		"altitude":  100.5,
+	})
 
 	binaryData, err := position.ToBinary()
 	if err != nil {
@@ -280,7 +299,7 @@ func TestMessageBinarySerialization(t *testing.T) {
 // TestMessageTimestampConsistency tests that message timestamps are consistent
 func TestMessageTimestampConsistency(t *testing.T) {
 	before := time.Now()
-	heartbeat := telemetry.NewHeartbeatMessage("test-drone")
+	heartbeat := makeEnvelope("test-drone", "heartbeat", map[string]any{})
 	after := time.Now()
 
 	timestamp := heartbeat.GetTimestamp()
@@ -292,7 +311,7 @@ func TestMessageTimestampConsistency(t *testing.T) {
 // TestMessageSourceConsistency tests that message sources are consistent
 func TestMessageSourceConsistency(t *testing.T) {
 	source := "test-drone"
-	heartbeat := telemetry.NewHeartbeatMessage(source)
+	heartbeat := makeEnvelope(source, "heartbeat", map[string]any{})
 
 	if heartbeat.GetSource() != source {
 		t.Errorf("Expected source '%s', got '%s'", source, heartbeat.GetSource())

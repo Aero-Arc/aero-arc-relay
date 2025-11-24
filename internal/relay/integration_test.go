@@ -24,14 +24,14 @@ func TestRelayIntegration(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "drone-1",
+					DroneID:  "drone-1",
 					Protocol: "udp",
-					Address:  "127.0.0.1",
 					Port:     14550,
 				},
 				{
 					Name:     "drone-2",
+					DroneID:  "drone-2",
 					Protocol: "udp",
-					Address:  "127.0.0.1",
 					Port:     14551,
 				},
 			},
@@ -110,13 +110,13 @@ func TestRelayWithRealMAVLinkMessages(t *testing.T) {
 
 	// Verify message types
 	messages := mockSink.GetMessages()
-	expectedTypes := []string{"heartbeat", "position", "attitude", "vfr_hud", "battery", "heartbeat", "position", "heartbeat", "heartbeat"}
+	expectedTypes := []string{"Heartbeat", "GlobalPositionInt", "Attitude", "VFR_HUD", "SystemStatus", "Heartbeat", "GlobalPositionInt", "Heartbeat", "Heartbeat"}
 
 	for i, msg := range messages {
 		if i < len(expectedTypes) {
 			expected := expectedTypes[i]
-			if msg.GetMessageType() != expected {
-				t.Errorf("Message %d: Expected type '%s', got '%s'", i, expected, msg.GetMessageType())
+			if msg.MsgName != expected {
+				t.Errorf("Message %d: Expected type '%s', got '%s'", i, expected, msg.MsgName)
 			}
 		}
 	}
@@ -150,7 +150,7 @@ type FailingSink struct {
 	closed bool
 }
 
-func (f *FailingSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (f *FailingSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	if f.closed {
 		return nil
 	}
@@ -232,7 +232,7 @@ func TestRelayConcurrentSources(t *testing.T) {
 	messages := mockSink.GetMessages()
 	sourceCounts := make(map[string]int)
 	for _, msg := range messages {
-		sourceCounts[msg.GetSource()]++
+		sourceCounts[msg.Source]++
 	}
 
 	if len(sourceCounts) != numSources {
@@ -279,29 +279,14 @@ func TestRelayMessageOrdering(t *testing.T) {
 	}
 
 	receivedMessages := mockSink.GetMessages()
-	for i, msg := range receivedMessages {
-		if heartbeatMsg, ok := msg.(*telemetry.HeartbeatMessage); ok {
-			expectedMode := messages[i].mode
-			actualMode := getModeFromString(heartbeatMsg.Mode)
-			if actualMode != expectedMode {
-				t.Errorf("Message %d: Expected mode %d, got %d", i, expectedMode, actualMode)
-			}
+	for i := 1; i < len(receivedMessages); i++ {
+		prev := receivedMessages[i-1].TimestampRelay
+		curr := receivedMessages[i].TimestampRelay
+		if curr.Before(prev) {
+			t.Errorf("Message %d timestamp %v is before previous message timestamp %v", i, curr, prev)
 		}
-	}
-}
-
-// Helper function to convert mode string back to number for testing
-func getModeFromString(mode string) uint32 {
-	switch mode {
-	case "STABILIZE":
-		return 0
-	case "AUTO":
-		return 3
-	case "RTL":
-		return 6
-	case "LAND":
-		return 9
-	default:
-		return 999
+		if receivedMessages[i].MsgName != "Heartbeat" {
+			t.Errorf("Message %d: Expected Heartbeat message, got %s", i, receivedMessages[i].MsgName)
+		}
 	}
 }

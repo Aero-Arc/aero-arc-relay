@@ -98,11 +98,11 @@ func NewS3Sink(cfg *config.S3Config) (*S3Sink, error) {
 }
 
 // WriteMessage uploads telemetry message to S3
-func (s *S3Sink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (s *S3Sink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	return s.BaseAsyncSink.Enqueue(msg)
 }
 
-func (s *S3Sink) handleMessage(msg telemetry.TelemetryMessage) error {
+func (s *S3Sink) handleMessage(msg telemetry.TelemetryEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

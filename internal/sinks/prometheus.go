@@ -21,7 +21,7 @@ type PrometheusSink struct {
 	instance      string
 	batchSize     int
 	flushInterval time.Duration
-	buffer        []telemetry.TelemetryMessage
+	buffer        []telemetry.TelemetryEnvelope
 	mu            sync.Mutex
 	lastFlush     time.Time
 	ctx           context.Context
@@ -75,7 +75,7 @@ func NewPrometheusSink(cfg *config.PrometheusConfig) (*PrometheusSink, error) {
 		instance:      instance,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
-		buffer:        make([]telemetry.TelemetryMessage, 0, batchSize),
+		buffer:        make([]telemetry.TelemetryEnvelope, 0, batchSize),
 		lastFlush:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -88,7 +88,7 @@ func NewPrometheusSink(cfg *config.PrometheusConfig) (*PrometheusSink, error) {
 }
 
 // WriteMessage adds a telemetry message to the batch
-func (p *PrometheusSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (p *PrometheusSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -129,45 +129,21 @@ func (p *PrometheusSink) flushUnsafe() error {
 }
 
 // convertToPrometheusSample converts a telemetry message to a Prometheus sample
-func (p *PrometheusSink) convertToPrometheusSample(msg telemetry.TelemetryMessage) model.Sample {
+// TODO: implement this
+func (p *PrometheusSink) convertToPrometheusSample(msg telemetry.TelemetryEnvelope) model.Sample {
 	// Create metric name based on message type
-	metricName := fmt.Sprintf("mavlink_%s", msg.GetMessageType())
+	metricName := fmt.Sprintf("mavlink_%s", msg.MsgName)
 
 	// Create labels
 	labels := model.LabelSet{
 		"job":      model.LabelValue(p.job),
 		"instance": model.LabelValue(p.instance),
-		"source":   model.LabelValue(msg.GetSource()),
-		"type":     model.LabelValue(msg.GetMessageType()),
+		"source":   model.LabelValue(msg.Source),
+		"type":     model.LabelValue(msg.MsgName),
 	}
 
 	// Create metric value
 	var value model.SampleValue = 1 // Default value
-
-	// Type-specific value extraction
-	switch m := msg.(type) {
-	case *telemetry.PositionMessage:
-		value = model.SampleValue(m.Altitude)
-		metricName = "mavlink_altitude"
-
-	case *telemetry.AttitudeMessage:
-		value = model.SampleValue(m.Roll)
-		metricName = "mavlink_roll"
-
-	case *telemetry.VfrHudMessage:
-		value = model.SampleValue(m.Speed)
-		metricName = "mavlink_speed"
-
-	case *telemetry.BatteryMessage:
-		value = model.SampleValue(m.Battery)
-		metricName = "mavlink_battery"
-
-	case *telemetry.HeartbeatMessage:
-		value = model.SampleValue(1)
-		metricName = "mavlink_heartbeat"
-		labels["flight_mode"] = model.LabelValue(m.Mode)
-		labels["status"] = model.LabelValue(m.Status)
-	}
 
 	// Create Prometheus sample
 	sample := model.Sample{
@@ -175,7 +151,7 @@ func (p *PrometheusSink) convertToPrometheusSample(msg telemetry.TelemetryMessag
 			model.MetricNameLabel: model.LabelValue(metricName),
 		},
 		Value:     value,
-		Timestamp: model.Time(msg.GetTimestamp().Unix() * 1000), // Convert to milliseconds
+		Timestamp: model.Time(msg.TimestampRelay.Unix() * 1000), // Convert to milliseconds
 	}
 
 	// Add labels to metric

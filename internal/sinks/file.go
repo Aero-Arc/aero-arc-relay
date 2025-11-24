@@ -2,9 +2,11 @@ package sinks
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -64,7 +66,7 @@ func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 }
 
 // WriteMessage writes telemetry message to file
-func (f *FileSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (f *FileSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	return f.BaseAsyncSink.Enqueue(msg)
 }
 
@@ -111,7 +113,8 @@ func (f *FileSink) Close() error {
 	return f.file.Close()
 }
 
-func (f *FileSink) handleMessage(msg telemetry.TelemetryMessage) error {
+func (f *FileSink) handleMessage(envelope telemetry.TelemetryEnvelope) error {
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -122,21 +125,25 @@ func (f *FileSink) handleMessage(msg telemetry.TelemetryMessage) error {
 		}
 	}
 
+	if envelope.Fields == nil {
+		envelope.Fields = map[string]any{}
+	}
+
 	// Write message based on format
 	switch f.config.Format {
 	case "json":
-		return f.writeJSON(msg)
+		return f.writeJSON(envelope)
 	case "csv":
-		return f.writeCSV(msg)
+		return f.writeCSV(envelope)
 	case "binary":
-		return f.writeBinary(msg)
+		return f.writeBinary(envelope)
 	default:
 		return fmt.Errorf("unsupported format: %s", f.config.Format)
 	}
 }
 
 // writeJSON writes message in JSON format
-func (f *FileSink) writeJSON(msg telemetry.TelemetryMessage) error {
+func (f *FileSink) writeJSON(msg telemetry.TelemetryEnvelope) error {
 	jsonData, err := msg.ToJSON()
 	if err != nil {
 		return err
@@ -147,68 +154,40 @@ func (f *FileSink) writeJSON(msg telemetry.TelemetryMessage) error {
 }
 
 // writeCSV writes message in CSV format
-func (f *FileSink) writeCSV(msg telemetry.TelemetryMessage) error {
-	// Convert telemetry message to CSV row based on message type
-	var row []string
-
-	switch m := msg.(type) {
-	case *telemetry.HeartbeatMessage:
-		row = []string{
-			m.Timestamp.Format(time.RFC3339),
-			m.Source,
-			m.GetMessageType(),
-			m.Status,
-			m.Mode,
-		}
-	case *telemetry.PositionMessage:
-		row = []string{
-			m.Timestamp.Format(time.RFC3339),
-			m.Source,
-			m.GetMessageType(),
-			fmt.Sprintf("%.6f", m.Latitude),
-			fmt.Sprintf("%.6f", m.Longitude),
-			fmt.Sprintf("%.2f", m.Altitude),
-		}
-	case *telemetry.AttitudeMessage:
-		row = []string{
-			m.Timestamp.Format(time.RFC3339),
-			m.Source,
-			m.GetMessageType(),
-			fmt.Sprintf("%.2f", m.Roll),
-			fmt.Sprintf("%.2f", m.Pitch),
-			fmt.Sprintf("%.2f", m.Yaw),
-		}
-	case *telemetry.VfrHudMessage:
-		row = []string{
-			m.Timestamp.Format(time.RFC3339),
-			m.Source,
-			m.GetMessageType(),
-			fmt.Sprintf("%.2f", m.Speed),
-			fmt.Sprintf("%.2f", m.Altitude),
-			fmt.Sprintf("%.2f", m.Heading),
-		}
-	case *telemetry.BatteryMessage:
-		row = []string{
-			m.Timestamp.Format(time.RFC3339),
-			m.Source,
-			m.GetMessageType(),
-			fmt.Sprintf("%.2f", m.Battery),
-			fmt.Sprintf("%.2f", m.Voltage),
-		}
-	default:
-		// Generic row for unknown message types
-		row = []string{
-			msg.GetTimestamp().Format(time.RFC3339),
-			msg.GetSource(),
-			msg.GetMessageType(),
-		}
+func (f *FileSink) writeCSV(msg telemetry.TelemetryEnvelope) error {
+	if f.writer == nil {
+		return fmt.Errorf("csv writer not configured")
 	}
 
-	return f.writer.Write(row)
+	fieldsJSON, err := json.Marshal(msg.Fields)
+	if err != nil {
+		return fmt.Errorf("failed to marshal fields to JSON: %w", err)
+	}
+
+	row := []string{
+		msg.TimestampRelay.Format(time.RFC3339Nano),
+		strconv.FormatFloat(msg.TimestampDevice, 'f', -1, 64),
+		msg.DroneID,
+		msg.Source,
+		msg.MsgName,
+		strconv.FormatUint(uint64(msg.MsgID), 10),
+		strconv.Itoa(int(msg.SystemID)),
+		strconv.Itoa(int(msg.ComponentID)),
+		strconv.FormatUint(uint64(msg.Sequence), 10),
+		string(fieldsJSON),
+		string(msg.Raw),
+	}
+
+	if err := f.writer.Write(row); err != nil {
+		return err
+	}
+
+	f.writer.Flush()
+	return f.writer.Error()
 }
 
 // writeBinary writes message in binary format
-func (f *FileSink) writeBinary(msg telemetry.TelemetryMessage) error {
+func (f *FileSink) writeBinary(msg telemetry.TelemetryEnvelope) error {
 	binaryData, err := msg.ToBinary()
 	if err != nil {
 		return err

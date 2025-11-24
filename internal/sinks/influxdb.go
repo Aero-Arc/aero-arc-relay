@@ -19,7 +19,7 @@ type InfluxDBSink struct {
 	writeAPI      api.WriteAPI
 	batchSize     int
 	flushInterval time.Duration
-	buffer        []telemetry.TelemetryMessage
+	buffer        []telemetry.TelemetryEnvelope
 	mu            sync.Mutex
 	lastFlush     time.Time
 	ctx           context.Context
@@ -63,7 +63,7 @@ func NewInfluxDBSink(cfg *config.InfluxDBConfig) (*InfluxDBSink, error) {
 		writeAPI:      writeAPI,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
-		buffer:        make([]telemetry.TelemetryMessage, 0, batchSize),
+		buffer:        make([]telemetry.TelemetryEnvelope, 0, batchSize),
 		lastFlush:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -76,7 +76,7 @@ func NewInfluxDBSink(cfg *config.InfluxDBConfig) (*InfluxDBSink, error) {
 }
 
 // WriteMessage adds a telemetry message to the batch
-func (i *InfluxDBSink) WriteMessage(msg telemetry.TelemetryMessage) error {
+func (i *InfluxDBSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -118,50 +118,24 @@ func (i *InfluxDBSink) flushUnsafe() error {
 }
 
 // convertToInfluxPoint converts a telemetry message to an InfluxDB point
-func (i *InfluxDBSink) convertToInfluxPoint(msg telemetry.TelemetryMessage) *write.Point {
+// TODO: implement this
+func (i *InfluxDBSink) convertToInfluxPoint(msg telemetry.TelemetryEnvelope) *write.Point {
 	// Create point with measurement name based on message type
-	measurement := fmt.Sprintf("mavlink_%s", msg.GetMessageType())
+	measurement := fmt.Sprintf("mavlink_%s", msg.MsgName)
 
 	// Create tags (metadata)
 	tags := map[string]string{
-		"source": msg.GetSource(),
-		"type":   msg.GetMessageType(),
+		"source": msg.Source,
+		"type":   msg.MsgName,
 	}
 
 	// Create fields (measurements)
 	fields := map[string]interface{}{}
 
-	// Type-specific field extraction
-	switch m := msg.(type) {
-	case *telemetry.PositionMessage:
-		fields["latitude"] = m.Latitude
-		fields["longitude"] = m.Longitude
-		fields["altitude"] = m.Altitude
-
-	case *telemetry.AttitudeMessage:
-		fields["roll"] = m.Roll
-		fields["pitch"] = m.Pitch
-		fields["yaw"] = m.Yaw
-
-	case *telemetry.VfrHudMessage:
-		fields["speed"] = m.Speed
-		fields["altitude"] = m.Altitude
-		fields["heading"] = m.Heading
-
-	case *telemetry.BatteryMessage:
-		fields["battery"] = m.Battery
-		fields["voltage"] = m.Voltage
-
-	case *telemetry.HeartbeatMessage:
-		fields["heartbeat"] = 1
-		tags["flight_mode"] = m.Mode
-		tags["status"] = m.Status
-	}
-
 	// Create InfluxDB point
-	point := write.NewPoint(measurement, tags, fields, msg.GetTimestamp())
+	_ = write.NewPoint(measurement, tags, fields, msg.TimestampRelay) //nolint:govet
 
-	return point
+	return nil
 }
 
 // backgroundFlusher periodically flushes the buffer
