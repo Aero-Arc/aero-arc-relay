@@ -4,36 +4,31 @@ relay:
 mavlink:
   dialect: "common"  # common, ardupilot, px4, etc.
   endpoints:
-    - name: "drone-udp"
+    - name: "drone-1"
       protocol: "udp"
-      mode: "server"
-      address: "0.0.0.0"
+      drone_id: "drone-alpha"
+      mode: "1:1"
       port: 14550
-    # - name: "drone-tcp"
-    #   protocol: "tcp"
-    #   mode: "server"
-    #   address: "0.0.0.0"
-    #   port: 5760
 
 sinks:
-  # file:
-  #   path: "/var/log/aero-arc-relay"
-  #   prefix: "telemetry"
-  #   format: "json"
-  #   rotation_interval: "24h"
+  file:
+    path: "/tmp/log/aero-arc-relay"
+    prefix: "telemetry"
+    format: "json"
+    rotation_interval: "24h"
   # gcs:
   #   bucket: "aero-arc-telemetry-data-dev"
   #   project_id: "aero-arc-relay"
-  #   credentials: "/path/to/service-account.json"  # Path to GCP service account JSON file
+  #   credentials: "/home/makinje/aero-arc-relay/secrets/service-account.json"  # Path to GCP service account JSON file
   #   prefix: "telemetry"
   #   flush_interval: "30s"
-  s3:
-    bucket: "your-telemetry-bucket"
-    region: "us-west-2"
-    access_key: "${AWS_ACCESS_KEY_ID}"  # Use environment variables, never hardcode
-    secret_key: "${AWS_SECRET_ACCESS_KEY}"
-    prefix: "telemetry"
-    flush_interval: "1m"
+  # s3:
+  #   bucket: "aero-arc-relay-telemetry"
+  #   region: "us-east-1"
+  #   access_key: "${AWS_ACCESS_KEY_ID}"  # Use environment variables, never hardcode
+  #   secret_key: "${AWS_SECRET_ACCESS_KEY}"
+  #   prefix: "telemetry"
+  #   flush_interval: "1m"
   # kafka:
   #   brokers:
   #     - "localhost:9092"  # For local Kafka container
