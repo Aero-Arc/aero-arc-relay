@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"context"
 	"sync"
 
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
@@ -34,7 +35,7 @@ func (m *MockSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 }
 
 // Close implements the sinks.Sink interface
-func (m *MockSink) Close() error {
+func (m *MockSink) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -113,7 +114,7 @@ func (k *KafkaSink) handleMessage(msg telemetry.TelemetryEnvelope) error {
 }
 
 // Close closes the Kafka sink
-func (k *KafkaSink) Close() error {
+func (k *KafkaSink) Close(ctx context.Context) error {
 	k.BaseAsyncSink.Close()
 
 	// Flush any remaining messages before closing

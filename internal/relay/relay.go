@@ -103,6 +103,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	shutdown := func() {
+		// Close MAVLink connections
 		r.connections.Range(func(key, value any) bool {
 			node, ok := value.(*gomavlib.Node)
 			if !ok {
@@ -113,15 +114,23 @@ func (r *Relay) Start(ctx context.Context) error {
 			return true
 		})
 
+		// Shutdown sinks with timeout
+		baseCtx := context.Background()
 		for _, sink := range r.sinks {
-			sink.Close()
+			sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+			if err := sink.Close(sinkCtx); err != nil {
+				slog.LogAttrs(context.Background(), slog.LevelWarn,
+					"Error closing sink", slog.String("error", err.Error()))
+			}
+			cancel() // Release resources
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		// Shutdown HTTP server
+		httpCtx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
 		defer cancel()
-
-		if err := metricsServer.Shutdown(ctx); err != nil {
-			slog.LogAttrs(context.Background(), slog.LevelWarn, "metrics server error when shutting down", slog.String("error", err.Error()))
+		if err := metricsServer.Shutdown(httpCtx); err != nil {
+			slog.LogAttrs(context.Background(), slog.LevelWarn,
+				"Metrics server error when shutting down", slog.String("error", err.Error()))
 		}
 	}
 

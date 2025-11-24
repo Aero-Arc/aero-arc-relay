@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestSinkInterface(t *testing.T) {
 	}
 
 	// Test Close
-	err = mockSink.Close()
+	err = mockSink.Close(context.Background())
 	if err != nil {
 		t.Errorf("Failed to close sink: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestSinkAfterClose(t *testing.T) {
 	}
 
 	// Close the sink
-	err = mockSink.Close()
+	err = mockSink.Close(context.Background())
 	if err != nil {
 		t.Errorf("Failed to close sink: %v", err)
 	}

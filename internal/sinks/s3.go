@@ -123,7 +123,7 @@ func (s *S3Sink) RotateAndUpload() error {
 }
 
 // Close closes the S3 sink
-func (s *S3Sink) Close() error {
+func (s *S3Sink) Close(ctx context.Context) error {
 	s.stopOnce.Do(func() {
 		close(s.closeChan)
 	})
@@ -139,7 +139,7 @@ func (s *S3Sink) Close() error {
 		return err
 	}
 
-	if err := s.fileSink.Close(); err != nil {
+	if err := s.fileSink.Close(ctx); err != nil {
 		return fmt.Errorf("failed to close file sink: %w", err)
 	}
 

@@ -207,7 +207,7 @@ func (e *ElasticsearchSink) backgroundFlusher() {
 }
 
 // Close closes the Elasticsearch sink
-func (e *ElasticsearchSink) Close() error {
+func (e *ElasticsearchSink) Close(ctx context.Context) error {
 	// Cancel background flusher
 	e.cancel()
 

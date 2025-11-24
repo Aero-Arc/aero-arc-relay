@@ -30,7 +30,7 @@ All sinks implement the `Sink` interface:
 ```go
 type Sink interface {
     WriteMessage(msg telemetry.TelemetryMessage) error
-    Close() error
+    Close(ctx context.Context) error
 }
 ```
 
@@ -254,7 +254,7 @@ To add a new sink:
        // implementation
    }
    
-   func (s *MySink) Close() error {
+   func (s *MySink) Close(ctx context.Context) error {
        // cleanup
    }
    ```

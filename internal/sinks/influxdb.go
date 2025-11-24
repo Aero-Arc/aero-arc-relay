@@ -163,7 +163,7 @@ func (i *InfluxDBSink) backgroundFlusher() {
 }
 
 // Close closes the InfluxDB sink
-func (i *InfluxDBSink) Close() error {
+func (i *InfluxDBSink) Close(ctx context.Context) error {
 	// Cancel background flusher
 	i.cancel()
 

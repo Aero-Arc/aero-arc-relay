@@ -199,7 +199,7 @@ func (b *BigQuerySink) backgroundFlusher() {
 }
 
 // Close closes the BigQuery sink
-func (b *BigQuerySink) Close() error {
+func (b *BigQuerySink) Close(ctx context.Context) error {
 	// Cancel background flusher
 	b.cancel()
 

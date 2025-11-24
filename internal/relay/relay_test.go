@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -377,7 +378,7 @@ func TestRelayShutdown(t *testing.T) {
 func (r *Relay) Close() {
 	// Close all sinks
 	for _, sink := range r.sinks {
-		sink.Close()
+		sink.Close(context.Background())
 	}
 }
 

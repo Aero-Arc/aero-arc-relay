@@ -123,7 +123,7 @@ func (g *GCSSink) RotateAndUpload() error {
 }
 
 // Close stops background workers and flushes remaining data
-func (g *GCSSink) Close() error {
+func (g *GCSSink) Close(ctx context.Context) error {
 	g.stopOnce.Do(func() {
 		close(g.closeChan)
 	})
@@ -139,7 +139,7 @@ func (g *GCSSink) Close() error {
 		return err
 	}
 
-	if err := g.fileSink.Close(); err != nil {
+	if err := g.fileSink.Close(ctx); err != nil {
 		return fmt.Errorf("failed to close file sink: %w", err)
 	}
 

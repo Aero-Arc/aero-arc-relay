@@ -187,7 +187,7 @@ func (p *PrometheusSink) backgroundFlusher() {
 }
 
 // Close closes the Prometheus sink
-func (p *PrometheusSink) Close() error {
+func (p *PrometheusSink) Close(ctx context.Context) error {
 	// Cancel background flusher
 	p.cancel()
 

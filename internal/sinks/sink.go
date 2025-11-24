@@ -1,13 +1,15 @@
 package sinks
 
 import (
+	"context"
+
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
 
 // Sink defines the interface for data sinks
 type Sink interface {
 	WriteMessage(msg telemetry.TelemetryEnvelope) error
-	Close() error
+	Close(ctx context.Context) error
 }
 
 // SinkType represents the type of sink

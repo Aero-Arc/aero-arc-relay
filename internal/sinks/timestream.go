@@ -341,7 +341,7 @@ func (t *TimestreamSink) backgroundFlusher() {
 }
 
 // Close closes the Timestream sink
-func (t *TimestreamSink) Close() error {
+func (t *TimestreamSink) Close(ctx context.Context) error {
 	// Cancel background flusher
 	t.cancel()
 

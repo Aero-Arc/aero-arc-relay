@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -101,7 +102,7 @@ func (f *FileSink) GetLastRotation() time.Time {
 }
 
 // Close closes the file sink
-func (f *FileSink) Close() error {
+func (f *FileSink) Close(ctx context.Context) error {
 	f.BaseAsyncSink.Close()
 
 	f.mu.Lock()

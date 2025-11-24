@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -157,7 +158,7 @@ func (f *FailingSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
 	return fmt.Errorf("simulated sink failure")
 }
 
-func (f *FailingSink) Close() error {
+func (f *FailingSink) Close(ctx context.Context) error {
 	f.closed = true
 	return nil
 }
