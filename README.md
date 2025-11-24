@@ -3,8 +3,30 @@
 </p>
 
 # Aero Arc Relay
+[![Go Version](https://img.shields.io/github/go-mod/go-version/makinje/aero-arc-relay)](go.mod)
+[![License](https://img.shields.io/github/license/makinje/aero-arc-relay)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/makinje/aero-arc-relay)](https://github.com/makinje/aero-arc-relay/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/makinje/aero-arc-relay)](https://goreportcard.com/report/github.com/makinje/aero-arc-relay)
 
-A production-ready Go-based telemetry relay that ingests MAVLink traffic and fans it out to multiple cloud storage and streaming platforms. Designed for reliability, scalability, and operational excellence.
+Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.  
+It provides reliable ingest, structured envelopes, multi-cloud fan-out, and operational visibility — without requiring teams to build brittle one-off pipelines.
+
+Robotics teams today still hand-roll telemetry ingestion, buffering, and cloud storage logic.  
+It results in silent data loss, blocked pipelines, fragile backpressure behavior, and no unified format across UAVs, research rigs, and SITL.
+
+Aero Arc Relay solves that.
+
+It is a **high-confidence, async-buffered, fault-tolerant** telemetry relay written in Go, designed for:
+
+- drone fleets & robotics platforms  
+- research labs & autonomy teams  
+- cloud robotics infrastructure  
+- real-time telemetry dashboards  
+- edge-to-cloud ingest pipelines  
+
+Relay handles MAVLink concurrency and message parsing, applies a unified envelope format, and delivers data to S3, GCS, Kafka, or local storage with structured logs, metrics, and health probes for orchestration.
+
+Whether you're running a single SITL instance or a fleet of autonomous aircraft, Aero Arc Relay is the ingestion backbone you plug in first — before analytics, dashboards, autonomy, or ML-based insights.
 
 ## Highlights
 
@@ -19,40 +41,6 @@ A production-ready Go-based telemetry relay that ingests MAVLink traffic and fan
 - **Graceful shutdown** with context cancellation for clean container restarts
 - **Environment variable support** for secure credential management
 - **Structured logging** with configurable levels and outputs
-
-## Architecture
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Drone/UAV     │    │   Ground Station│    │   Edge Agent    │
-│   (MAVLink)     │    │   (MAVLink)     │    │   (MAVLink)     │
-└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
-          │                      │                      │
-          └──────────────────────┼──────────────────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │    Aero Arc Relay       │
-                    │  ┌─────────────────────┐│
-                    │  │   MAVLink Handler   ││
-                    │  │   (gomavlib)        ││
-                    │  └─────────────────────┘│
-                    │  ┌─────────────────────┐│
-                    │  │  Telemetry Parser   ││
-                    │  │  (Envelope Builder) ││
-                    │  └─────────────────────┘│
-                    │  ┌─────────────────────┐│
-                    │  │   Data Sinks        ││
-                    │  │   (Async Buffered)  ││
-                    │  └─────────────────────┘│
-                    └────────────┬────────────┘
-                                 │
-          ┌───────────────────────┼───────────────────────┐
-          │                       │                       │
-    ┌─────▼─────┐        ┌────────▼───────┐      ┌────────▼──────┐
-    │   AWS S3  │        │  Apache Kafka  │      │  File Storage │
-    │  GCS/GCP  │        │  (Streaming)   │      │   (Local)     │
-    └───────────┘        └────────────────┘      └───────────────┘
-```
 
 ## Quick Start
 
@@ -144,15 +132,13 @@ mavlink:
       mode: "1:1"           # 1:1 or multi
       port: 14550           # Required for UDP/TCP
       # address: "0.0.0.0"  # Optional: defaults to 0.0.0.0 for server mode
-    - name: "ground-station"
-      protocol: "serial"
-      address: "/dev/ttyUSB0"
-      baud_rate: 57600
 ```
 
 **Endpoint Modes:**
 - `1:1`: One-to-one connection mode
 - `multi`: Multi-connection mode for handling multiple clients
+
+> **Note:** v0.1 supports the following endpoint modes: 1:1
 
 **Protocols:**
 - `udp`: UDP server/client mode
@@ -162,8 +148,6 @@ mavlink:
 ### Data Sinks
 
 > **Note:** v0.1 supports the following sinks: AWS S3, Google Cloud Storage, Apache Kafka, and Local File. Additional sinks may be available in future versions.
-
-#### S3 Configuration
 
 ```yaml
 sinks:
@@ -177,50 +161,6 @@ sinks:
     queue_size: 1000
     backpressure_policy: "drop"  # drop or block
 ```
-
-**Note:** If `access_key` and `secret_key` are empty, the sink will use the default AWS credential chain (IAM roles, environment variables, `~/.aws/credentials`).
-
-#### Google Cloud Storage Configuration
-
-```yaml
-sinks:
-  gcs:
-    bucket: "your-gcs-telemetry-bucket"
-    project_id: "your-gcp-project"
-    credentials: "/path/to/service-account.json"  # Optional: uses ADC if not provided
-    prefix: "telemetry"
-    flush_interval: "30s"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### Kafka Configuration
-
-```yaml
-sinks:
-  kafka:
-    brokers:
-      - "localhost:9092"
-      - "localhost:9093"
-    topic: "telemetry-data"
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-#### File Configuration
-
-```yaml
-sinks:
-  file:
-    path: "/var/log/aero-arc-relay"
-    prefix: "telemetry"
-    format: "json"  # json, csv, binary
-    rotation_interval: "24h"  # 24h, 1h, 30m, etc.
-    queue_size: 1000
-    backpressure_policy: "drop"
-```
-
-See `configs/config.yaml.example` for complete configuration examples.
 
 ### Environment Variables
 
@@ -264,160 +204,16 @@ The relay uses a unified `TelemetryEnvelope` format for all messages:
 }
 ```
 
-**Supported MAVLink Messages:**
-- `Heartbeat` - System status and mode
-- `GlobalPositionInt` - GPS position and velocity
-- `Attitude` - Orientation and angular rates
-- `VFR_HUD` - Visual flight rules HUD data
-- `SystemStatus` - Battery, sensors, and system health
-
-## Development
-
-### Project Structure
-
-```
-aero-arc-relay/
-├── cmd/aero-arc-relay/     # Main application entry point
-├── internal/
-│   ├── config/             # Configuration management
-│   ├── relay/              # Core relay logic
-│   └── sinks/              # Data sink implementations
-├── pkg/
-│   └── telemetry/          # Telemetry envelope structures
-├── configs/                # Configuration files
-├── assets/                 # Logo and assets
-└── Dockerfile              # Container build definition
-```
-
-### Building
-
-```bash
-# Build binary
-go build -o bin/aero-arc-relay cmd/aero-arc-relay/main.go
-
-# Build for multiple platforms
-make build-all
-
-# Build Docker image
-docker build -t aeroarc/relay:latest .
-```
-
-### Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run with coverage
-go test -cover ./...
-
-# Run with race detection
-go test -race ./...
-
-# Run integration tests
-go test ./internal/relay -tags=integration
-```
-
-### Code Quality
-
-```bash
-# Format code
-go fmt ./...
-
-# Run linter
-golangci-lint run
-
-# Run static analysis
-staticcheck ./...
-```
-
 ## Monitoring
 
 ### Metrics Endpoint
 
 Prometheus metrics are exposed at `http://localhost:2112/metrics`:
 
-**Key Metrics:**
-- `aero_relay_messages_total{source,msg_name}` - Total messages processed
-- `aero_relay_sink_errors_total{sink}` - Sink write errors
-- `aero_sink_queue_length{sink}` - Current queue depth
-- `aero_sink_enqueued_total{sink}` - Messages enqueued
-- `aero_sink_dropped_total{sink}` - Messages dropped (backpressure)
-
 ### Health Endpoints
 
 - **`/healthz`** - Liveness probe (always 200 if process is running)
 - **`/readyz`** - Readiness probe (200 once sinks are initialized)
-
-### Logging
-
-Structured logging with configurable levels:
-
-```yaml
-logging:
-  level: "info"      # debug, info, warn, error
-  format: "json"     # json, text
-  output: "stdout"   # stdout, file
-  file: "/var/log/aero-arc-relay/app.log"  # Optional: for file output
-```
-
-## Production Deployment
-
-### Graceful Shutdown
-
-The relay supports graceful shutdown with context cancellation:
-- Sinks have a 30-second timeout for cleanup
-- HTTP server has a 10-second timeout for in-flight requests
-- MAVLink connections are closed cleanly
-
-### Container Considerations
-
-- **Ports**: Expose UDP port 14550 for MAVLink and TCP port 2112 for metrics
-- **Volumes**: Mount config file or use environment variables
-- **Resources**: Minimal resource requirements; adjust based on message volume
-- **Health Checks**: Use `/healthz` and `/readyz` endpoints
-
-### Kubernetes Example
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: aero-arc-relay
-spec:
-  replicas: 1
-  template:
-    spec:
-      containers:
-      - name: relay
-        image: aeroarc/relay:latest
-        ports:
-        - containerPort: 14550
-          protocol: UDP
-        - containerPort: 2112
-          protocol: TCP
-        env:
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: aws-credentials
-              key: access-key-id
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: aws-credentials
-              key: secret-access-key
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 2112
-          initialDelaySeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 2112
-          initialDelaySeconds: 5
-```
 
 ## Contributing
 
