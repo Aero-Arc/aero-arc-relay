@@ -3,9 +3,9 @@
 </p>
 
 # Aero Arc Relay
-[![Go Version](https://img.shields.io/github/go-mod/go-version/makinje/aero-arc-relay)](go.mod)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/makinje/aero-arc-relay?filename=go.mod)](go.mod)
 [![License](https://img.shields.io/github/license/makinje/aero-arc-relay)](LICENSE)
-[![GitHub Release](https://img.shields.io/github/v/release/makinje/aero-arc-relay)](https://github.com/makinje/aero-arc-relay/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/makinje/aero-arc-relay?include_prereleases)](https://github.com/makinje/aero-arc-relay/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/makinje/aero-arc-relay)](https://goreportcard.com/report/github.com/makinje/aero-arc-relay)
 
 Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.  
