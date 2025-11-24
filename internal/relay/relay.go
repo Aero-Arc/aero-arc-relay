@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
@@ -80,22 +81,6 @@ func (r *Relay) Start(ctx context.Context) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
-	shutdown := func() {
-		r.connections.Range(func(key, value any) bool {
-			node, ok := value.(*gomavlib.Node)
-			if !ok {
-				return true
-			}
-
-			node.Close()
-			return true
-		})
-
-		for _, sink := range r.sinks {
-			sink.Close()
-		}
-	}
-
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -112,9 +97,37 @@ func (r *Relay) Start(ctx context.Context) error {
 		w.Write([]byte(`{"status":"ok"}`))
 	}))
 
+	metricsServer := &http.Server{
+		Addr:    ":2112",
+		Handler: nil,
+	}
+
+	shutdown := func() {
+		r.connections.Range(func(key, value any) bool {
+			node, ok := value.(*gomavlib.Node)
+			if !ok {
+				return true
+			}
+
+			node.Close()
+			return true
+		})
+
+		for _, sink := range r.sinks {
+			sink.Close()
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer cancel()
+
+		if err := metricsServer.Shutdown(ctx); err != nil {
+			slog.LogAttrs(context.Background(), slog.LevelWarn, "metrics server error when shutting down", slog.String("error", err.Error()))
+		}
+	}
+
 	go func() {
-		if err := http.ListenAndServe(":2112", nil); err != nil && err != http.ErrServerClosed {
-			log.Printf("metrics server stopped: %v", err)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.LogAttrs(context.Background(), slog.LevelInfo, "metrics server stopped", slog.String("error", err.Error()))
 		}
 	}()
 
