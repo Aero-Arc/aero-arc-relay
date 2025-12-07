@@ -83,6 +83,7 @@ type SinksConfig struct {
 	Elasticsearch *ElasticsearchConfig `yaml:"elasticsearch,omitempty"`
 	Kafka         *KafkaConfig         `yaml:"kafka,omitempty"`
 	File          *FileConfig          `yaml:"file,omitempty"`
+	NATS          *NATSConfig          `yaml:"nats,omitempty"`
 }
 
 // S3Config contains S3 sink configuration
@@ -189,6 +190,29 @@ type FileConfig struct {
 	RotationInterval   time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
 	QueueSize          int           `yaml:"queue_size"`
 	BackpressurePolicy string        `yaml:"backpressure_policy"`
+}
+
+// NATSConfig contains NATS JetStream sink configuration
+type NATSConfig struct {
+	URL                string        `yaml:"url"`
+	Subject            string        `yaml:"subject"`            // Template: "{entity_id}.mavlink" or static "mavlink.telemetry"
+	Token              string        `yaml:"token,omitempty"`    // JWT token for auth
+	CredsFile          string        `yaml:"creds_file,omitempty"` // Path to credentials file
+	QueueSize          int           `yaml:"queue_size"`
+	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Stream             *StreamConfig `yaml:"stream,omitempty"`   // JetStream configuration
+}
+
+// StreamConfig contains NATS JetStream stream configuration
+type StreamConfig struct {
+	Name        string   `yaml:"name"`                    // Stream name
+	Subjects    []string `yaml:"subjects"`                // Subject patterns for the stream
+	Storage     string   `yaml:"storage,omitempty"`       // "memory" or "file"
+	Replicas    int      `yaml:"replicas,omitempty"`      // Number of replicas
+	MaxAge      string   `yaml:"max_age,omitempty"`       // Message retention period
+	MaxBytes    int64    `yaml:"max_bytes,omitempty"`     // Max bytes stored
+	MaxMsgs     int64    `yaml:"max_msgs,omitempty"`      // Max messages stored
+	Compression bool     `yaml:"compression,omitempty"`   // Enable compression
 }
 
 // LoggingConfig contains logging configuration
