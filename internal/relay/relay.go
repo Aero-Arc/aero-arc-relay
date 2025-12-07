@@ -162,91 +162,17 @@ func (r *Relay) ready() bool {
 
 // initializeSinks sets up all configured data sinks
 func (r *Relay) initializeSinks() error {
-	// Initialize S3 sink if configured
-	if r.config.Sinks.S3 != nil {
-		s3Sink, err := sinks.NewS3Sink(r.config.Sinks.S3)
-		if err != nil {
-			return fmt.Errorf("failed to create S3 sink: %w", err)
-		}
-		r.sinks = append(r.sinks, s3Sink)
+	factory := sinks.NewSinkFactory()
+	
+	configuredSinks, err := factory.CreateConfiguredSinks(r.config)
+	if err != nil {
+		return fmt.Errorf("failed to create sinks: %w", err)
 	}
 
-	// Initialize GCS sink if configured
-	if r.config.Sinks.GCS != nil {
-		gcsSink, err := sinks.NewGCSSink(r.config.Sinks.GCS)
-		if err != nil {
-			return fmt.Errorf("failed to create GCS sink: %w", err)
-		}
-		r.sinks = append(r.sinks, gcsSink)
-	}
-
-	// Initialize BigQuery sink if configured
-	if r.config.Sinks.BigQuery != nil {
-		bigquerySink, err := sinks.NewBigQuerySink(r.config.Sinks.BigQuery)
-		if err != nil {
-			return fmt.Errorf("failed to create BigQuery sink: %w", err)
-		}
-		r.sinks = append(r.sinks, bigquerySink)
-	}
-
-	// Initialize Timestream sink if configured
-	if r.config.Sinks.Timestream != nil {
-		timestreamSink, err := sinks.NewTimestreamSink(r.config.Sinks.Timestream)
-		if err != nil {
-			return fmt.Errorf("failed to create Timestream sink: %w", err)
-		}
-		r.sinks = append(r.sinks, timestreamSink)
-	}
-
-	// Initialize InfluxDB sink if configured
-	if r.config.Sinks.InfluxDB != nil {
-		influxdbSink, err := sinks.NewInfluxDBSink(r.config.Sinks.InfluxDB)
-		if err != nil {
-			return fmt.Errorf("failed to create InfluxDB sink: %w", err)
-		}
-		r.sinks = append(r.sinks, influxdbSink)
-	}
-
-	// Initialize Prometheus sink if configured
-	if r.config.Sinks.Prometheus != nil {
-		prometheusSink, err := sinks.NewPrometheusSink(r.config.Sinks.Prometheus)
-		if err != nil {
-			return fmt.Errorf("failed to create Prometheus sink: %w", err)
-		}
-		r.sinks = append(r.sinks, prometheusSink)
-	}
-
-	// Initialize Elasticsearch sink if configured
-	if r.config.Sinks.Elasticsearch != nil {
-		elasticsearchSink, err := sinks.NewElasticsearchSink(r.config.Sinks.Elasticsearch)
-		if err != nil {
-			return fmt.Errorf("failed to create Elasticsearch sink: %w", err)
-		}
-		r.sinks = append(r.sinks, elasticsearchSink)
-	}
-
-	// Initialize Kafka sink if configured
-	if r.config.Sinks.Kafka != nil {
-		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)
-		if err != nil {
-			return fmt.Errorf("failed to create Kafka sink: %w", err)
-		}
-		r.sinks = append(r.sinks, kafkaSink)
-	}
-
-	// Initialize file sink if configured
-	if r.config.Sinks.File != nil {
-		fileSink, err := sinks.NewFileSink(r.config.Sinks.File)
-		if err != nil {
-			return fmt.Errorf("failed to create file sink: %w", err)
-		}
-		r.sinks = append(r.sinks, fileSink)
-	}
-
-	if len(r.sinks) == 0 {
-		return fmt.Errorf("no sinks configured")
-	}
+	r.sinks = configuredSinks
 	r.sinksInitialized = true
+	
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "Sinks initialized", slog.Int("count", len(r.sinks)))
 	return nil
 }
 
