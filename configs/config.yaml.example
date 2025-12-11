@@ -6,11 +6,44 @@ mavlink:
   endpoints:
     - name: "drone-1"
       protocol: "udp"
-      drone_id: "drone-alpha"
+      drone_id: "drone-alpha-uuid"
       mode: "1:1"
       port: 14550
+    # - name: "drone-2"
+    #   protocol: "udp"
+    #   drone_id: "drone-beta-uuid"
+    #   mode: "1:1"
+    #   port: 14551
 
 sinks:
+  nats:
+    url: "nats://localhost:4222"
+    subject: "constellation.telemetry.{entity_id}.{message_type}" # 1:1 mode pattern
+    token: "${NATS_TOKEN}" # JWT token for authentication (from env)
+    # creds_file: "/path/to/nats.creds"  # Alternative auth method
+    queue_size: 1000
+    backpressure_policy: "drop"
+    stream:
+      name: "CONSTELLATION_TELEMETRY"
+      subjects:
+        - "constellation.telemetry.>"
+      storage: "file" # "memory" or "file"
+      max_age: "24h"
+      max_msgs: 1000000
+      compression: true
+    kv:
+      bucket: "CONSTELLATION_GLOBAL_STATE"
+      key_pattern: "{entity_id}.mavlink" # Key: drone-alpha.mavlink
+      description: "MAVLink device state for latest state"
+      storage: "file" # "memory" or "file"
+      ttl: "1h" # Values expire after 1 hour of no updates
+      # message_types:  # Optional: defaults to all state-relevant types
+      #   - "Heartbeat"
+      #   - "GlobalPositionInt"
+      #   - "Attitude"
+      #   - "SystemStatus"
+      #   - "VFR_HUD"
+
   file:
     path: "/tmp/log/aero-arc-relay"
     prefix: "telemetry"
@@ -36,5 +69,5 @@ sinks:
 
 logging:
   level: "info"
-  format: "json"
+  format: "text"
   output: "stdout"
