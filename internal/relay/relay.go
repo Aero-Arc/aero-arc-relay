@@ -29,6 +29,7 @@ type Relay struct {
 	config           *config.Config
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
+	endpointDroneIDs sync.Map // map[string]string - endpoint name -> drone_id (entity_id)
 	sinksInitialized bool
 }
 
@@ -202,6 +203,8 @@ func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []err
 			continue
 		}
 		r.connections.Store(endpoint.Name, node)
+		// Store the drone_id (entity_id) mapping for this endpoint
+		r.endpointDroneIDs.Store(endpoint.Name, endpoint.DroneID)
 		processed = append(processed, endpoint.Name)
 	}
 
@@ -266,56 +269,74 @@ func (r *Relay) processMessages(ctx context.Context, endpoint string) {
 				continue
 			}
 
+			if parseErr, ok := evt.(*gomavlib.EventParseError); ok {
+				slog.LogAttrs(context.Background(), slog.LevelWarn, "MAVLink parse error",
+					slog.String("endpoint", endpoint),
+					slog.String("error", parseErr.Error.Error()))
+				continue
+			}
+
 			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
 		}
 	}
 }
 
+// getDroneID returns the configured drone_id (entity_id) for an endpoint name
+func (r *Relay) getDroneID(endpointName string) string {
+	if droneID, ok := r.endpointDroneIDs.Load(endpointName); ok {
+		return droneID.(string)
+	}
+	// Fallback to endpoint name if not found (shouldn't happen in 1:1 mode)
+	return endpointName
+}
+
 // handleFrame processes a MAVLink frame
 func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
+	// Get the configured drone_id (entity_id) for this endpoint
+	droneID := r.getDroneID(endpoint)
+
 	// Determine source endpoint name from the frame
 	switch msg := evt.Frame.GetMessage().(type) {
 	case *common.MessageHeartbeat:
-		r.handleHeartbeat(msg, endpoint)
+		r.handleHeartbeat(msg, endpoint, droneID)
 	case *common.MessageGlobalPositionInt:
-		r.handleGlobalPosition(msg, endpoint)
+		r.handleGlobalPosition(msg, endpoint, droneID)
 	case *common.MessageAttitude:
-		r.handleAttitude(msg, endpoint)
+		r.handleAttitude(msg, endpoint, droneID)
 	case *common.MessageVfrHud:
-		r.handleVfrHud(msg, endpoint)
+		r.handleVfrHud(msg, endpoint, droneID)
 	case *common.MessageSysStatus:
-		r.handleSysStatus(msg, endpoint)
+		r.handleSysStatus(msg, endpoint, droneID)
 	}
 }
 
 // handleHeartbeat processes heartbeat messages
-func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string) {
-	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, msg)
+func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string, droneID string) {
+	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleGlobalPosition processes global position messages
-func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, source string) {
-	envelope := telemetry.BuildGlobalPositionIntEnvelope(source, msg)
+func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, endpoint string, droneID string) {
+	envelope := telemetry.BuildGlobalPositionIntEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleAttitude processes attitude messages
-func (r *Relay) handleAttitude(msg *common.MessageAttitude, source string) {
-	envelope := telemetry.BuildAttitudeEnvelope(source, msg)
+func (r *Relay) handleAttitude(msg *common.MessageAttitude, endpoint string, droneID string) {
+	envelope := telemetry.BuildAttitudeEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleVfrHud processes VFR HUD messages
-func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, source string) {
-	envelope := telemetry.BuildVfrHudEnvelope(source, msg)
-
+func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, endpoint string, droneID string) {
+	envelope := telemetry.BuildVfrHudEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleSysStatus processes system status messages
-func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, source string) {
-	envelope := telemetry.BuildSysStatusEnvelope(source, msg)
+func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, endpoint string, droneID string) {
+	envelope := telemetry.BuildSysStatusEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 

@@ -218,13 +218,13 @@ type StreamConfig struct {
 
 // KVConfig contains NATS KeyValue store configuration for device state
 type KVConfig struct {
-	Bucket      string   `yaml:"bucket"`                // KV bucket name
-	KeyPattern  string   `yaml:"key_pattern"`           // Key pattern: "{entity_id}.mavlink"
-	TTL         string   `yaml:"ttl,omitempty"`         // Value TTL (e.g., "1h", "24h")
-	MaxBytes    int64    `yaml:"max_bytes,omitempty"`   // Max bytes for bucket
-	Replicas    int      `yaml:"replicas,omitempty"`    // Number of replicas
-	Storage     string   `yaml:"storage,omitempty"`     // "memory" or "file"
-	Description string   `yaml:"description,omitempty"` // Bucket description
+	Bucket       string   `yaml:"bucket"`                  // KV bucket name
+	KeyPattern   string   `yaml:"key_pattern"`             // Key pattern: "{entity_id}.mavlink"
+	TTL          string   `yaml:"ttl,omitempty"`           // Value TTL (e.g., "1h", "24h")
+	MaxBytes     int64    `yaml:"max_bytes,omitempty"`     // Max bytes for bucket
+	Replicas     int      `yaml:"replicas,omitempty"`      // Number of replicas
+	Storage      string   `yaml:"storage,omitempty"`       // "memory" or "file"
+	Description  string   `yaml:"description,omitempty"`   // Bucket description
 	MessageTypes []string `yaml:"message_types,omitempty"` // Message types to track (e.g., ["Heartbeat", "GlobalPositionInt"])
 }
 

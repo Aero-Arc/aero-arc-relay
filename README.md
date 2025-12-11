@@ -34,6 +34,7 @@ Whether you're running a single SITL instance or a fleet of autonomous aircraft,
 
 - **MAVLink ingest** via gomavlib (UDP/TCP/Serial) with support for multiple dialects
 - **NATS JetStream streaming** with entity-specific subjects (`constellation.telemetry.{entity_id}`)
+- **Device State Tracking** via NATS Key-Value stores (latest values for GPS, battery, attitude, etc.)
 - **Data sinks** with async queues and backpressure controls:
   - **NATS JetStream** - Modern streaming platform with persistence and replay
   - AWS S3 - Cloud object storage
@@ -188,6 +189,24 @@ sinks:
 **Subject Patterns:**
 - **1:1 mode**: `constellation.telemetry.{entity_id}` → `constellation.telemetry.drone-alpha`
 - **Multi mode**: `constellation.telemetry.{org_id}` → `constellation.telemetry.fleet-001`
+
+#### NATS JetStream KV (Device State)
+
+Configure a Key-Value bucket to track the *latest* aggregated state of each device. This is ideal for dashboards needing "current status" without replaying streams.
+
+```yaml
+sinks:
+  nats:
+    # ... standard connection config ...
+    kv:
+      bucket: "mavlink_state"
+      key_pattern: "{drone_id}"        # Key template (supported: {drone_id}, {entity_id}, {source})
+      description: "Current state of drone fleet"
+      ttl: "24h"                       # Time-to-live for stale keys
+      storage: "file"                  # "memory" or "file"
+      max_bytes: 104857600             # Max bucket size (100MB)
+      replicas: 1
+```
 
 #### Cloud Storage
 
