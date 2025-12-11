@@ -16,11 +16,11 @@ import (
 
 // NATSSink implements the Sink interface for NATS JetStream
 type NATSSink struct {
-	nc            *nats.Conn
-	js            nats.JetStreamContext
+	nc             *nats.Conn
+	js             nats.JetStreamContext
 	subjectPattern string
 	streamName     string
-	base          *BaseAsyncSink
+	base           *BaseAsyncSink
 }
 
 // NewNATSSink creates a new NATS JetStream sink
@@ -121,14 +121,14 @@ func (s *NATSSink) ensureStream(cfg *config.StreamConfig) error {
 	}
 
 	streamConfig := &nats.StreamConfig{
-		Name:         cfg.Name,
-		Subjects:     cfg.Subjects,
-		Storage:      storage,
-		Replicas:     replicas,
-		MaxAge:       maxAge,
-		MaxBytes:     cfg.MaxBytes,
-		MaxMsgs:      cfg.MaxMsgs,
-		Compression:  nats.NoCompression,
+		Name:        cfg.Name,
+		Subjects:    cfg.Subjects,
+		Storage:     storage,
+		Replicas:    replicas,
+		MaxAge:      maxAge,
+		MaxBytes:    cfg.MaxBytes,
+		MaxMsgs:     cfg.MaxMsgs,
+		Compression: nats.NoCompression,
 	}
 
 	if cfg.Compression {
@@ -212,7 +212,7 @@ func (s *NATSSink) resolveSubject(msg telemetry.TelemetryEnvelope) string {
 	subject = strings.ReplaceAll(subject, "{drone_id}", msg.DroneID)
 	subject = strings.ReplaceAll(subject, "{source}", msg.Source)
 	subject = strings.ReplaceAll(subject, "{message_type}", strings.ToLower(msg.MsgName))
-	
+
 	// For multi mode, you could replace {org_id} with organizational identifier
 	// This would need to be passed in via configuration or derived from source
 	subject = strings.ReplaceAll(subject, "{org_id}", "default_org")

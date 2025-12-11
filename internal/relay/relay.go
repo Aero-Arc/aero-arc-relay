@@ -163,7 +163,7 @@ func (r *Relay) ready() bool {
 // initializeSinks sets up all configured data sinks
 func (r *Relay) initializeSinks() error {
 	factory := sinks.NewSinkFactory()
-	
+
 	configuredSinks, err := factory.CreateConfiguredSinks(r.config)
 	if err != nil {
 		return fmt.Errorf("failed to create sinks: %w", err)
@@ -171,7 +171,7 @@ func (r *Relay) initializeSinks() error {
 
 	r.sinks = configuredSinks
 	r.sinksInitialized = true
-	
+
 	slog.LogAttrs(context.Background(), slog.LevelInfo, "Sinks initialized", slog.Int("count", len(r.sinks)))
 	return nil
 }

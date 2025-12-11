@@ -52,6 +52,7 @@ Whether you're running a single SITL instance or a fleet of autonomous aircraft,
 ### Prerequisites
 
 - Go 1.24.0 or later
+- [Task](https://taskfile.dev/installation/) (Taskfile runner)
 - NATS server with JetStream enabled (for streaming functionality)
 - Docker and Docker Compose (for containerized deployment)
 
@@ -65,7 +66,7 @@ cd aero-arc-relay
 
 2. Install dependencies:
 ```bash
-go mod download
+task deps
 ```
 
 3. Configure the application:
@@ -82,35 +83,37 @@ docker run -p 4222:4222 nats:latest -js
 
 5. Run the application:
 ```bash
-LOG_LEVEL=INFO go run cmd/aero-arc-relay/main.go -config configs/config.yaml
+# Set environment variables and run
+LOG_LEVEL=INFO task run
 ```
 
 ### Docker Deployment
 
 1. Build the Docker image:
 ```bash
-docker build -t aeroarc/relay:latest .
+task docker-build
 ```
 
-2. Run the container:
+2. Start services with Docker Compose:
 ```bash
-docker run -d \
-  -p 14550:14550/udp \
-  -p 2112:2112 \
-  -v $(pwd)/configs/config.yaml:/etc/aero-arc-relay/config.yaml \
-  -e AWS_ACCESS_KEY_ID=your-key \
-  -e AWS_SECRET_ACCESS_KEY=your-secret \
-  aeroarc/relay:latest
+task docker-run
 ```
+
+This will start the relay and necessary services as defined in `docker-compose.yml`.
 
 3. View logs:
 ```bash
-docker logs -f <container-id>
+task logs
 ```
 
 4. Access metrics:
 ```bash
 curl http://localhost:2112/metrics
+```
+
+5. Stop services:
+```bash
+task docker-stop
 ```
 
 ### Testing with SITL
@@ -320,7 +323,7 @@ Prometheus metrics are exposed at `http://localhost:2112/metrics`:
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
 4. Add tests for new functionality
-5. Ensure all tests pass (`go test ./...`)
+5. Ensure all tests pass (`task test`)
 6. Submit a pull request
 
 ## License
