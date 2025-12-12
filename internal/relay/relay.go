@@ -29,6 +29,7 @@ type Relay struct {
 	config           *config.Config
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
+	endpointDroneIDs sync.Map // map[string]string - endpoint name -> drone_id (entity_id)
 	sinksInitialized bool
 }
 
@@ -162,91 +163,17 @@ func (r *Relay) ready() bool {
 
 // initializeSinks sets up all configured data sinks
 func (r *Relay) initializeSinks() error {
-	// Initialize S3 sink if configured
-	if r.config.Sinks.S3 != nil {
-		s3Sink, err := sinks.NewS3Sink(r.config.Sinks.S3)
-		if err != nil {
-			return fmt.Errorf("failed to create S3 sink: %w", err)
-		}
-		r.sinks = append(r.sinks, s3Sink)
+	factory := sinks.NewSinkFactory()
+
+	configuredSinks, err := factory.CreateConfiguredSinks(r.config)
+	if err != nil {
+		return fmt.Errorf("failed to create sinks: %w", err)
 	}
 
-	// Initialize GCS sink if configured
-	if r.config.Sinks.GCS != nil {
-		gcsSink, err := sinks.NewGCSSink(r.config.Sinks.GCS)
-		if err != nil {
-			return fmt.Errorf("failed to create GCS sink: %w", err)
-		}
-		r.sinks = append(r.sinks, gcsSink)
-	}
-
-	// Initialize BigQuery sink if configured
-	if r.config.Sinks.BigQuery != nil {
-		bigquerySink, err := sinks.NewBigQuerySink(r.config.Sinks.BigQuery)
-		if err != nil {
-			return fmt.Errorf("failed to create BigQuery sink: %w", err)
-		}
-		r.sinks = append(r.sinks, bigquerySink)
-	}
-
-	// Initialize Timestream sink if configured
-	if r.config.Sinks.Timestream != nil {
-		timestreamSink, err := sinks.NewTimestreamSink(r.config.Sinks.Timestream)
-		if err != nil {
-			return fmt.Errorf("failed to create Timestream sink: %w", err)
-		}
-		r.sinks = append(r.sinks, timestreamSink)
-	}
-
-	// Initialize InfluxDB sink if configured
-	if r.config.Sinks.InfluxDB != nil {
-		influxdbSink, err := sinks.NewInfluxDBSink(r.config.Sinks.InfluxDB)
-		if err != nil {
-			return fmt.Errorf("failed to create InfluxDB sink: %w", err)
-		}
-		r.sinks = append(r.sinks, influxdbSink)
-	}
-
-	// Initialize Prometheus sink if configured
-	if r.config.Sinks.Prometheus != nil {
-		prometheusSink, err := sinks.NewPrometheusSink(r.config.Sinks.Prometheus)
-		if err != nil {
-			return fmt.Errorf("failed to create Prometheus sink: %w", err)
-		}
-		r.sinks = append(r.sinks, prometheusSink)
-	}
-
-	// Initialize Elasticsearch sink if configured
-	if r.config.Sinks.Elasticsearch != nil {
-		elasticsearchSink, err := sinks.NewElasticsearchSink(r.config.Sinks.Elasticsearch)
-		if err != nil {
-			return fmt.Errorf("failed to create Elasticsearch sink: %w", err)
-		}
-		r.sinks = append(r.sinks, elasticsearchSink)
-	}
-
-	// Initialize Kafka sink if configured
-	if r.config.Sinks.Kafka != nil {
-		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)
-		if err != nil {
-			return fmt.Errorf("failed to create Kafka sink: %w", err)
-		}
-		r.sinks = append(r.sinks, kafkaSink)
-	}
-
-	// Initialize file sink if configured
-	if r.config.Sinks.File != nil {
-		fileSink, err := sinks.NewFileSink(r.config.Sinks.File)
-		if err != nil {
-			return fmt.Errorf("failed to create file sink: %w", err)
-		}
-		r.sinks = append(r.sinks, fileSink)
-	}
-
-	if len(r.sinks) == 0 {
-		return fmt.Errorf("no sinks configured")
-	}
+	r.sinks = configuredSinks
 	r.sinksInitialized = true
+
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "Sinks initialized", slog.Int("count", len(r.sinks)))
 	return nil
 }
 
@@ -276,6 +203,8 @@ func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []err
 			continue
 		}
 		r.connections.Store(endpoint.Name, node)
+		// Store the drone_id (entity_id) mapping for this endpoint
+		r.endpointDroneIDs.Store(endpoint.Name, endpoint.DroneID)
 		processed = append(processed, endpoint.Name)
 	}
 
@@ -340,56 +269,74 @@ func (r *Relay) processMessages(ctx context.Context, endpoint string) {
 				continue
 			}
 
+			if parseErr, ok := evt.(*gomavlib.EventParseError); ok {
+				slog.LogAttrs(context.Background(), slog.LevelWarn, "MAVLink parse error",
+					slog.String("endpoint", endpoint),
+					slog.String("error", parseErr.Error.Error()))
+				continue
+			}
+
 			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
 		}
 	}
 }
 
+// getDroneID returns the configured drone_id (entity_id) for an endpoint name
+func (r *Relay) getDroneID(endpointName string) string {
+	if droneID, ok := r.endpointDroneIDs.Load(endpointName); ok {
+		return droneID.(string)
+	}
+	// Fallback to endpoint name if not found (shouldn't happen in 1:1 mode)
+	return endpointName
+}
+
 // handleFrame processes a MAVLink frame
 func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
+	// Get the configured drone_id (entity_id) for this endpoint
+	droneID := r.getDroneID(endpoint)
+
 	// Determine source endpoint name from the frame
 	switch msg := evt.Frame.GetMessage().(type) {
 	case *common.MessageHeartbeat:
-		r.handleHeartbeat(msg, endpoint)
+		r.handleHeartbeat(msg, endpoint, droneID)
 	case *common.MessageGlobalPositionInt:
-		r.handleGlobalPosition(msg, endpoint)
+		r.handleGlobalPosition(msg, endpoint, droneID)
 	case *common.MessageAttitude:
-		r.handleAttitude(msg, endpoint)
+		r.handleAttitude(msg, endpoint, droneID)
 	case *common.MessageVfrHud:
-		r.handleVfrHud(msg, endpoint)
+		r.handleVfrHud(msg, endpoint, droneID)
 	case *common.MessageSysStatus:
-		r.handleSysStatus(msg, endpoint)
+		r.handleSysStatus(msg, endpoint, droneID)
 	}
 }
 
 // handleHeartbeat processes heartbeat messages
-func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string) {
-	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, msg)
+func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string, droneID string) {
+	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleGlobalPosition processes global position messages
-func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, source string) {
-	envelope := telemetry.BuildGlobalPositionIntEnvelope(source, msg)
+func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, endpoint string, droneID string) {
+	envelope := telemetry.BuildGlobalPositionIntEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleAttitude processes attitude messages
-func (r *Relay) handleAttitude(msg *common.MessageAttitude, source string) {
-	envelope := telemetry.BuildAttitudeEnvelope(source, msg)
+func (r *Relay) handleAttitude(msg *common.MessageAttitude, endpoint string, droneID string) {
+	envelope := telemetry.BuildAttitudeEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleVfrHud processes VFR HUD messages
-func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, source string) {
-	envelope := telemetry.BuildVfrHudEnvelope(source, msg)
-
+func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, endpoint string, droneID string) {
+	envelope := telemetry.BuildVfrHudEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 
 // handleSysStatus processes system status messages
-func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, source string) {
-	envelope := telemetry.BuildSysStatusEnvelope(source, msg)
+func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, endpoint string, droneID string) {
+	envelope := telemetry.BuildSysStatusEnvelope(endpoint, droneID, msg)
 	r.handleTelemetryMessage(envelope)
 }
 

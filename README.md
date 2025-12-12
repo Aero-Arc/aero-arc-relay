@@ -11,44 +11,50 @@
 
 
 Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.  
-It provides reliable ingest, structured envelopes, multi-cloud fan-out, and operational visibility — without requiring teams to build brittle one-off pipelines.
+It provides reliable ingest, structured envelopes, and **high-performance NATS JetStream plumbing** — without requiring teams to build brittle one-off pipelines.
 
-Robotics teams today still hand-roll telemetry ingestion, buffering, and cloud storage logic.  
+Robotics teams today still hand-roll telemetry ingestion, buffering, and streaming logic.  
 It results in silent data loss, blocked pipelines, fragile backpressure behavior, and no unified format across UAVs, research rigs, and SITL.
 
-Aero Arc Relay solves that.
+Aero Arc Relay solves that with **modern messaging architecture**.
 
 It is a **high-confidence, async-buffered, fault-tolerant** telemetry relay written in Go, designed for:
 
 - drone fleets & robotics platforms  
 - research labs & autonomy teams  
-- cloud robotics infrastructure  
+- cloud-native infrastructure  
 - real-time telemetry dashboards  
-- edge-to-cloud ingest pipelines  
+- edge-to-cloud streaming pipelines  
 
-Relay handles MAVLink concurrency and message parsing, applies a unified envelope format, and delivers data to S3, GCS, Kafka, or local storage with structured logs, metrics, and health probes for orchestration.
+Relay handles MAVLink concurrency and message parsing, applies a unified envelope format, and delivers data to **NATS JetStream**, S3, GCS, or local storage with structured constellation logging, metrics, and health probes for orchestration.
 
 Whether you're running a single SITL instance or a fleet of autonomous aircraft, Aero Arc Relay is the ingestion backbone you plug in first — before analytics, dashboards, autonomy, or ML-based insights.
 
 ## Highlights
 
 - **MAVLink ingest** via gomavlib (UDP/TCP/Serial) with support for multiple dialects
-- **Data sinks** (v0.1) with async queues and backpressure controls:
+- **NATS JetStream streaming** with entity-specific subjects (`constellation.telemetry.{entity_id}`)
+- **Device State Tracking** via NATS Key-Value stores (latest values for GPS, battery, attitude, etc.)
+- **Data sinks** with async queues and backpressure controls:
+  - **NATS JetStream** - Modern streaming platform with persistence and replay
   - AWS S3 - Cloud object storage
-  - Google Cloud Storage - GCS buckets
-  - Apache Kafka - Streaming platform
+  - Google Cloud Storage - GCS buckets  
   - Local file storage with rotation
+- **Token authentication** - JWT and credentials file support for NATS
+- **Constellation logging** - Structured logging with Zap integration
 - **Prometheus metrics** at `/metrics` endpoint
 - **Health/ready probes** at `/healthz` and `/readyz` for orchestration
 - **Graceful shutdown** with context cancellation for clean container restarts
 - **Environment variable support** for secure credential management
-- **Structured logging** with configurable levels and outputs
+- **Pure Go** - No CGO dependencies, ARM64 compatible
 
 ## Quick Start
 
 ### Prerequisites
 
 - Go 1.24.0 or later
+- [Task](https://taskfile.dev/installation/) (Taskfile runner)
+- NATS server with JetStream enabled (for streaming functionality)
 - Docker and Docker Compose (for containerized deployment)
 
 ### Installation
@@ -61,7 +67,7 @@ cd aero-arc-relay
 
 2. Install dependencies:
 ```bash
-go mod download
+task deps
 ```
 
 3. Configure the application:
@@ -70,37 +76,45 @@ cp configs/config.yaml.example configs/config.yaml
 # Edit configs/config.yaml with your settings
 ```
 
-4. Run the application:
+4. Start NATS server with JetStream:
 ```bash
-go run cmd/aero-arc-relay/main.go -config configs/config.yaml
+# Run NATS server locally with JetStream enabled
+docker run -p 4222:4222 nats:latest -js
+```
+
+5. Run the application:
+```bash
+# Set environment variables and run
+LOG_LEVEL=INFO task run
 ```
 
 ### Docker Deployment
 
 1. Build the Docker image:
 ```bash
-docker build -t aeroarc/relay:latest .
+task docker-build
 ```
 
-2. Run the container:
+2. Start services with Docker Compose:
 ```bash
-docker run -d \
-  -p 14550:14550/udp \
-  -p 2112:2112 \
-  -v $(pwd)/configs/config.yaml:/etc/aero-arc-relay/config.yaml \
-  -e AWS_ACCESS_KEY_ID=your-key \
-  -e AWS_SECRET_ACCESS_KEY=your-secret \
-  aeroarc/relay:latest
+task docker-run
 ```
+
+This will start the relay and necessary services as defined in `docker-compose.yml`.
 
 3. View logs:
 ```bash
-docker logs -f <container-id>
+task logs
 ```
 
 4. Access metrics:
 ```bash
 curl http://localhost:2112/metrics
+```
+
+5. Stop services:
+```bash
+task docker-stop
 ```
 
 ### Testing with SITL
@@ -149,7 +163,52 @@ mavlink:
 
 ### Data Sinks
 
-> **Note:** v0.1 supports the following sinks: AWS S3, Google Cloud Storage, Apache Kafka, and Local File. Additional sinks may be available in future versions.
+Configure your data destinations. **NATS JetStream is the recommended sink for real-time streaming and replay capabilities.**
+
+#### NATS JetStream (Recommended)
+
+```yaml
+sinks:
+  nats:
+    url: "nats://localhost:4222"
+    subject: "constellation.telemetry.{entity_id}"  # Entity-specific routing
+    token: "${NATS_TOKEN}"                          # JWT token for authentication
+    # creds_file: "/path/to/nats.creds"            # Alternative: credentials file
+    queue_size: 1000
+    backpressure_policy: "drop"                     # drop or block
+    stream:
+      name: "MAVLINK_TELEMETRY"
+      subjects: 
+        - "constellation.telemetry.>"               # Captures all entity traffic
+      storage: "file"                               # "memory" or "file"
+      max_age: "24h"                                # Message retention
+      max_msgs: 1000000                             # Max messages to retain
+      compression: true                             # Enable S2 compression
+```
+
+**Subject Patterns:**
+- **1:1 mode**: `constellation.telemetry.{entity_id}` → `constellation.telemetry.drone-alpha`
+- **Multi mode**: `constellation.telemetry.{org_id}` → `constellation.telemetry.fleet-001`
+
+#### NATS JetStream KV (Device State)
+
+Configure a Key-Value bucket to track the *latest* aggregated state of each device. This is ideal for dashboards needing "current status" without replaying streams.
+
+```yaml
+sinks:
+  nats:
+    # ... standard connection config ...
+    kv:
+      bucket: "mavlink_state"
+      key_pattern: "{drone_id}"        # Key template (supported: {drone_id}, {entity_id}, {source})
+      description: "Current state of drone fleet"
+      ttl: "24h"                       # Time-to-live for stale keys
+      storage: "file"                  # "memory" or "file"
+      max_bytes: 104857600             # Max bucket size (100MB)
+      replicas: 1
+```
+
+#### Cloud Storage
 
 ```yaml
 sinks:
@@ -169,6 +228,9 @@ sinks:
 The configuration file supports environment variable expansion using `${VAR_NAME}` syntax:
 
 ```yaml
+nats:
+  url: "${NATS_URL:-nats://localhost:4222}"
+  token: "${NATS_TOKEN}"
 s3:
   access_key: "${AWS_ACCESS_KEY_ID}"
   secret_key: "${AWS_SECRET_ACCESS_KEY}"
@@ -176,8 +238,65 @@ s3:
 
 Set environment variables before running:
 ```bash
+export NATS_TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 export AWS_ACCESS_KEY_ID="your-key"
 export AWS_SECRET_ACCESS_KEY="your-secret"
+export LOG_LEVEL="INFO"  # DEBUG, INFO, WARN, ERROR
+```
+
+## NATS JetStream Streaming
+
+Aero Arc Relay provides first-class support for NATS JetStream, offering persistent streaming with replay capabilities for MAVLink telemetry.
+
+### Key Benefits
+
+- **Entity Isolation**: Each drone/vehicle gets its own subject namespace
+- **Replay Capability**: Historical telemetry available for analysis and debugging
+- **High Throughput**: Optimized for real-time telemetry ingestion
+- **Persistence**: Configurable storage (memory/file) with retention policies
+- **Authentication**: JWT token and credentials file support
+- **Compression**: S2 compression for bandwidth optimization
+
+### Subject Architecture
+
+The relay uses a hierarchical subject structure for optimal routing and filtering:
+
+```
+constellation.telemetry.{entity_id}
+```
+
+**Examples:**
+- Drone Alpha: `constellation.telemetry.drone-alpha`
+- Vehicle Beta: `constellation.telemetry.vehicle-beta` 
+- Fleet Operations: `constellation.telemetry.fleet-001`
+
+### Stream Configuration
+
+Streams are automatically created and managed based on your configuration:
+
+```yaml
+stream:
+  name: "MAVLINK_TELEMETRY"
+  subjects: ["constellation.telemetry.>"]  # Capture all constellation telemetry
+  storage: "file"                          # Persistent storage
+  max_age: "24h"                           # Retain for 24 hours
+  max_msgs: 1000000                        # Maximum message count
+  compression: true                        # Enable S2 compression
+```
+
+### Consuming Messages
+
+Subscribe to entity-specific or wildcard subjects:
+
+```bash
+# Subscribe to specific entity
+nats sub "constellation.telemetry.drone-alpha"
+
+# Subscribe to all telemetry
+nats sub "constellation.telemetry.>"
+
+# Subscribe to all drones
+nats sub "constellation.telemetry.drone-*"
 ```
 
 ## Telemetry Data Format
@@ -223,7 +342,7 @@ Prometheus metrics are exposed at `http://localhost:2112/metrics`:
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
 4. Add tests for new functionality
-5. Ensure all tests pass (`go test ./...`)
+5. Ensure all tests pass (`task test`)
 6. Submit a pull request
 
 ## License

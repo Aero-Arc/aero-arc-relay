@@ -67,9 +67,9 @@ func (e TelemetryEnvelope) ToBinary() ([]byte, error) {
 	return e.ToJSON()
 }
 
-func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) TelemetryEnvelope {
+func BuildHeartbeatEnvelope(source string, droneID string, msg *common.MessageHeartbeat) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		DroneID:         droneID,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -86,9 +86,9 @@ func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) Telemet
 	return envelope
 }
 
-func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPositionInt) TelemetryEnvelope {
+func BuildGlobalPositionIntEnvelope(source string, droneID string, msg *common.MessageGlobalPositionInt) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		DroneID:         droneID,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -112,9 +112,9 @@ func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPosi
 	return envelope
 }
 
-func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) TelemetryEnvelope {
+func BuildAttitudeEnvelope(source string, droneID string, msg *common.MessageAttitude) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		DroneID:         droneID,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -136,9 +136,9 @@ func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) Telemetry
 	return envelope
 }
 
-func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnvelope {
+func BuildVfrHudEnvelope(source string, droneID string, msg *common.MessageVfrHud) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		DroneID:         droneID,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -159,9 +159,9 @@ func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnve
 	return envelope
 }
 
-func BuildSysStatusEnvelope(source string, msg *common.MessageSysStatus) TelemetryEnvelope {
+func BuildSysStatusEnvelope(source string, droneID string, msg *common.MessageSysStatus) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		DroneID:         droneID,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
