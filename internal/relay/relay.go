@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
@@ -22,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
 )
 
 // Relay manages MAVLink connections and data forwarding to sinks
@@ -30,6 +34,16 @@ type Relay struct {
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
 	sinksInitialized bool
+	grpcServer       *grpc.Server
+	relayv1.UnimplementedRelayControlServer
+	agentv1.UnimplementedAgentGatewayServer
+}
+
+type DroneSession struct {
+	DroneID       string
+	SessionID     string
+	ConnectedAt   time.Time
+	LastHeartbeat time.Time
 }
 
 var (
@@ -81,6 +95,26 @@ func (r *Relay) Start(ctx context.Context) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.Relay.GRPCPort))
+	if err != nil {
+		return fmt.Errorf("failed to listen on port %d: %w", r.config.Relay.GRPCPort, err)
+	}
+
+	r.grpcServer = grpc.NewServer()
+
+	// Register gRPC servers
+	relayv1.RegisterRelayControlServer(r.grpcServer, r)
+	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
+
+	// Start gRPC server in non blocking goroutine
+	go func() {
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "serving gRPC server", slog.String("port", fmt.Sprintf(":%d", r.config.Relay.GRPCPort)))
+		if err := r.grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			slog.LogAttrs(context.Background(), slog.LevelError, "failed to serve gRPC server", slog.String("error", err.Error()))
+		}
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "gRPC server stopped")
+	}()
+
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -113,6 +147,12 @@ func (r *Relay) Start(ctx context.Context) error {
 			node.Close()
 			return true
 		})
+
+		// Shutdown gRPC server
+		if r.grpcServer != nil {
+			slog.Info("shutting down gRPC server")
+			r.grpcServer.GracefulStop()
+		}
 
 		// Shutdown sinks with timeout
 		baseCtx := context.Background()

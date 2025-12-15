@@ -27,6 +27,7 @@ type Config struct {
 // RelayConfig contains relay-specific configuration
 type RelayConfig struct {
 	BufferSize int `yaml:"buffer_size"`
+	GRPCPort   int `yaml:"grpc_port"`
 }
 
 // MAVLinkConfig contains MAVLink connection settings
@@ -235,6 +236,9 @@ func Load(path string) (*Config, error) {
 	// Set defaults
 	if config.Relay.BufferSize == 0 {
 		config.Relay.BufferSize = 1000
+	}
+	if config.Relay.GRPCPort == 0 {
+		config.Relay.GRPCPort = 50051
 	}
 	if config.MAVLink.DialectName == "" {
 		config.MAVLink.DialectName = "common"
