@@ -35,15 +35,23 @@ type Relay struct {
 	connections      sync.Map // map[string]*gomavlib.Node
 	sinksInitialized bool
 	grpcServer       *grpc.Server
+	grpcSessions     map[string]*DroneSession
+	sessionsMu       sync.RWMutex
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
 
 type DroneSession struct {
+	stream        agentv1.AgentGateway_TelemetryStreamServer
 	DroneID       string
 	SessionID     string
 	ConnectedAt   time.Time
 	LastHeartbeat time.Time
+	Position      *common.MessageGlobalPositionInt
+	Attitude      *common.MessageAttitude
+	VfrHud        *common.MessageVfrHud
+	SystemStatus  *common.MessageSysStatus
+	sessionMu     sync.RWMutex
 }
 
 var (
@@ -61,8 +69,9 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config: cfg,
-		sinks:  make([]sinks.Sink, 0),
+		config:       cfg,
+		sinks:        make([]sinks.Sink, 0),
+		grpcSessions: make(map[string]*DroneSession),
 	}
 
 	// Initialize sinks
@@ -75,7 +84,7 @@ func New(cfg *config.Config) (*Relay, error) {
 
 // Start begins the relay operation
 func (r *Relay) Start(ctx context.Context) error {
-	log.Println("Starting aero-arc-relay...")
+	slog.Info("Starting aero-arc-relay...")
 
 	// Initialize MAVLink node with all endpoints
 	processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
@@ -149,9 +158,21 @@ func (r *Relay) Start(ctx context.Context) error {
 		})
 
 		// Shutdown gRPC server
-		if r.grpcServer != nil {
-			slog.Info("shutting down gRPC server")
-			r.grpcServer.GracefulStop()
+		stopped := make(chan struct{})
+		go func() {
+			if r.grpcServer != nil {
+				slog.Info("shutting down gRPC server")
+				r.grpcServer.GracefulStop()
+			}
+			close(stopped)
+		}()
+
+		select {
+		case <-stopped:
+			slog.Info("gRPC server stopped")
+		case <-time.After(10 * time.Second):
+			slog.Info("gRPC server shutdown timed out")
+			r.grpcServer.Stop()
 		}
 
 		// Shutdown sinks with timeout
@@ -187,7 +208,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	for signal := range signals {
 		if signal == os.Interrupt || signal == syscall.SIGTERM {
-			log.Println("Received signal to shut down relay...")
+			slog.Info("Received signal to shut down relay...")
 			shutdown()
 			break
 		}
