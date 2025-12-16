@@ -3,28 +3,28 @@
 </p>
 
 # Aero Arc Relay
+
 [![Go Version](https://img.shields.io/github/go-mod/go-version/Aero-Arc/aero-arc-relay?filename=go.mod)](go.mod)
 [![License](https://img.shields.io/github/license/Aero-Arc/aero-arc-relay)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/Aero-Arc/aero-arc-relay?include_prereleases)](https://github.com/Aero-Arc/aero-arc-relay/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Aero-Arc/aero-arc-relay)](https://goreportcard.com/report/github.com/Aero-Arc/aero-arc-relay)
 [![codecov](https://codecov.io/gh/Aero-Arc/aero-arc-relay/branch/main/graph/badge.svg)](https://codecov.io/gh/Aero-Arc/aero-arc-relay)
 
-
-Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.  
+Aero Arc Relay is a production-grade telemetry ingestion pipeline for MAVLink-enabled drones and autonomous systems.
 It provides reliable ingest, structured envelopes, and **high-performance NATS JetStream plumbing** — without requiring teams to build brittle one-off pipelines.
 
-Robotics teams today still hand-roll telemetry ingestion, buffering, and streaming logic.  
+Robotics teams today still hand-roll telemetry ingestion, buffering, and streaming logic.
 It results in silent data loss, blocked pipelines, fragile backpressure behavior, and no unified format across UAVs, research rigs, and SITL.
 
 Aero Arc Relay solves that with **modern messaging architecture**.
 
 It is a **high-confidence, async-buffered, fault-tolerant** telemetry relay written in Go, designed for:
 
-- drone fleets & robotics platforms  
-- research labs & autonomy teams  
-- cloud-native infrastructure  
-- real-time telemetry dashboards  
-- edge-to-cloud streaming pipelines  
+- drone fleets & robotics platforms
+- research labs & autonomy teams
+- cloud-native infrastructure
+- real-time telemetry dashboards
+- edge-to-cloud streaming pipelines
 
 Relay handles MAVLink concurrency and message parsing, applies a unified envelope format, and delivers data to **NATS JetStream**, S3, GCS, or local storage with structured constellation logging, metrics, and health probes for orchestration.
 
@@ -38,7 +38,7 @@ Whether you're running a single SITL instance or a fleet of autonomous aircraft,
 - **Data sinks** with async queues and backpressure controls:
   - **NATS JetStream** - Modern streaming platform with persistence and replay
   - AWS S3 - Cloud object storage
-  - Google Cloud Storage - GCS buckets  
+  - Google Cloud Storage - GCS buckets
   - Local file storage with rotation
 - **Token authentication** - JWT and credentials file support for NATS
 - **Constellation logging** - Structured logging with Zap integration
@@ -60,29 +60,34 @@ Whether you're running a single SITL instance or a fleet of autonomous aircraft,
 ### Installation
 
 1. Clone the repository:
+
 ```bash
-git clone https://github.com/makinje/aero-arc-relay.git
-cd aero-arc-relay
+git clone https://github.com/Constellation-Overwatch/aero-arc-relay2constellation.git
+cd aero-arc-relay2constellation
 ```
 
 2. Install dependencies:
+
 ```bash
 task deps
 ```
 
 3. Configure the application:
+
 ```bash
 cp configs/config.yaml.example configs/config.yaml
 # Edit configs/config.yaml with your settings
 ```
 
 4. Start NATS server with JetStream:
+
 ```bash
 # Run NATS server locally with JetStream enabled
 docker run -p 4222:4222 nats:latest -js
 ```
 
 5. Run the application:
+
 ```bash
 # Set environment variables and run
 LOG_LEVEL=INFO task run
@@ -91,11 +96,13 @@ LOG_LEVEL=INFO task run
 ### Docker Deployment
 
 1. Build the Docker image:
+
 ```bash
 task docker-build
 ```
 
 2. Start services with Docker Compose:
+
 ```bash
 task docker-run
 ```
@@ -103,16 +110,19 @@ task docker-run
 This will start the relay and necessary services as defined in `docker-compose.yml`.
 
 3. View logs:
+
 ```bash
 task logs
 ```
 
 4. Access metrics:
+
 ```bash
 curl http://localhost:2112/metrics
 ```
 
 5. Stop services:
+
 ```bash
 task docker-stop
 ```
@@ -124,6 +134,7 @@ We intentionally do not containerize SITL (Software In The Loop).
 SITL is a GUI-heavy simulator that varies by distro, rendering stack, and MAVLink tooling. Aero Arc Relay expects you to bring your own SITL or real drone and point it at the relay.
 
 **Example with ArduPilot SITL:**
+
 ```bash
 sim_vehicle.py --out=udp:<relay-ip>:14550
 ```
@@ -151,14 +162,16 @@ mavlink:
 ```
 
 **Endpoint Modes:**
+
 - `1:1`: One-to-one connection mode
 - `multi`: Multi-connection mode for handling multiple clients
 
 > **Note:** v0.1 supports the following endpoint modes: 1:1
 
 **Protocols:**
+
 - `udp`: UDP server/client mode
-- `tcp`: TCP server/client mode  
+- `tcp`: TCP server/client mode
 - `serial`: Serial port connection
 
 ### Data Sinks
@@ -187,6 +200,7 @@ sinks:
 ```
 
 **Subject Patterns:**
+
 - **1:1 mode**: `constellation.telemetry.{entity_id}` → `constellation.telemetry.drone-alpha`
 - **Multi mode**: `constellation.telemetry.{org_id}` → `constellation.telemetry.fleet-001`
 
@@ -237,6 +251,7 @@ s3:
 ```
 
 Set environment variables before running:
+
 ```bash
 export NATS_TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
 export AWS_ACCESS_KEY_ID="your-key"
@@ -266,8 +281,9 @@ constellation.telemetry.{entity_id}
 ```
 
 **Examples:**
+
 - Drone Alpha: `constellation.telemetry.drone-alpha`
-- Vehicle Beta: `constellation.telemetry.vehicle-beta` 
+- Vehicle Beta: `constellation.telemetry.vehicle-beta`
 - Fleet Operations: `constellation.telemetry.fleet-001`
 
 ### Stream Configuration
@@ -352,6 +368,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Support
 
 For issues and questions:
+
 - Create an issue on GitHub
 - Check the documentation in `internal/sinks/README.md` for sink development
 - Review the configuration examples in `configs/config.yaml.example`
