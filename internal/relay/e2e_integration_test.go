@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"net"
-	"os"
 	"testing"
 	"time"
 
