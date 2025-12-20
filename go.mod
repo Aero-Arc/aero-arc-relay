@@ -8,6 +8,7 @@ require (
 	cloud.google.com/go/bigquery v1.71.0
 	cloud.google.com/go/storage v1.57.0
 	github.com/aero-arc/aero-arc-protos v0.0.0-20251219015509-09def04964ec
+	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bluenviron/gomavlib/v2 v2.2.0
 	github.com/elastic/go-elasticsearch/v8 v8.15.0
@@ -68,6 +69,7 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/tarm/serial v0.0.0-20180830185346-98f6abe2eb07 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.38.0 // indirect
