@@ -16,6 +16,7 @@ import (
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
+	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
@@ -30,6 +31,15 @@ type Relay struct {
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
 	sinksInitialized bool
+
+	// Control-plane session state (authoritative) for RelayControl APIs.
+	// Keyed by drone_id.
+	grpcSessions   map[string]*relayv1.DroneStatus
+	grpcSessionsMu sync.RWMutex
+
+	// Required by the generated RelayControlServer interface for forward compatibility.
+	// Must be embedded by value (not pointer).
+	relayv1.UnimplementedRelayControlServer
 }
 
 var (
@@ -47,8 +57,9 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config: cfg,
-		sinks:  make([]sinks.Sink, 0),
+		config:       cfg,
+		sinks:        make([]sinks.Sink, 0),
+		grpcSessions: make(map[string]*relayv1.DroneStatus),
 	}
 
 	// Initialize sinks
