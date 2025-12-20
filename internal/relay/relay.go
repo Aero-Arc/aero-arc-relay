@@ -16,6 +16,7 @@ import (
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
@@ -37,12 +38,19 @@ type Relay struct {
 	grpcSessions   map[string]*relayv1.DroneStatus
 	grpcSessionsMu sync.RWMutex
 
+	// Lookup by session_id (server-issued in AgentGateway.Register).
+	sessionByID map[string]*relayv1.DroneStatus
+
 	// Fast lookup for endpoint configuration by endpoint name.
 	endpointByName map[string]config.MAVLinkEndpoint
 
 	// Required by the generated RelayControlServer interface for forward compatibility.
 	// Must be embedded by value (not pointer).
 	relayv1.UnimplementedRelayControlServer
+
+	// Required by the generated AgentGatewayServer interface for forward compatibility.
+	// Must be embedded by value (not pointer).
+	agentv1.UnimplementedAgentGatewayServer
 }
 
 var (
@@ -63,6 +71,7 @@ func New(cfg *config.Config) (*Relay, error) {
 		config:       cfg,
 		sinks:        make([]sinks.Sink, 0),
 		grpcSessions: make(map[string]*relayv1.DroneStatus),
+		sessionByID:  make(map[string]*relayv1.DroneStatus),
 		endpointByName: func() map[string]config.MAVLinkEndpoint {
 			m := make(map[string]config.MAVLinkEndpoint, len(cfg.MAVLink.Endpoints))
 			for _, ep := range cfg.MAVLink.Endpoints {

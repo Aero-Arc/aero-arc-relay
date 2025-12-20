@@ -8,10 +8,10 @@ require (
 	cloud.google.com/go/bigquery v1.71.0
 	cloud.google.com/go/storage v1.57.0
 	github.com/aero-arc/aero-arc-protos v0.0.0-20251219015509-09def04964ec
-	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bluenviron/gomavlib/v2 v2.2.0
 	github.com/elastic/go-elasticsearch/v8 v8.15.0
+	github.com/google/uuid v1.6.0
 	github.com/influxdata/influxdb-client-go/v2 v2.13.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/common v0.55.0
@@ -50,7 +50,6 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/flatbuffers v23.5.26+incompatible // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/influxdata/line-protocol v0.0.0-20200327222509-2487e7298839 // indirect
@@ -69,7 +68,6 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/tarm/serial v0.0.0-20180830185346-98f6abe2eb07 // indirect
-	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.38.0 // indirect
