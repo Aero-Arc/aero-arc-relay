@@ -75,11 +75,6 @@ func Get() *Client {
 	return global
 }
 
-// Underlying exposes the underlying go-redis client for advanced use.
-func (c *Client) Underlying() *redis.Client {
-	return c.rdb
-}
-
 // parseDB converts a REDIS_DB string into an integer index.
 func parseDB(value string) (int, error) {
 	// Small, local parse to avoid pulling in strconv here unnecessarily.
@@ -93,5 +88,3 @@ func parseDB(value string) (int, error) {
 	}
 	return n, nil
 }
-
-
