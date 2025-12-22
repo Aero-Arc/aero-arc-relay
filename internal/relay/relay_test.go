@@ -23,7 +23,7 @@ func TestRelayCreation(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "test-drone",
-					DroneID:  "test-drone",
+					AgentID:  "test-drone",
 					Protocol: "udp",
 					Port:     14550,
 				},
@@ -75,7 +75,7 @@ func TestRelayWithMockSink(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "test-drone",
-					DroneID:  "test-drone",
+					AgentID:  "test-drone",
 					Protocol: "udp",
 					Port:     14550,
 				},

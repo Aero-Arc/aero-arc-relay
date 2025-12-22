@@ -86,17 +86,19 @@ func New(cfg *config.Config) (*Relay, error) {
 func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting aero-arc-relay...")
 
-	// Initialize MAVLink node with all endpoints
-	processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to initialize one or more MAVLink nodes: %v", errs)
-	}
+	// Initialize MAVLink node with all endpoints if in 1:1 mode
+	if r.config.Relay.Mode == config.MAVLinkMode1To1 {
+		processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
+		if len(errs) > 0 {
+			return fmt.Errorf("failed to initialize one or more MAVLink nodes: %v", errs)
+		}
 
-	// Start new goroutines for extracting messages from the nodes
-	for _, name := range processed {
-		go func(name string) {
-			r.processMessages(ctx, name)
-		}(name)
+		// Start new goroutines for extracting messages from the nodes
+		for _, name := range processed {
+			go func(name string) {
+				r.processMessages(ctx, name)
+			}(name)
+		}
 	}
 
 	// Wait for context cancellation or signal to shut down
