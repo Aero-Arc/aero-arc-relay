@@ -13,12 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
-	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
-	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/redisconn"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -40,6 +41,9 @@ type Relay struct {
 
 	// Lookup by session_id (server-issued in AgentGateway.Register).
 	sessionByID map[string]*relayv1.DroneStatus
+
+	// Optional Redis client for publishing topology/routing information.
+	redisClient *redisconn.Client
 
 	// Fast lookup for endpoint configuration by endpoint name.
 	endpointByName map[string]config.MAVLinkEndpoint
@@ -87,6 +91,17 @@ func New(cfg *config.Config) (*Relay, error) {
 	}
 
 	return relay, nil
+}
+
+// SetRedisClient wires an optional Redis client into the relay.
+// It is safe to pass nil (Redis disabled).
+func (r *Relay) SetRedisClient(client *redisconn.Client) {
+	r.redisClient = client
+}
+
+// RedisClient returns the currently configured Redis client (may be nil).
+func (r *Relay) RedisClient() *redisconn.Client {
+	return r.redisClient
 }
 
 // Start begins the relay operation

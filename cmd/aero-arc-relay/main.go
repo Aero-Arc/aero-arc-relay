@@ -41,6 +41,7 @@ func main() {
 	if redisClient != nil {
 		slog.LogAttrs(ctx, slog.LevelInfo, "Redis client initialised", slog.String("addr", os.Getenv("REDIS_ADDR")))
 	}
+	relayInstance.SetRedisClient(redisClient)
 
 	// Start the relay
 	if err := relayInstance.Start(ctx); err != nil {

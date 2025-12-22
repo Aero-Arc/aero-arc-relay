@@ -15,6 +15,22 @@ type Client struct {
 	rdb *redis.Client
 }
 
+// Close closes the underlying Redis client.
+func (c *Client) Close() error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.Close()
+}
+
+// Ping checks connectivity to Redis.
+func (c *Client) Ping(ctx context.Context) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.Ping(ctx).Err()
+}
+
 // global holds the process-wide Redis client instance, if configured.
 var global *Client
 
