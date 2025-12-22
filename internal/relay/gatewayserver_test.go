@@ -51,8 +51,8 @@ func TestRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("Session was not stored in map")
 	}
-	if session.agentID != req.DroneId {
-		t.Errorf("Expected session agentID %s, got %s", req.DroneId, session.agentID)
+	if session.agentID != req.AgentId {
+		t.Errorf("Expected session agentID %s, got %s", req.AgentId, session.agentID)
 	}
 }
 
