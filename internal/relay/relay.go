@@ -19,6 +19,8 @@ import (
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
@@ -71,7 +73,15 @@ func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
 		config:       cfg,
 		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		grpcSessions: make(map[string]*relayv1.DroneStatus),
+		sessionByID:  make(map[string]*relayv1.DroneStatus),
+		endpointByName: func() map[string]config.MAVLinkEndpoint {
+			m := make(map[string]config.MAVLinkEndpoint, len(cfg.MAVLink.Endpoints))
+			for _, ep := range cfg.MAVLink.Endpoints {
+				m[ep.Name] = ep
+			}
+			return m
+		}(),
 	}
 
 	// Initialize sinks
@@ -389,23 +399,78 @@ func (r *Relay) processMessages(ctx context.Context, endpoint string) {
 			return
 		default:
 			if frameEvt, ok := evt.(*gomavlib.EventFrame); ok {
+				// Mark session as active and refresh last-seen on any inbound frame.
+				r.touchSessionHeartbeat(endpoint)
 				r.handleFrame(frameEvt, endpoint)
 				continue
 			}
 
 			if _, ok := evt.(*gomavlib.EventChannelOpen); ok {
 				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel open for endpoint", slog.String("endpoint", endpoint))
+				r.markSessionConnected(endpoint)
 				continue
 			}
 
 			if _, ok := evt.(*gomavlib.EventChannelClose); ok {
 				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel closed for endpoint", slog.String("endpoint", endpoint))
+				r.markSessionDisconnected(endpoint)
 				continue
 			}
 
 			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
 		}
 	}
+}
+
+func (r *Relay) droneIDForEndpoint(endpointName string) string {
+	ep, ok := r.endpointByName[endpointName]
+	if !ok {
+		// Fallback to endpoint name; this keeps the control-plane usable even if
+		// endpoint indexing drifts in future refactors.
+		return endpointName
+	}
+	if ep.DroneID != "" {
+		return ep.DroneID
+	}
+	return endpointName
+}
+
+func (r *Relay) markSessionConnected(endpointName string) {
+	droneID := r.droneIDForEndpoint(endpointName)
+	now := time.Now().UTC().UnixNano()
+
+	r.grpcSessionsMu.Lock()
+	defer r.grpcSessionsMu.Unlock()
+
+	existing := r.grpcSessions[droneID]
+	if existing == nil {
+		existing = &relayv1.DroneStatus{DroneId: droneID}
+	}
+	existing.ConnectedAtUnixNs = now
+	existing.LastHeartbeatUnixNs = now
+	r.grpcSessions[droneID] = existing
+}
+
+func (r *Relay) touchSessionHeartbeat(endpointName string) {
+	droneID := r.droneIDForEndpoint(endpointName)
+	now := time.Now().UTC().UnixNano()
+
+	r.grpcSessionsMu.Lock()
+	defer r.grpcSessionsMu.Unlock()
+
+	existing := r.grpcSessions[droneID]
+	if existing == nil {
+		existing = &relayv1.DroneStatus{DroneId: droneID, ConnectedAtUnixNs: now}
+	}
+	existing.LastHeartbeatUnixNs = now
+	r.grpcSessions[droneID] = existing
+}
+
+func (r *Relay) markSessionDisconnected(endpointName string) {
+	droneID := r.droneIDForEndpoint(endpointName)
+	r.grpcSessionsMu.Lock()
+	defer r.grpcSessionsMu.Unlock()
+	delete(r.grpcSessions, droneID)
 }
 
 // handleFrame processes a MAVLink frame

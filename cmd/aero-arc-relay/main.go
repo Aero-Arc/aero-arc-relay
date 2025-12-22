@@ -3,18 +3,17 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/redisconn"
 	"github.com/makinje/aero-arc-relay/internal/relay"
 )
 
 func main() {
 	var configPath string
+
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to configuration file")
 	flag.Parse()
 
@@ -36,15 +35,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle shutdown signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\nShutting down...")
-		cancel()
-	}()
+	// Initialise Redis connectivity (optional, controlled via environment).
+	// Failures are logged but do not abort relay startup.
+	redisClient := redisconn.InitFromEnv(ctx)
+	if redisClient != nil {
+		slog.LogAttrs(ctx, slog.LevelInfo, "Redis client initialised", slog.String("addr", os.Getenv("REDIS_ADDR")))
+	}
 
 	// Start the relay
 	if err := relayInstance.Start(ctx); err != nil {
