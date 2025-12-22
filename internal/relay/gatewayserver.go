@@ -25,7 +25,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	// Store the session in the grpcSessions map
 	r.sessionsMu.Lock()
 	r.grpcSessions[req.AgentId] = &DroneSession{
-		DroneID:       req.DroneId,
+		agentID:       req.AgentId,
 		SessionID:     req.AgentId,
 		ConnectedAt:   time.Now(),
 		LastHeartbeat: time.Now(),
@@ -61,7 +61,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.InvalidArgument, "missing aero-arc-agent-id")
 	}
 
-	r.updateStream(agentID[0], stream)
+	if err := r.updateStream(agentID[0], stream); err != nil {
+		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
+	}
+
 	slog.Info("Updated stream for agent", "agent_id", agentID[0])
 
 	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back

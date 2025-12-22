@@ -43,7 +43,7 @@ type Relay struct {
 
 type DroneSession struct {
 	stream        agentv1.AgentGateway_TelemetryStreamServer
-	DroneID       string
+	agentID       string
 	SessionID     string
 	ConnectedAt   time.Time
 	LastHeartbeat time.Time

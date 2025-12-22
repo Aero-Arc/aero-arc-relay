@@ -51,8 +51,8 @@ func TestRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("Session was not stored in map")
 	}
-	if session.DroneID != req.DroneId {
-		t.Errorf("Expected session DroneID %s, got %s", req.DroneId, session.DroneID)
+	if session.agentID != req.DroneId {
+		t.Errorf("Expected session agentID %s, got %s", req.DroneId, session.agentID)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestTelemetryStream(t *testing.T) {
 	// Pre-register session (usually required but updated via stream)
 	agentID := "agent-stream-test"
 	relay.grpcSessions[agentID] = &DroneSession{
-		DroneID:   "drone-stream-test",
+		agentID:   "drone-stream-test",
 		SessionID: agentID,
 	}
 
