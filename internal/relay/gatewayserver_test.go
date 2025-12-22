@@ -154,6 +154,7 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Verify Processing (Sink)
 	// Allow some time for async processing if any (currently sync in handler)
+	time.Sleep(100 * time.Millisecond) // Give sinks time to process
 	if mockSink.GetMessageCount() != 1 {
 		t.Errorf("Expected 1 message in sink, got %d", mockSink.GetMessageCount())
 	} else {
@@ -217,5 +218,27 @@ func TestTelemetryStream_MissingAgentID(t *testing.T) {
 	err := relay.TelemetryStream(stream)
 	if err == nil {
 		t.Error("Expected error for missing agent ID header")
+	}
+}
+
+func TestTelemetryStream_UnregisteredAgent(t *testing.T) {
+	relay := &Relay{
+		grpcSessions: make(map[string]*DroneSession),
+	}
+
+	agentID := "unregistered-agent"
+	// Setup Mock Stream with valid metadata but invalid session (not registered)
+	ctx := metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs("aero-arc-agent-id", agentID),
+	)
+
+	stream := &mockTelemetryStream{
+		ctx: ctx,
+	}
+
+	err := relay.TelemetryStream(stream)
+	if err == nil {
+		t.Error("Expected error for unregistered agent")
 	}
 }

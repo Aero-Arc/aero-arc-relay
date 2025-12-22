@@ -26,8 +26,9 @@ type Config struct {
 
 // RelayConfig contains relay-specific configuration
 type RelayConfig struct {
-	BufferSize int `yaml:"buffer_size"`
-	GRPCPort   int `yaml:"grpc_port"`
+	BufferSize int         `yaml:"buffer_size"`
+	GRPCPort   int         `yaml:"grpc_port"`
+	Mode       MAVLinkMode `yaml:"mode"`
 }
 
 // MAVLinkConfig contains MAVLink connection settings
@@ -40,11 +41,9 @@ type MAVLinkConfig struct {
 // MAVLinkEndpoint represents a single MAVLink connection
 type MAVLinkEndpoint struct {
 	Name         string                  `yaml:"name"`
-	DroneID      string                  `yaml:"drone_id,omitempty"`
+	AgentID      string                  `yaml:"agent_id,omitempty"`
 	ProtocolName string                  `yaml:"protocol"` // udp, tcp, serial
 	Protocol     MAVLinkEndpointProtocol `yaml:"-"`        // resolved at load time
-	ModeName     string                  `yaml:"mode,omitempty"`
-	Mode         MAVLinkMode             `yaml:"-"` // resolved at load time
 	Port         int                     `yaml:"port,omitempty"`
 	BaudRate     int                     `yaml:"baud_rate,omitempty"`
 }
@@ -214,24 +213,30 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", ErrFailedToParseConfigFile, err)
 	}
 
-	if len(config.MAVLink.Endpoints) == 0 {
-		return nil, ErrNoEndpoints
+	if err := validateRelayMode(&config.Relay); err != nil {
+		return nil, fmt.Errorf("invalid relay mode %q: %w", config.Relay.Mode, err)
 	}
 
-	processedEndpoints := []MAVLinkEndpoint{}
-	for _, endpoint := range config.MAVLink.Endpoints {
-		if err := validateEndpoint(&endpoint); err != nil {
-			slog.Warn("invalid MAVLink endpoint", "name", endpoint.Name, "error", err.Error())
-			continue
+	if config.Relay.Mode == MAVLinkMode1To1 {
+		if len(config.MAVLink.Endpoints) == 0 {
+			return nil, ErrNoEndpoints
 		}
-		processedEndpoints = append(processedEndpoints, endpoint)
-	}
 
-	if len(processedEndpoints) == 0 {
-		return nil, ErrNoValidEndpoints
-	}
+		processedEndpoints := []MAVLinkEndpoint{}
+		for _, endpoint := range config.MAVLink.Endpoints {
+			if err := validateEndpoint(&endpoint); err != nil {
+				slog.Warn("invalid MAVLink endpoint", "name", endpoint.Name, "error", err.Error())
+				continue
+			}
+			processedEndpoints = append(processedEndpoints, endpoint)
+		}
 
-	config.MAVLink.Endpoints = processedEndpoints
+		if len(processedEndpoints) == 0 {
+			return nil, ErrNoValidEndpoints
+		}
+
+		config.MAVLink.Endpoints = processedEndpoints
+	}
 
 	// Set defaults
 	if config.Relay.BufferSize == 0 {
@@ -286,10 +291,6 @@ func validateMavLinkDialect(mavLink *MAVLinkConfig) error {
 }
 
 func validateEndpoint(endpoint *MAVLinkEndpoint) error {
-	if err := validateEndpointMode(endpoint); err != nil {
-		return err
-	}
-
 	if err := validateEndPointProtocol(endpoint); err != nil {
 		return err
 	}
@@ -297,19 +298,14 @@ func validateEndpoint(endpoint *MAVLinkEndpoint) error {
 	return nil
 }
 
-func validateEndpointMode(endpoint *MAVLinkEndpoint) error {
-	switch endpoint.ModeName {
-	case "1:1":
-		endpoint.Mode = MAVLinkMode1To1
-		if endpoint.DroneID == "" {
-			return ErrDroneIDRequired
-		}
+func validateRelayMode(config *RelayConfig) error {
+	switch config.Mode {
+	case MAVLinkMode1To1:
 		return nil
-	case "multi":
-		endpoint.Mode = MAVLinkModeMulti
-		return ErrMultiModeNotSupported
+	case MAVLinkModeMulti:
+		return nil
 	default:
-		return fmt.Errorf("%w: %s", ErrInvalidMode, endpoint.ModeName)
+		return fmt.Errorf("%w: %s", ErrInvalidMode, config.Mode)
 	}
 }
 

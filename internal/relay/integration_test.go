@@ -25,13 +25,13 @@ func TestRelayIntegration(t *testing.T) {
 			Endpoints: []config.MAVLinkEndpoint{
 				{
 					Name:     "drone-1",
-					DroneID:  "drone-1",
+					AgentID:  "drone-1",
 					Protocol: "udp",
 					Port:     14550,
 				},
 				{
 					Name:     "drone-2",
-					DroneID:  "drone-2",
+					AgentID:  "drone-2",
 					Protocol: "udp",
 					Port:     14551,
 				},
