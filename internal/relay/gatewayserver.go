@@ -121,5 +121,3 @@ func (r *Relay) removeSessionByID(sessionID string) {
 	// grpcSessions is keyed by drone_id.
 	delete(r.grpcSessions, ds.GetDroneId())
 }
-
-

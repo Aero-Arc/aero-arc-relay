@@ -81,6 +81,10 @@ func TestRelay_GetDroneStatus_ReturnsSessionWhenConnected(t *testing.T) {
 	if resp.Drone.GetSessionId() != "sess-123" {
 		t.Fatalf("expected session_id 'sess-123', got %q", resp.Drone.GetSessionId())
 	}
+	// Response should be a snapshot, not the same pointer stored in the map.
+	if resp.Drone == ds {
+		t.Fatalf("expected response drone to be a snapshot copy, got same pointer")
+	}
 
 	// No side effects: session state should be unchanged.
 	if r.grpcSessions["drone-123"] != ds {
@@ -115,5 +119,3 @@ func TestRelay_GetDroneStatus_ReturnsInvalidArgumentWhenDroneIDMissing(t *testin
 		t.Fatalf("expected INVALID_ARGUMENT, got %s (%v)", status.Code(err), err)
 	}
 }
-
-
