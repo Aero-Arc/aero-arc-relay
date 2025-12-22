@@ -2,6 +2,7 @@ package redisconn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,13 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+// DroneRoutingStore publishes routing metadata for a drone to Redis.
+// This is intentionally narrow to avoid leaking the underlying Redis client.
+type DroneRoutingStore interface {
+	UpsertDroneRouting(ctx context.Context, droneID, relayID, sessionID string, ttl time.Duration) error
+	DeleteDroneRouting(ctx context.Context, droneID string) error
+}
 
 // Client wraps a go-redis client and can be shared across components.
 type Client struct {
@@ -89,6 +97,59 @@ func InitFromEnv(ctx context.Context) *Client {
 // It may be nil when Redis is disabled or misconfigured.
 func Get() *Client {
 	return global
+}
+
+type droneRoutingValue struct {
+	RelayID   string `json:"relay_id"`
+	SessionID string `json:"session_id"`
+}
+
+func droneRoutingKey(droneID string) string {
+	return "drone:" + droneID
+}
+
+// UpsertDroneRouting writes drone routing metadata with a TTL.
+// It is safe to call repeatedly; each call refreshes the TTL.
+func (c *Client) UpsertDroneRouting(ctx context.Context, droneID, relayID, sessionID string, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	if droneID == "" {
+		return fmt.Errorf("drone_id is required")
+	}
+	if relayID == "" {
+		return fmt.Errorf("relay_id is required")
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	if ttl <= 0 {
+		return fmt.Errorf("ttl must be > 0")
+	}
+
+	payload, err := json.Marshal(droneRoutingValue{RelayID: relayID, SessionID: sessionID})
+	if err != nil {
+		return err
+	}
+
+	// Bound Redis write time to avoid wedging critical paths.
+	opCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	return c.rdb.Set(opCtx, droneRoutingKey(droneID), payload, ttl).Err()
+}
+
+// DeleteDroneRouting best-effort deletes drone routing metadata.
+// TTL-based expiry still acts as a safety net on crashes.
+func (c *Client) DeleteDroneRouting(ctx context.Context, droneID string) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	if droneID == "" {
+		return fmt.Errorf("drone_id is required")
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	return c.rdb.Del(opCtx, droneRoutingKey(droneID)).Err()
 }
 
 // parseDB converts a REDIS_DB string into an integer index.

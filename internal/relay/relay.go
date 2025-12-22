@@ -45,6 +45,12 @@ type Relay struct {
 	// Optional Redis client for publishing topology/routing information.
 	redisClient *redisconn.Client
 
+	// Optional Redis routing publisher used to publish "drone:{drone_id}" routing metadata.
+	redisRoutingStore redisconn.DroneRoutingStore
+	redisRoutingTTL   time.Duration
+	// Cancel functions for per-session TTL refresh loops, keyed by session_id.
+	redisRoutingCancelBySessionID map[string]context.CancelFunc
+
 	// Fast lookup for endpoint configuration by endpoint name.
 	endpointByName map[string]config.MAVLinkEndpoint
 
@@ -72,10 +78,12 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*relayv1.DroneStatus),
-		sessionByID:  make(map[string]*relayv1.DroneStatus),
+		config:                        cfg,
+		sinks:                         make([]sinks.Sink, 0),
+		grpcSessions:                  make(map[string]*relayv1.DroneStatus),
+		sessionByID:                   make(map[string]*relayv1.DroneStatus),
+		redisRoutingTTL:               45 * time.Second,
+		redisRoutingCancelBySessionID: make(map[string]context.CancelFunc),
 		endpointByName: func() map[string]config.MAVLinkEndpoint {
 			m := make(map[string]config.MAVLinkEndpoint, len(cfg.MAVLink.Endpoints))
 			for _, ep := range cfg.MAVLink.Endpoints {
@@ -97,6 +105,13 @@ func New(cfg *config.Config) (*Relay, error) {
 // It is safe to pass nil (Redis disabled).
 func (r *Relay) SetRedisClient(client *redisconn.Client) {
 	r.redisClient = client
+	r.redisRoutingStore = client
+	if r.redisRoutingCancelBySessionID == nil {
+		r.redisRoutingCancelBySessionID = make(map[string]context.CancelFunc)
+	}
+	if r.redisRoutingTTL == 0 {
+		r.redisRoutingTTL = 45 * time.Second
+	}
 }
 
 // RedisClient returns the currently configured Redis client (may be nil).
