@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/bluenviron/gomavlib/v2"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
@@ -24,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
 )
 
 // Relay manages MAVLink connections and data forwarding to sinks
@@ -32,25 +36,24 @@ type Relay struct {
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
 	sinksInitialized bool
-
-	// Control-plane session state (authoritative) for RelayControl APIs.
-	// Keyed by drone_id.
-	grpcSessions   map[string]*relayv1.DroneStatus
-	grpcSessionsMu sync.RWMutex
-
-	// Lookup by session_id (server-issued in AgentGateway.Register).
-	sessionByID map[string]*relayv1.DroneStatus
-
-	// Fast lookup for endpoint configuration by endpoint name.
-	endpointByName map[string]config.MAVLinkEndpoint
-
-	// Required by the generated RelayControlServer interface for forward compatibility.
-	// Must be embedded by value (not pointer).
+	grpcServer       *grpc.Server
+	grpcSessions     map[string]*DroneSession
+	sessionsMu       sync.RWMutex
 	relayv1.UnimplementedRelayControlServer
-
-	// Required by the generated AgentGatewayServer interface for forward compatibility.
-	// Must be embedded by value (not pointer).
 	agentv1.UnimplementedAgentGatewayServer
+}
+
+type DroneSession struct {
+	stream        agentv1.AgentGateway_TelemetryStreamServer
+	DroneID       string
+	SessionID     string
+	ConnectedAt   time.Time
+	LastHeartbeat time.Time
+	Position      *common.MessageGlobalPositionInt
+	Attitude      *common.MessageAttitude
+	VfrHud        *common.MessageVfrHud
+	SystemStatus  *common.MessageSysStatus
+	sessionMu     sync.RWMutex
 }
 
 var (
@@ -91,7 +94,7 @@ func New(cfg *config.Config) (*Relay, error) {
 
 // Start begins the relay operation
 func (r *Relay) Start(ctx context.Context) error {
-	log.Println("Starting aero-arc-relay...")
+	slog.Info("Starting aero-arc-relay...")
 
 	// Initialize MAVLink node with all endpoints
 	processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
@@ -110,6 +113,26 @@ func (r *Relay) Start(ctx context.Context) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
+
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.Relay.GRPCPort))
+	if err != nil {
+		return fmt.Errorf("failed to listen on port %d: %w", r.config.Relay.GRPCPort, err)
+	}
+
+	r.grpcServer = grpc.NewServer()
+
+	// Register gRPC servers
+	relayv1.RegisterRelayControlServer(r.grpcServer, r)
+	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
+
+	// Start gRPC server in non blocking goroutine
+	go func() {
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "serving gRPC server", slog.String("port", fmt.Sprintf(":%d", r.config.Relay.GRPCPort)))
+		if err := r.grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			slog.LogAttrs(context.Background(), slog.LevelError, "failed to serve gRPC server", slog.String("error", err.Error()))
+		}
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "gRPC server stopped")
+	}()
 
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +167,24 @@ func (r *Relay) Start(ctx context.Context) error {
 			return true
 		})
 
+		// Shutdown gRPC server
+		stopped := make(chan struct{})
+		go func() {
+			if r.grpcServer != nil {
+				slog.Info("shutting down gRPC server")
+				r.grpcServer.GracefulStop()
+			}
+			close(stopped)
+		}()
+
+		select {
+		case <-stopped:
+			slog.Info("gRPC server stopped")
+		case <-time.After(10 * time.Second):
+			slog.Info("gRPC server shutdown timed out")
+			r.grpcServer.Stop()
+		}
+
 		// Shutdown sinks with timeout
 		baseCtx := context.Background()
 		for _, sink := range r.sinks {
@@ -177,7 +218,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	for signal := range signals {
 		if signal == os.Interrupt || signal == syscall.SIGTERM {
-			log.Println("Received signal to shut down relay...")
+			slog.Info("Received signal to shut down relay...")
 			shutdown()
 			break
 		}
