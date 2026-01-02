@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/redisconn"
 	"github.com/makinje/aero-arc-relay/internal/relay"
 )
 
@@ -45,6 +46,14 @@ func main() {
 		fmt.Println("\nShutting down...")
 		cancel()
 	}()
+
+	// Initialise Redis connectivity (optional, controlled via environment).
+	// Failures are logged but do not abort relay startup.
+	redisClient := redisconn.InitFromEnv(ctx)
+	if redisClient != nil {
+		slog.LogAttrs(ctx, slog.LevelInfo, "Redis client initialised", slog.String("addr", os.Getenv("REDIS_ADDR")))
+	}
+	relayInstance.SetRedisClient(redisClient)
 
 	// Start the relay
 	if err := relayInstance.Start(ctx); err != nil {
