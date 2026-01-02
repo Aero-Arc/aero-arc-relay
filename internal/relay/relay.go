@@ -20,6 +20,7 @@ import (
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/redisconn"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,13 +31,17 @@ import (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
-	config           *config.Config
-	sinks            []sinks.Sink
-	connections      sync.Map // map[string]*gomavlib.Node
-	sinksInitialized bool
-	grpcServer       *grpc.Server
-	grpcSessions     map[string]*DroneSession
-	sessionsMu       sync.RWMutex
+	config                      *config.Config
+	sinks                       []sinks.Sink
+	connections                 sync.Map // map[string]*gomavlib.Node
+	sinksInitialized            bool
+	redisClient                 *redisconn.Client
+	redisRoutingStore           redisconn.DroneRoutingStore
+	redisRoutingTTL             time.Duration
+	redisRoutingCancelByDroneID map[string]context.CancelFunc
+	grpcServer                  *grpc.Server
+	grpcSessions                map[string]*DroneSession
+	sessionsMu                  sync.RWMutex
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -69,9 +74,11 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		config:                      cfg,
+		sinks:                       make([]sinks.Sink, 0),
+		grpcSessions:                make(map[string]*DroneSession),
+		redisRoutingTTL:             45 * time.Second,
+		redisRoutingCancelByDroneID: make(map[string]context.CancelFunc),
 	}
 
 	// Initialize sinks
@@ -80,6 +87,24 @@ func New(cfg *config.Config) (*Relay, error) {
 	}
 
 	return relay, nil
+}
+
+// SetRedisClient wires an optional Redis client into the relay.
+// It is safe to pass nil (Redis disabled).
+func (r *Relay) SetRedisClient(client *redisconn.Client) {
+	r.redisClient = client
+	r.redisRoutingStore = client
+	if r.redisRoutingCancelByDroneID == nil {
+		r.redisRoutingCancelByDroneID = make(map[string]context.CancelFunc)
+	}
+	if r.redisRoutingTTL == 0 {
+		r.redisRoutingTTL = 45 * time.Second
+	}
+}
+
+// RedisClient returns the currently configured Redis client (may be nil).
+func (r *Relay) RedisClient() *redisconn.Client {
+	return r.redisClient
 }
 
 // Start begins the relay operation
