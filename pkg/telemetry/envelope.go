@@ -8,7 +8,7 @@ import (
 )
 
 type TelemetryEnvelope struct {
-	DroneID         string         `json:"drone_id"`
+	AgentID         string         `json:"agent_id"`
 	Source          string         `json:"source"`
 	TimestampRelay  time.Time      `json:"timestamp_relay"`
 	TimestampDevice float64        `json:"timestamp_device"`
@@ -69,7 +69,7 @@ func (e TelemetryEnvelope) ToBinary() ([]byte, error) {
 
 func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		AgentID:         source,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -88,7 +88,7 @@ func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) Telemet
 
 func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPositionInt) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		AgentID:         source,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -114,7 +114,7 @@ func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPosi
 
 func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		AgentID:         source,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -138,7 +138,7 @@ func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) Telemetry
 
 func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		AgentID:         source,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
@@ -161,7 +161,7 @@ func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnve
 
 func BuildSysStatusEnvelope(source string, msg *common.MessageSysStatus) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
-		DroneID:         source,
+		AgentID:         source,
 		Source:          source,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,

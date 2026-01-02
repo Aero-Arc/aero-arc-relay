@@ -18,8 +18,6 @@ import (
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
 	slog.Info("Received registration request",
 		"agent_id", req.AgentId,
-		"drone_id", req.DroneId,
-		"hw_uid", req.HardwareUid,
 	)
 
 	// Store the session in the grpcSessions map
@@ -41,7 +39,6 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 
 	return &agentv1.RegisterResponse{
 		AgentId:     req.AgentId,
-		DroneId:     req.DroneId,
 		SessionId:   sessionID,
 		MaxInflight: 100, // Example default
 	}, nil
@@ -94,12 +91,15 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 
 		// Send ACK
 		ack := &agentv1.TelemetryAck{
-			FrameId: frame.FrameId,
-			Status:  agentv1.TelemetryAck_STATUS_OK,
+			Seq:    frame.Seq,
+			Status: agentv1.TelemetryAck_STATUS_OK,
 		}
 
 		if err := stream.Send(ack); err != nil {
-			slog.Error("Failed to send ACK", "frame_id", frame.FrameId, "error", err)
+			slog.LogAttrs(ctx, slog.LevelWarn, "Failed to send ACK", slog.Uint64("seq", frame.Seq),
+				slog.String("agent_id", frame.AgentId), slog.String("err", err.Error()),
+			)
+
 			return status.Errorf(codes.Unknown, "failed to send ack: %v", err)
 		}
 	}
@@ -118,8 +118,7 @@ func (r *Relay) buildTelemetryFrameEnvelope(frame *agentv1.TelemetryFrame) telem
 	}
 
 	envelope := telemetry.TelemetryEnvelope{
-		DroneID:         frame.DroneId,
-		Source:          frame.DroneId,
+		AgentID:         frame.AgentId,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampDevice: 0,
 		MsgID:           frame.MsgId,

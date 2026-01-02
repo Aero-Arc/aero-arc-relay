@@ -28,14 +28,14 @@ type FileSink struct {
 // NewFileSink creates a new file sink
 func NewFileSink(cfg *config.FileConfig) (*FileSink, error) {
 	// Ensure directory exists
-	if err := os.MkdirAll(cfg.Path, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Path, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Generate filename with timestamp
 	filename := generateFilename(cfg.Path, cfg.Prefix, cfg.Format)
 
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
@@ -115,7 +115,6 @@ func (f *FileSink) Close(ctx context.Context) error {
 }
 
 func (f *FileSink) handleMessage(envelope telemetry.TelemetryEnvelope) error {
-
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -168,7 +167,7 @@ func (f *FileSink) writeCSV(msg telemetry.TelemetryEnvelope) error {
 	row := []string{
 		msg.TimestampRelay.Format(time.RFC3339Nano),
 		strconv.FormatFloat(msg.TimestampDevice, 'f', -1, 64),
-		msg.DroneID,
+		msg.AgentID,
 		msg.Source,
 		msg.MsgName,
 		strconv.FormatUint(uint64(msg.MsgID), 10),
@@ -246,7 +245,7 @@ func (f *FileSink) rotateFileLocked() error {
 
 	filename := generateFilename(f.config.Path, f.config.Prefix, f.config.Format)
 
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
