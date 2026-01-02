@@ -11,9 +11,11 @@ require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bluenviron/gomavlib/v2 v2.2.0
 	github.com/elastic/go-elasticsearch/v8 v8.15.0
+	github.com/google/uuid v1.6.0
 	github.com/influxdata/influxdb-client-go/v2 v2.13.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/common v0.55.0
+	github.com/redis/go-redis/v9 v9.5.1
 	google.golang.org/api v0.250.0
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
@@ -38,6 +40,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20251022180443-0feb69152e9f // indirect
 	github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.6.0 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.35.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.2.1 // indirect
@@ -48,7 +51,6 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/flatbuffers v23.5.26+incompatible // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/influxdata/line-protocol v0.0.0-20200327222509-2487e7298839 // indirect
