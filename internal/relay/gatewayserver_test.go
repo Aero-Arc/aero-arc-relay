@@ -20,14 +20,11 @@ func TestRegister(t *testing.T) {
 	}
 
 	req := &agentv1.RegisterRequest{
-		AgentId:     "agent-123",
-		DroneId:     "drone-456",
-		HardwareUid: "hw-789",
+		AgentId: "agent-123",
 	}
 
 	// Execute
 	resp, err := relay.Register(context.Background(), req)
-
 	// Verify
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
@@ -35,9 +32,6 @@ func TestRegister(t *testing.T) {
 
 	if resp.AgentId != req.AgentId {
 		t.Errorf("Expected AgentId %s, got %s", req.AgentId, resp.AgentId)
-	}
-	if resp.DroneId != req.DroneId {
-		t.Errorf("Expected DroneId %s, got %s", req.DroneId, resp.DroneId)
 	}
 	if resp.SessionId == "" {
 		t.Error("Expected non-empty SessionId")
@@ -130,8 +124,7 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Test Case 1: Send Frame
 	frame := &agentv1.TelemetryFrame{
-		FrameId: "frame-1",
-		DroneId: "drone-stream-test",
+		AgentId: "frame-1",
 		MsgName: "Heartbeat",
 		Fields: map[string]string{
 			"type": "1",
@@ -142,8 +135,8 @@ func TestTelemetryStream(t *testing.T) {
 	// Verify ACK
 	select {
 	case ack := <-stream.sentAckChan:
-		if ack.FrameId != frame.FrameId {
-			t.Errorf("Expected ACK for frame %s, got %s", frame.FrameId, ack.FrameId)
+		if ack.Seq != frame.Seq {
+			t.Errorf("Expected ACK for frame %v, got %v", frame.Seq, ack.Seq)
 		}
 		if ack.Status != agentv1.TelemetryAck_STATUS_OK {
 			t.Errorf("Expected OK status, got %v", ack.Status)
@@ -159,8 +152,8 @@ func TestTelemetryStream(t *testing.T) {
 		t.Errorf("Expected 1 message in sink, got %d", mockSink.GetMessageCount())
 	} else {
 		msg := mockSink.GetMessages()[0]
-		if msg.DroneID != frame.DroneId {
-			t.Errorf("Expected DroneID %s, got %s", frame.DroneId, msg.DroneID)
+		if msg.AgentID != frame.AgentId {
+			t.Errorf("Expected DroneID %s, got %s", frame.AgentId, msg.AgentID)
 		}
 	}
 

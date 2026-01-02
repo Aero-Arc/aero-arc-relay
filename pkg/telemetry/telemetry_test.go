@@ -7,7 +7,7 @@ import (
 
 func makeTestEnvelope(source, msgName string, fields map[string]any) TelemetryEnvelope {
 	return TelemetryEnvelope{
-		DroneID:        source,
+		AgentID:        source,
 		Source:         source,
 		TimestampRelay: time.Now().UTC(),
 		MsgName:        msgName,
@@ -55,7 +55,7 @@ func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
 	now := time.Now().UTC()
 	messages := []TelemetryMessage{
 		TelemetryEnvelope{
-			DroneID:        "test",
+			AgentID:        "test",
 			Source:         "test",
 			TimestampRelay: now,
 			MsgName:        "heartbeat",
@@ -64,7 +64,7 @@ func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
 			},
 		},
 		TelemetryEnvelope{
-			DroneID:        "test",
+			AgentID:        "test",
 			Source:         "test",
 			TimestampRelay: now,
 			MsgName:        "position",
@@ -75,7 +75,7 @@ func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
 			},
 		},
 		TelemetryEnvelope{
-			DroneID:        "test",
+			AgentID:        "test",
 			Source:         "test",
 			TimestampRelay: now,
 			MsgName:        "attitude",
@@ -86,7 +86,7 @@ func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
 			},
 		},
 		TelemetryEnvelope{
-			DroneID:        "test",
+			AgentID:        "test",
 			Source:         "test",
 			TimestampRelay: now,
 			MsgName:        "vfr_hud",
@@ -96,7 +96,7 @@ func TestTelemetryEnvelopeImplementsTelemetryMessage(t *testing.T) {
 			},
 		},
 		TelemetryEnvelope{
-			DroneID:        "test",
+			AgentID:        "test",
 			Source:         "test",
 			TimestampRelay: now,
 			MsgName:        "battery",

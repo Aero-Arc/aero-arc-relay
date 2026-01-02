@@ -10,7 +10,7 @@ import (
 
 func makeInfluxEnvelope(source, msgName string, fields map[string]any) telemetry.TelemetryEnvelope {
 	return telemetry.TelemetryEnvelope{
-		DroneID:        source,
+		AgentID:        source,
 		Source:         source,
 		TimestampRelay: time.Now().UTC(),
 		MsgName:        msgName,

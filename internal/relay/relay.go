@@ -522,7 +522,7 @@ func (r *Relay) getFlightMode(customMode uint32) string {
 
 // handleTelemetryMessage processes incoming telemetry messages
 func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
-	relayMessagesTotal.WithLabelValues(msg.DroneID, msg.MsgName).Inc()
+	relayMessagesTotal.WithLabelValues(msg.AgentID, msg.MsgName).Inc()
 
 	// Forward to all sinks
 	for _, sink := range r.sinks {
