@@ -208,7 +208,7 @@ local-tls-certs:
 		echo "Local TLS certs already exist at ~/.aeroarc/local-certs."; \
 	else \
 		mkdir -p ~/.aeroarc/local-certs; \
-		openssl req -x509 -out ~/.aeroarc/local-certs/localhost.crt -keyout ~/.aeroarc/local-keys/localhost.key \
+		openssl req -x509 -out ~/.aeroarc/local-certs/localhost.crt -keyout ~/.aeroarc/local-certs/localhost.key \
 			-newkey rsa:2048 -nodes -sha256 \
 			-subj '/CN=localhost' -extensions EXT -config <( \
 				printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth"); \
