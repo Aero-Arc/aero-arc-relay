@@ -22,6 +22,7 @@ type Config struct {
 	MAVLink MAVLinkConfig `yaml:"mavlink"`
 	Sinks   SinksConfig   `yaml:"sinks"`
 	Logging LoggingConfig `yaml:"logging"`
+	Debug   bool
 }
 
 // RelayConfig contains relay-specific configuration
@@ -65,12 +66,10 @@ const (
 	MAVLinkModeMulti MAVLinkMode = "multi"
 )
 
-var (
-	MAVLinkModeNames = map[MAVLinkMode]string{
-		MAVLinkMode1To1:  "1:1",
-		MAVLinkModeMulti: "multi",
-	}
-)
+var MAVLinkModeNames = map[MAVLinkMode]string{
+	MAVLinkMode1To1:  "1:1",
+	MAVLinkModeMulti: "multi",
+}
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {

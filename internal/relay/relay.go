@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // Relay manages MAVLink connections and data forwarding to sinks
@@ -37,6 +38,8 @@ type Relay struct {
 	grpcServer       *grpc.Server
 	grpcSessions     map[string]*DroneSession
 	sessionsMu       sync.RWMutex
+	tlsKeyPath       string
+	tlsCertPath      string
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -108,10 +111,31 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.Relay.GRPCPort))
 	if err != nil {
-		return fmt.Errorf("failed to listen on port %d: %w", r.config.Relay.GRPCPort, err)
+		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTCPListener", slog.String("error", err.Error()))
+		return ErrCreatingTCPListener
 	}
 
-	r.grpcServer = grpc.NewServer()
+	var creds credentials.TransportCredentials
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
+		return ErrGettingHomeDir
+	}
+
+	creds, err = credentials.NewServerTLSFromFile(r.tlsCertPath, r.tlsKeyPath)
+	if r.config.Debug {
+		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
+		keyPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSKeyPath)
+		creds, err = credentials.NewServerTLSFromFile(certPath, keyPath)
+	}
+
+	if err != nil {
+		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTLSCredentials", slog.String("error", err.Error()))
+		return ErrCreatingTLSCredentials
+	}
+
+	r.grpcServer = grpc.NewServer(grpc.Creds(creds))
 
 	// Register gRPC servers
 	relayv1.RegisterRelayControlServer(r.grpcServer, r)

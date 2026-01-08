@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,19 +11,36 @@ import (
 
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/relay"
+	"github.com/urfave/cli/v3"
 )
 
-func main() {
-	var configPath string
-	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to configuration file")
-	flag.Parse()
+var relayCommand = cli.Command{
+	Usage:  "run the relay process",
+	Action: RunRelay,
 
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:  "config-path",
+			Usage: "path to the configuration file",
+			Value: "configs/config.yaml",
+		},
+		&cli.BoolFlag{
+			Name:  "debug",
+			Usage: "run the relay in debug mode. Useful for local testing",
+			Value: true,
+		},
+	},
+}
+
+func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	// Load configuration
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(cmd.String("config-path"))
 	if err != nil {
 		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to load configuration", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+
+	cfg.Debug = cmd.Bool("debug")
 
 	// Create relay instance
 	relayInstance, err := relay.New(cfg)
@@ -33,7 +50,7 @@ func main() {
 	}
 
 	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Handle shutdown signals
@@ -50,5 +67,13 @@ func main() {
 	if err := relayInstance.Start(ctx); err != nil {
 		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to start relay", slog.String("error", err.Error()))
 		os.Exit(1)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := relayCommand.Run(context.Background(), os.Args); err != nil {
+		log.Fatal(err)
 	}
 }

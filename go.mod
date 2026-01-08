@@ -14,6 +14,7 @@ require (
 	github.com/influxdata/influxdb-client-go/v2 v2.13.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/common v0.55.0
+	github.com/urfave/cli/v3 v3.6.1
 	google.golang.org/api v0.250.0
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
