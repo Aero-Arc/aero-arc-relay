@@ -1,3 +1,4 @@
+SHELL := /bin/bash
 .PHONY: build run test clean docker-build docker-run help lint fmt vet race coverage bench install-tools ci
 
 # Variables
@@ -199,6 +200,20 @@ pre-commit: fmt vet lint test-race
 # Release preparation
 release: clean build-all test-all quality security
 	@echo "Release preparation complete"
+
+# Generate local TLS certs for development
+# https://letsencrypt.org/docs/certificates-for-localhost/
+local-ssh-keys:
+	@if [ -f ~/.aeroarc/local-keys/localhost.crt ] && [ -f ~/.aeroarc/local-keys/localhost.key ]; then \
+		echo "Local TLS certs already exist at ~/.aeroarc/local-keys."; \
+	else \
+		mkdir -p ~/.aeroarc/local-keys; \
+		openssl req -x509 -out ~/.aeroarc/local-keys/localhost.crt -keyout ~/.aeroarc/local-keys/localhost.key \
+			-newkey rsa:2048 -nodes -sha256 \
+			-subj '/CN=localhost' -extensions EXT -config <( \
+				printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth"); \
+		echo "Local TLS certs generated in ~/.aeroarc/local-keys."; \
+	fi
 
 # Help
 help:
