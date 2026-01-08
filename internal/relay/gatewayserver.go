@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
@@ -14,17 +15,83 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func (r *Relay) relayID() string {
+	if v := os.Getenv("RELAY_ID"); v != "" {
+		return v
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	return "relay"
+}
+
+func (r *Relay) upsertRedisRouting(ctx context.Context, droneID, sessionID string) {
+	if r.redisRoutingStore == nil {
+		return
+	}
+	ttl := r.redisRoutingTTL
+	if ttl <= 0 {
+		ttl = 45 * time.Second
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	if err := r.redisRoutingStore.UpsertDroneRouting(opCtx, droneID, r.relayID(), sessionID, ttl); err != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn, "Failed to upsert drone routing metadata to Redis", slog.String("error", err.Error()), slog.String("drone_id", droneID))
+	}
+}
+
+func (r *Relay) deleteRedisRouting(ctx context.Context, droneID string) {
+	if r.redisRoutingStore == nil {
+		return
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	defer cancel()
+	if err := r.redisRoutingStore.DeleteDroneRouting(opCtx, droneID); err != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn, "Failed to delete drone routing metadata from Redis", slog.String("error", err.Error()), slog.String("drone_id", droneID))
+	}
+}
+
+func (r *Relay) startRedisRoutingRefreshLoop(droneID, sessionID string, cancelCtx context.Context, ttl time.Duration) {
+	r.upsertRedisRouting(cancelCtx, droneID, sessionID)
+
+	interval := ttl / 2
+	if interval <= 0 {
+		interval = ttl
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cancelCtx.Done():
+			return
+		case <-ticker.C:
+			// Stop refreshing if the session is gone.
+			r.sessionsMu.RLock()
+			_, ok := r.grpcSessions[droneID]
+			r.sessionsMu.RUnlock()
+			if !ok {
+				return
+			}
+			r.upsertRedisRouting(cancelCtx, droneID, sessionID)
+		}
+	}
+}
+
 // Register handles the initial connection handshake from an agent.
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
 	slog.Info("Received registration request",
 		"agent_id", req.AgentId,
 	)
 
+	// TODO: Generate a real session ID and store session state
+	sessionID := "sess-" + req.AgentId // Placeholder
+
 	// Store the session in the grpcSessions map
 	r.sessionsMu.Lock()
 	r.grpcSessions[req.AgentId] = &DroneSession{
 		agentID:       req.AgentId,
-		SessionID:     req.AgentId,
+		SessionID:     sessionID,
 		ConnectedAt:   time.Now(),
 		LastHeartbeat: time.Now(),
 		Position:      nil,
@@ -34,8 +101,24 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	}
 	r.sessionsMu.Unlock()
 
-	// TODO: Generate a real session ID and store session state
-	sessionID := "sess-" + req.AgentId // Placeholder
+	// Publish routing metadata to Redis (best-effort).
+	if r.redisRoutingStore != nil {
+		ttl := r.redisRoutingTTL
+		if ttl <= 0 {
+			ttl = 45 * time.Second
+		}
+		r.sessionsMu.Lock()
+		if cancel := r.redisRoutingCancelByDroneID[req.AgentId]; cancel != nil {
+			cancel()
+			delete(r.redisRoutingCancelByDroneID, req.AgentId)
+		}
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		r.redisRoutingCancelByDroneID[req.AgentId] = cancel
+		r.sessionsMu.Unlock()
+
+		go r.startRedisRoutingRefreshLoop(req.AgentId, sessionID, cancelCtx, ttl)
+		r.upsertRedisRouting(ctx, req.AgentId, sessionID)
+	}
 
 	return &agentv1.RegisterResponse{
 		AgentId:     req.AgentId,
@@ -61,6 +144,18 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	if err := r.updateStream(agentID[0], stream); err != nil {
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
+
+	// On clean disconnect, stop refreshing and remove mapping (best-effort).
+	defer func() {
+		droneID := agentID[0]
+		r.sessionsMu.Lock()
+		if cancel := r.redisRoutingCancelByDroneID[droneID]; cancel != nil {
+			cancel()
+			delete(r.redisRoutingCancelByDroneID, droneID)
+		}
+		r.sessionsMu.Unlock()
+		r.deleteRedisRouting(context.Background(), droneID)
+	}()
 
 	slog.Info("Updated stream for agent", "agent_id", agentID[0])
 

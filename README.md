@@ -217,6 +217,16 @@ Prometheus metrics are exposed at `http://localhost:2112/metrics`:
 - **`/healthz`** - Liveness probe (always 200 if process is running)
 - **`/readyz`** - Readiness probe (200 once sinks are initialized)
 
+## Control-Plane API Contract
+
+Building `aeroarc-api` (or any other control-plane client) against the relay?
+
+Start here:
+
+- `docs/control_plane_contract.md`
+
+It documents what the relay **actually guarantees today** (supported RPCs, who “owns” session state, failure semantics, and Redis routing behavior), so you don’t have to infer behavior from code.
+
 ## Contributing
 
 1. Fork the repository

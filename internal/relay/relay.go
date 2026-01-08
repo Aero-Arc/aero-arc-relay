@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/redisconn"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,13 +32,17 @@ import (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
-	config           *config.Config
-	sinks            []sinks.Sink
-	connections      sync.Map // map[string]*gomavlib.Node
-	sinksInitialized bool
-	grpcServer       *grpc.Server
-	grpcSessions     map[string]*DroneSession
-	sessionsMu       sync.RWMutex
+	config                      *config.Config
+	sinks                       []sinks.Sink
+	connections                 sync.Map // map[string]*gomavlib.Node
+	sinksInitialized            bool
+	redisClient                 *redisconn.Client
+	redisRoutingStore           redisconn.DroneRoutingStore
+	redisRoutingTTL             time.Duration
+	redisRoutingCancelByDroneID map[string]context.CancelFunc
+	grpcServer                  *grpc.Server
+	grpcSessions                map[string]*DroneSession
+	sessionsMu                  sync.RWMutex
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -69,9 +75,11 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		config:                      cfg,
+		sinks:                       make([]sinks.Sink, 0),
+		grpcSessions:                make(map[string]*DroneSession),
+		redisRoutingTTL:             45 * time.Second,
+		redisRoutingCancelByDroneID: make(map[string]context.CancelFunc),
 	}
 
 	// Initialize sinks
@@ -82,9 +90,29 @@ func New(cfg *config.Config) (*Relay, error) {
 	return relay, nil
 }
 
+func (r *Relay) initRedis(ctx context.Context) {
+	client, err := redisconn.NewClientFromEnv(ctx)
+	if err != nil {
+		// Keep the client on ping failure so it can recover when Redis comes back.
+		if errors.Is(err, redisconn.ErrRedisPingFailed) && client != nil {
+			r.redisClient = client
+			r.redisRoutingStore = client
+		}
+
+		slog.LogAttrs(ctx, slog.LevelWarn, err.Error())
+		return
+	}
+
+	r.redisClient = client
+	r.redisRoutingStore = client
+	slog.LogAttrs(ctx, slog.LevelInfo, "Redis client initialised", slog.String("addr", os.Getenv("REDIS_ADDR")))
+}
+
 // Start begins the relay operation
 func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting aero-arc-relay...")
+
+	r.initRedis(ctx)
 
 	// Initialize MAVLink node with all endpoints if in 1:1 mode
 	if r.config.Relay.Mode == config.MAVLinkMode1To1 {
@@ -186,6 +214,11 @@ func (r *Relay) Start(ctx context.Context) error {
 					"Error closing sink", slog.String("error", err.Error()))
 			}
 			cancel() // Release resources
+		}
+
+		// Close Redis client (best-effort).
+		if r.redisClient != nil {
+			_ = r.redisClient.Close()
 		}
 
 		// Shutdown HTTP server
