@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build run test clean docker-build docker-run help lint fmt vet race coverage bench install-tools ci
+.PHONY: build run test clean docker-build docker-run help lint fmt vet race coverage bench install-tools ci local-tls-certs
 
 # Variables
 BINARY_NAME=aero-arc-relay
