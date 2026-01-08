@@ -203,16 +203,16 @@ release: clean build-all test-all quality security
 
 # Generate local TLS certs for development
 # https://letsencrypt.org/docs/certificates-for-localhost/
-local-ssh-keys:
-	@if [ -f ~/.aeroarc/local-keys/localhost.crt ] && [ -f ~/.aeroarc/local-keys/localhost.key ]; then \
-		echo "Local TLS certs already exist at ~/.aeroarc/local-keys."; \
+local-tls-certs:
+	@if [ -f ~/.aeroarc/local-certs/localhost.crt ] && [ -f ~/.aeroarc/local-keys/localhost.key ]; then \
+		echo "Local TLS certs already exist at ~/.aeroarc/local-certs."; \
 	else \
-		mkdir -p ~/.aeroarc/local-keys; \
-		openssl req -x509 -out ~/.aeroarc/local-keys/localhost.crt -keyout ~/.aeroarc/local-keys/localhost.key \
+		mkdir -p ~/.aeroarc/local-certs; \
+		openssl req -x509 -out ~/.aeroarc/local-certs/localhost.crt -keyout ~/.aeroarc/local-keys/localhost.key \
 			-newkey rsa:2048 -nodes -sha256 \
 			-subj '/CN=localhost' -extensions EXT -config <( \
 				printf "[dn]\nCN=localhost\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:localhost\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth"); \
-		echo "Local TLS certs generated in ~/.aeroarc/local-keys."; \
+		echo "Local TLS certs generated in ~/.aeroarc/local-certs."; \
 	fi
 
 # Help
