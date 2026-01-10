@@ -116,10 +116,11 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	var creds credentials.TransportCredentials
+	var homeDir string
 
 	creds, err = credentials.NewServerTLSFromFile(r.tlsCertPath, r.tlsKeyPath)
 	if r.config.Debug {
-		homeDir, err := os.UserHomeDir()
+		homeDir, err = os.UserHomeDir()
 		if err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
 			return ErrGettingHomeDir
