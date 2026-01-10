@@ -204,7 +204,7 @@ release: clean build-all test-all quality security
 # Generate local TLS certs for development
 # https://letsencrypt.org/docs/certificates-for-localhost/
 local-tls-certs:
-	@if [ -f ~/.aeroarc/local-certs/localhost.crt ] && [ -f ~/.aeroarc/local-keys/localhost.key ]; then \
+	@if [ -f ~/.aeroarc/local-certs/localhost.crt ] && [ -f ~/.aeroarc/local-certs/localhost.key ]; then \
 		echo "Local TLS certs already exist at ~/.aeroarc/local-certs."; \
 	else \
 		mkdir -p ~/.aeroarc/local-certs; \
