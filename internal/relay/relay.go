@@ -117,14 +117,14 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	var creds credentials.TransportCredentials
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
-		return ErrGettingHomeDir
-	}
-
 	creds, err = credentials.NewServerTLSFromFile(r.tlsCertPath, r.tlsKeyPath)
 	if r.config.Debug {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
+			return ErrGettingHomeDir
+		}
+
 		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
 		keyPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSKeyPath)
 		creds, err = credentials.NewServerTLSFromFile(certPath, keyPath)

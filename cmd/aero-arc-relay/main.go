@@ -27,7 +27,7 @@ var relayCommand = cli.Command{
 		&cli.BoolFlag{
 			Name:  "debug",
 			Usage: "run the relay in debug mode. Useful for local testing",
-			Value: true,
+			Value: false,
 		},
 	},
 }
