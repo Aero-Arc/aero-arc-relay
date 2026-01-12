@@ -27,12 +27,12 @@ var relayCommand = cli.Command{
 		&cli.StringFlag{
 			Name:  "tls-cert-path",
 			Usage: "path to tls cert file",
-			Value: relay.DebugTLSCertPath,
+			Value: fmt.Sprintf("~/%s", relay.DebugTLSCertPath),
 		},
 		&cli.StringFlag{
 			Name:  "tls-key-path",
 			Usage: "path to tls key file",
-			Value: relay.DebugTLSKeyPath,
+			Value: fmt.Sprintf("~/%s", relay.DebugTLSKeyPath),
 		},
 		&cli.BoolFlag{
 			Name:  "debug",
