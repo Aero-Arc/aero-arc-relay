@@ -18,11 +18,13 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Relay   RelayConfig   `yaml:"relay"`
-	MAVLink MAVLinkConfig `yaml:"mavlink"`
-	Sinks   SinksConfig   `yaml:"sinks"`
-	Logging LoggingConfig `yaml:"logging"`
-	Debug   bool
+	Relay       RelayConfig   `yaml:"relay"`
+	MAVLink     MAVLinkConfig `yaml:"mavlink"`
+	Sinks       SinksConfig   `yaml:"sinks"`
+	Logging     LoggingConfig `yaml:"logging"`
+	Debug       bool
+	TLSCertPath string
+	TLSKeyPath  string
 }
 
 // RelayConfig contains relay-specific configuration

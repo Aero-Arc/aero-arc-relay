@@ -24,6 +24,16 @@ var relayCommand = cli.Command{
 			Usage: "path to the configuration file",
 			Value: "configs/config.yaml",
 		},
+		&cli.StringFlag{
+			Name:  "tls-cert-path",
+			Usage: "path to tls cert file",
+			Value: relay.DebugTLSCertPath,
+		},
+		&cli.StringFlag{
+			Name:  "tls-key-path",
+			Usage: "path to tls key file",
+			Value: relay.DebugTLSKeyPath,
+		},
 		&cli.BoolFlag{
 			Name:  "debug",
 			Usage: "run the relay in debug mode. Useful for local testing",
@@ -41,6 +51,8 @@ func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	cfg.Debug = cmd.Bool("debug")
+	cfg.TLSCertPath = cmd.String("tls-cert-path")
+	cfg.TLSKeyPath = cmd.String("tls-key-path")
 
 	// Create relay instance
 	relayInstance, err := relay.New(cfg)

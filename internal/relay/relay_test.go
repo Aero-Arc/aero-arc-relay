@@ -54,10 +54,6 @@ func TestRelayCreation(t *testing.T) {
 		t.Errorf("Failed to create relay: %v", err)
 	}
 
-	if relay == nil {
-		t.Error("Relay should not be nil")
-	}
-
 	if len(relay.sinks) == 0 {
 		t.Error("Relay should have sinks configured")
 	}
@@ -392,7 +388,7 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	numMessages := 100
 	done := make(chan bool, numMessages)
 
-	for i := 0; i < numMessages; i++ {
+	for i := range numMessages {
 		go func(id int) {
 			heartbeat := &common.MessageHeartbeat{
 				CustomMode: uint32(id % 10),
@@ -403,7 +399,7 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	}
 
 	// Wait for all messages to be processed
-	for i := 0; i < numMessages; i++ {
+	for range 100 {
 		<-done
 	}
 

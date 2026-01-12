@@ -38,8 +38,6 @@ type Relay struct {
 	grpcServer       *grpc.Server
 	grpcSessions     map[string]*DroneSession
 	sessionsMu       sync.RWMutex
-	tlsKeyPath       string
-	tlsCertPath      string
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -118,7 +116,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	var creds credentials.TransportCredentials
 	var homeDir string
 
-	creds, err = credentials.NewServerTLSFromFile(r.tlsCertPath, r.tlsKeyPath)
+	creds, err = credentials.NewServerTLSFromFile(r.config.TLSCertPath, r.config.TLSKeyPath)
 	if r.config.Debug {
 		homeDir, err = os.UserHomeDir()
 		if err != nil {
@@ -155,7 +153,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	http.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !r.ready() {
@@ -164,7 +162,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 
 	metricsServer := &http.Server{
