@@ -180,6 +180,28 @@ export AWS_ACCESS_KEY_ID="your-key"
 export AWS_SECRET_ACCESS_KEY="your-secret"
 ```
 
+### Redis (optional)
+
+The relay can optionally connect to Redis on startup (best-effort) for publishing topology/routing metadata in higher-level features.
+
+- **Enable**: set `REDIS_ADDR` (e.g. `localhost:6379`)
+- **Optional**: `REDIS_PASSWORD`, `REDIS_DB`
+
+**Local Redis (Docker):**
+
+```bash
+docker run --rm -p 6379:6379 redis:7
+REDIS_ADDR=localhost:6379 go run cmd/aero-arc-relay/main.go -config configs/config.yaml
+```
+
+**Example relay logs when Redis is enabled:**
+
+```text
+INFO Starting aero-arc-relay...
+INFO Redis client initialised addr=localhost:6379
+INFO serving gRPC server port=:50051
+```
+
 ## Telemetry Data Format
 
 The relay uses a unified `TelemetryEnvelope` format for all messages:
