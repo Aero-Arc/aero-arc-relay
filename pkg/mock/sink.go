@@ -1,3 +1,4 @@
+// Package mock provides exported test doubles for sink integrations and tests.
 package mock
 
 import (

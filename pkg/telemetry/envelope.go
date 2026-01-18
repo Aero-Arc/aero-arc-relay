@@ -1,3 +1,5 @@
+// Package telemetry defines relay message envelopes and helpers for converting
+// MAVLink messages into JSON and binary payloads.
 package telemetry
 
 import (

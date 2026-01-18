@@ -1,3 +1,4 @@
+// Package mock provides internal test doubles for sink behavior in relay tests.
 package mock
 
 import (

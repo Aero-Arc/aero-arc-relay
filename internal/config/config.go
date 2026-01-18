@@ -1,3 +1,5 @@
+// Package config loads YAML configuration and defines relay settings for
+// logging, sinks, and runtime options.
 package config
 
 import (

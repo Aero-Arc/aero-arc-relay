@@ -1,3 +1,5 @@
+// Package relay runs the MAVLink relay: it manages drone sessions, exposes
+// gRPC gateway/control services, forwards telemetry to sinks, and serves metrics.
 package relay
 
 import (

@@ -1,3 +1,5 @@
+// Package main wires CLI flags to configuration loading, relay startup,
+// and graceful shutdown handling.
 package main
 
 import (

@@ -1,3 +1,5 @@
+// Package sinks defines sink interfaces and implementations for telemetry
+// backends such as object storage, databases, and streaming systems.
 package sinks
 
 import (
