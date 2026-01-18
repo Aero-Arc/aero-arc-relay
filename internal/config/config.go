@@ -2,75 +2,21 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/ardupilotmega"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/minimal"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/paparazzi"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/standard"
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents the application configuration
 type Config struct {
-	Relay       RelayConfig   `yaml:"relay"`
-	MAVLink     MAVLinkConfig `yaml:"mavlink"`
 	Sinks       SinksConfig   `yaml:"sinks"`
 	Logging     LoggingConfig `yaml:"logging"`
 	Debug       bool
 	TLSCertPath string
 	TLSKeyPath  string
-}
-
-// RelayConfig contains relay-specific configuration
-type RelayConfig struct {
-	BufferSize int         `yaml:"buffer_size"`
-	GRPCPort   int         `yaml:"grpc_port"`
-	Mode       MAVLinkMode `yaml:"mode"`
-}
-
-// MAVLinkConfig contains MAVLink connection settings
-type MAVLinkConfig struct {
-	DialectName string            `yaml:"dialect"` // common, ardupilot, px4, etc.
-	Dialect     *dialect.Dialect  `yaml:"-"`       // resolved at load time
-	Endpoints   []MAVLinkEndpoint `yaml:"endpoints"`
-}
-
-// MAVLinkEndpoint represents a single MAVLink connection
-type MAVLinkEndpoint struct {
-	Name         string                  `yaml:"name"`
-	AgentID      string                  `yaml:"agent_id,omitempty"`
-	ProtocolName string                  `yaml:"protocol"` // udp, tcp, serial
-	Protocol     MAVLinkEndpointProtocol `yaml:"-"`        // resolved at load time
-	Port         int                     `yaml:"port,omitempty"`
-	BaudRate     int                     `yaml:"baud_rate,omitempty"`
-}
-
-// MAVLinkEndpointProtocol represents a MAVLink endpoint protocol
-type MAVLinkEndpointProtocol string
-
-const (
-	MAVLinkEndpointProtocolUDP    MAVLinkEndpointProtocol = "udp"
-	MAVLinkEndpointProtocolTCP    MAVLinkEndpointProtocol = "tcp"
-	MAVLinkEndpointProtocolSerial MAVLinkEndpointProtocol = "serial"
-)
-
-// MAVLinkMode represents a MAVLink mode
-type MAVLinkMode string
-
-const (
-	MAVLinkMode1To1  MAVLinkMode = "1:1"
-	MAVLinkModeMulti MAVLinkMode = "multi"
-)
-
-var MAVLinkModeNames = map[MAVLinkMode]string{
-	MAVLinkMode1To1:  "1:1",
-	MAVLinkModeMulti: "multi",
+	GrpcPort    int
+	BufferSize  int
 }
 
 // SinksConfig contains configuration for all data sinks
@@ -214,47 +160,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", ErrFailedToParseConfigFile, err)
 	}
 
-	if err := validateRelayMode(&config.Relay); err != nil {
-		return nil, fmt.Errorf("invalid relay mode %q: %w", config.Relay.Mode, err)
-	}
-
-	if config.Relay.Mode == MAVLinkMode1To1 {
-		if len(config.MAVLink.Endpoints) == 0 {
-			return nil, ErrNoEndpoints
-		}
-
-		processedEndpoints := []MAVLinkEndpoint{}
-		for _, endpoint := range config.MAVLink.Endpoints {
-			if err := validateEndpoint(&endpoint); err != nil {
-				slog.Warn("invalid MAVLink endpoint", "name", endpoint.Name, "error", err.Error())
-				continue
-			}
-			processedEndpoints = append(processedEndpoints, endpoint)
-		}
-
-		if len(processedEndpoints) == 0 {
-			return nil, ErrNoValidEndpoints
-		}
-
-		config.MAVLink.Endpoints = processedEndpoints
-	}
-
-	// Set defaults
-	if config.Relay.BufferSize == 0 {
-		config.Relay.BufferSize = 1000
-	}
-	if config.Relay.GRPCPort == 0 {
-		config.Relay.GRPCPort = 50051
-	}
-	if config.MAVLink.DialectName == "" {
-		config.MAVLink.DialectName = "common"
-	}
-
-	err = validateMavLinkDialect(&config.MAVLink)
-	if err != nil {
-		return nil, fmt.Errorf("invalid MAVLink dialect %q: %w", config.MAVLink.DialectName, err)
-	}
-
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
 	}
@@ -266,62 +171,4 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &config, nil
-}
-
-// resolveDialect returns the gomavlib dialect for the provided name.
-func validateMavLinkDialect(mavLink *MAVLinkConfig) error {
-	switch strings.ToLower(mavLink.DialectName) {
-	case "common":
-		mavLink.Dialect = common.Dialect
-		return nil
-	case "minimal":
-		mavLink.Dialect = minimal.Dialect
-		return nil
-	case "ardupilot", "ardupilotmega", "apm":
-		mavLink.Dialect = ardupilotmega.Dialect
-		return nil
-	case "paparazzi":
-		mavLink.Dialect = paparazzi.Dialect
-		return nil
-	case "standard":
-		mavLink.Dialect = standard.Dialect
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidDialect, mavLink.DialectName)
-	}
-}
-
-func validateEndpoint(endpoint *MAVLinkEndpoint) error {
-	if err := validateEndPointProtocol(endpoint); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateRelayMode(config *RelayConfig) error {
-	switch config.Mode {
-	case MAVLinkMode1To1:
-		return nil
-	case MAVLinkModeMulti:
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidMode, config.Mode)
-	}
-}
-
-func validateEndPointProtocol(endPoint *MAVLinkEndpoint) error {
-	switch endPoint.ProtocolName {
-	case "udp":
-		endPoint.Protocol = MAVLinkEndpointProtocolUDP
-		return nil
-	case "tcp":
-		endPoint.Protocol = MAVLinkEndpointProtocolTCP
-		return nil
-	case "serial":
-		endPoint.Protocol = MAVLinkEndpointProtocolSerial
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidProtocol, endPoint.ProtocolName)
-	}
 }

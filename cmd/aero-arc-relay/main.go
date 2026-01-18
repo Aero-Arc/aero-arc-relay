@@ -24,6 +24,16 @@ var relayCommand = cli.Command{
 			Usage: "path to the configuration file",
 			Value: "configs/config.yaml",
 		},
+		&cli.IntFlag{
+			Name:  "grpc-port",
+			Usage: "the port used for the relays grpc server",
+			Value: 50051,
+		},
+		&cli.IntFlag{
+			Name:  "buffer-size",
+			Usage: "sink buffer-size",
+			Value: 1000,
+		},
 		&cli.StringFlag{
 			Name:  "tls-cert-path",
 			Usage: "path to tls cert file",
@@ -53,6 +63,7 @@ func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	cfg.Debug = cmd.Bool("debug")
 	cfg.TLSCertPath = cmd.String("tls-cert-path")
 	cfg.TLSKeyPath = cmd.String("tls-key-path")
+	cfg.GrpcPort = cmd.Int("grpc-port")
 
 	// Create relay instance
 	relayInstance, err := relay.New(cfg)

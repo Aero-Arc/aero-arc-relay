@@ -1,15 +1,3 @@
-relay:
-  buffer_size: 1000
-
-mavlink:
-  dialect: "common"  # common, ardupilot, px4, etc.
-  endpoints:
-    - name: "drone-1"
-      protocol: "udp"
-      drone_id: "drone-alpha"
-      mode: "1:1"
-      port: 14550
-
 sinks:
   file:
     path: "/tmp/log/aero-arc-relay"

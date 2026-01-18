@@ -16,8 +16,6 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
-	"github.com/bluenviron/gomavlib/v2"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
@@ -87,27 +85,12 @@ func New(cfg *config.Config) (*Relay, error) {
 func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting aero-arc-relay...")
 
-	// Initialize MAVLink node with all endpoints if in 1:1 mode
-	if r.config.Relay.Mode == config.MAVLinkMode1To1 {
-		processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
-		if len(errs) > 0 {
-			return fmt.Errorf("failed to initialize one or more MAVLink nodes: %v", errs)
-		}
-
-		// Start new goroutines for extracting messages from the nodes
-		for _, name := range processed {
-			go func(name string) {
-				r.processMessages(ctx, name)
-			}(name)
-		}
-	}
-
 	// Wait for context cancellation or signal to shut down
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.Relay.GRPCPort))
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.GrpcPort))
 	if err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTCPListener", slog.String("error", err.Error()))
 		return ErrCreatingTCPListener
@@ -142,7 +125,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	// Start gRPC server in non blocking goroutine
 	go func() {
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "serving gRPC server", slog.String("port", fmt.Sprintf(":%d", r.config.Relay.GRPCPort)))
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "serving gRPC server", slog.String("port", fmt.Sprintf(":%d", r.config.GrpcPort)))
 		if err := r.grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
 			slog.LogAttrs(context.Background(), slog.LevelError, "failed to serve gRPC server", slog.String("error", err.Error()))
 		}
@@ -171,17 +154,6 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	shutdown := func() {
-		// Close MAVLink connections
-		r.connections.Range(func(key, value any) bool {
-			node, ok := value.(*gomavlib.Node)
-			if !ok {
-				return true
-			}
-
-			node.Close()
-			return true
-		})
-
 		// Shutdown gRPC server
 		stopped := make(chan struct{})
 		go func() {
@@ -334,213 +306,6 @@ func (r *Relay) initializeSinks() error {
 	}
 	r.sinksInitialized = true
 	return nil
-}
-
-// initializeMAVLinkNode sets up a single MAVLink node with all endpoints
-func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []error) {
-	var errs []error
-	if len(r.config.MAVLink.Endpoints) == 0 {
-		return nil, []error{fmt.Errorf("no MAVLink endpoints configured")}
-	}
-
-	// Convert all endpoints to gomavlib endpoint configurations
-	processed := []string{}
-	for _, endpoint := range r.config.MAVLink.Endpoints {
-		endpointConf, err := r.createEndpointConf(endpoint)
-		if err != nil {
-			return nil, []error{fmt.Errorf("failed to create endpoint config for %s: %w", endpoint.Name, err)}
-		}
-		node, err := gomavlib.NewNode(gomavlib.NodeConf{
-			Endpoints:   []gomavlib.EndpointConf{endpointConf},
-			Dialect:     dialect,
-			OutVersion:  gomavlib.V2,
-			OutSystemID: 255,
-		})
-		// TODO handle failures but don't return and jump to the next endpoint.
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to create MAVLink node: %w", err))
-			continue
-		}
-		r.connections.Store(endpoint.Name, node)
-		processed = append(processed, endpoint.Name)
-	}
-
-	return processed, errs
-}
-
-// createEndpointConf converts a config endpoint to gomavlib endpoint configuration
-func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.EndpointConf, error) {
-	switch endpoint.Protocol {
-	case config.MAVLinkEndpointProtocolUDP:
-		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
-		return &gomavlib.EndpointUDPServer{
-			Address: address,
-		}, nil
-
-	case config.MAVLinkEndpointProtocolTCP:
-		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
-		return &gomavlib.EndpointTCPServer{
-			Address: address,
-		}, nil
-	case config.MAVLinkEndpointProtocolSerial:
-		return &gomavlib.EndpointSerial{
-			Device: fmt.Sprintf("/dev/ttyUSB%d", endpoint.Port),
-			Baud:   endpoint.BaudRate,
-		}, nil
-	default:
-		return nil, fmt.Errorf("%w: %s", config.ErrInvalidProtocol, endpoint.Protocol)
-	}
-}
-
-// processMessages processes incoming MAVLink messages
-func (r *Relay) processMessages(ctx context.Context, endpoint string) {
-	slog.LogAttrs(context.Background(), slog.LevelInfo, "processing messages for endpoint", slog.String("endpoint", endpoint))
-	conn, ok := r.connections.Load(endpoint)
-	if !ok {
-		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection not found. returning from processMessages", slog.String("endpoint", endpoint))
-		return
-	}
-	node, ok := conn.(*gomavlib.Node)
-	if !ok {
-		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection is not a valid MAVLink node. returning from processMessages", slog.String("endpoint", endpoint))
-		return
-	}
-
-	for evt := range node.Events() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if frameEvt, ok := evt.(*gomavlib.EventFrame); ok {
-				r.handleFrame(frameEvt, endpoint)
-				continue
-			}
-
-			if _, ok := evt.(*gomavlib.EventChannelOpen); ok {
-				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel open for endpoint", slog.String("endpoint", endpoint))
-				continue
-			}
-
-			if _, ok := evt.(*gomavlib.EventChannelClose); ok {
-				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel closed for endpoint", slog.String("endpoint", endpoint))
-				continue
-			}
-
-			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
-		}
-	}
-}
-
-// handleFrame processes a MAVLink frame
-func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
-	// Determine source endpoint name from the frame
-	switch msg := evt.Frame.GetMessage().(type) {
-	case *common.MessageHeartbeat:
-		r.handleHeartbeat(msg, endpoint)
-	case *common.MessageGlobalPositionInt:
-		r.handleGlobalPosition(msg, endpoint)
-	case *common.MessageAttitude:
-		r.handleAttitude(msg, endpoint)
-	case *common.MessageVfrHud:
-		r.handleVfrHud(msg, endpoint)
-	case *common.MessageSysStatus:
-		r.handleSysStatus(msg, endpoint)
-	}
-}
-
-// handleHeartbeat processes heartbeat messages
-func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string) {
-	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, msg)
-	r.handleTelemetryMessage(envelope)
-}
-
-// handleGlobalPosition processes global position messages
-func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, source string) {
-	envelope := telemetry.BuildGlobalPositionIntEnvelope(source, msg)
-	r.handleTelemetryMessage(envelope)
-}
-
-// handleAttitude processes attitude messages
-func (r *Relay) handleAttitude(msg *common.MessageAttitude, source string) {
-	envelope := telemetry.BuildAttitudeEnvelope(source, msg)
-	r.handleTelemetryMessage(envelope)
-}
-
-// handleVfrHud processes VFR HUD messages
-func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, source string) {
-	envelope := telemetry.BuildVfrHudEnvelope(source, msg)
-
-	r.handleTelemetryMessage(envelope)
-}
-
-// handleSysStatus processes system status messages
-func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, source string) {
-	envelope := telemetry.BuildSysStatusEnvelope(source, msg)
-	r.handleTelemetryMessage(envelope)
-}
-
-// getFlightMode converts custom mode to flight mode string
-func (r *Relay) getFlightMode(customMode uint32) string {
-	// This is a simplified mapping - in practice, you'd need to check
-	// the specific autopilot type and mode definitions
-	switch customMode {
-	case 0:
-		return "STABILIZE"
-	case 1:
-		return "ACRO"
-	case 2:
-		return "ALT_HOLD"
-	case 3:
-		return "AUTO"
-	case 4:
-		return "GUIDED"
-	case 5:
-		return "LOITER"
-	case 6:
-		return "RTL"
-	case 7:
-		return "CIRCLE"
-	case 8:
-		return "POSITION"
-	case 9:
-		return "LAND"
-	case 10:
-		return "OF_LOITER"
-	case 11:
-		return "DRIFT"
-	case 13:
-		return "SPORT"
-	case 14:
-		return "FLIP"
-	case 15:
-		return "AUTOTUNE"
-	case 16:
-		return "POSHOLD"
-	case 17:
-		return "BRAKE"
-	case 18:
-		return "THROW"
-	case 19:
-		return "AVOID_ADSB"
-	case 20:
-		return "GUIDED_NOGPS"
-	case 21:
-		return "SMART_RTL"
-	case 22:
-		return "FLOWHOLD"
-	case 23:
-		return "FOLLOW"
-	case 24:
-		return "ZIGZAG"
-	case 25:
-		return "SYSTEMID"
-	case 26:
-		return "AUTOROTATE"
-	case 27:
-		return "AUTO_RTL"
-	default:
-		return "UNKNOWN"
-	}
 }
 
 // handleTelemetryMessage processes incoming telemetry messages
