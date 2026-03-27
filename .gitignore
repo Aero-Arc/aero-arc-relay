@@ -54,3 +54,6 @@ docker-data/
 # Temporary files
 tmp/
 temp/
+
+# Claude Code session files
+CLAUDE.md

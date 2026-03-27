@@ -1,0 +1,238 @@
+version: "3"
+
+vars:
+  BINARY_NAME: aero-arc-relay
+  DOCKER_IMAGE: aero-arc-relay
+  CONFIG_PATH: configs/config.yaml
+  COVERAGE_DIR: coverage
+  COVERAGE_FILE: "{{.COVERAGE_DIR}}/coverage.out"
+  COVERAGE_HTML: "{{.COVERAGE_DIR}}/coverage.html"
+  BENCH_DIR: benchmarks
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the application
+    cmds:
+      - echo "Building {{.BINARY_NAME}}..."
+      - mkdir -p bin
+      - "go build -o bin/{{.BINARY_NAME}} cmd/aero-arc-relay/main.go"
+      - 'echo "Build complete: bin/{{.BINARY_NAME}}"'
+
+  build-all:
+    desc: Build for multiple platforms
+    cmds:
+      - echo "Building for multiple platforms..."
+      - mkdir -p bin
+      - GOOS=linux GOARCH=amd64 go build -o bin/{{.BINARY_NAME}}-linux-amd64 cmd/aero-arc-relay/main.go
+      - GOOS=darwin GOARCH=amd64 go build -o bin/{{.BINARY_NAME}}-darwin-amd64 cmd/aero-arc-relay/main.go
+      - GOOS=windows GOARCH=amd64 go build -o bin/{{.BINARY_NAME}}-windows-amd64.exe cmd/aero-arc-relay/main.go
+      - echo "Multi-platform builds complete"
+
+  run:
+    desc: Run the application
+    deps: [build]
+    cmds:
+      - echo "Running {{.BINARY_NAME}}..."
+      - ./bin/{{.BINARY_NAME}} -config {{.CONFIG_PATH}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - echo "Running tests..."
+      - go test -v ./...
+
+  test-coverage:
+    desc: Run tests with coverage
+    cmds:
+      - mkdir -p {{.COVERAGE_DIR}}
+      - echo "Running tests with coverage..."
+      - "go test -coverprofile={{.COVERAGE_FILE}} -covermode=atomic ./..."
+      - "go tool cover -html={{.COVERAGE_FILE}} -o {{.COVERAGE_HTML}}"
+      - 'echo "Coverage report generated: {{.COVERAGE_HTML}}"'
+
+  test-race:
+    desc: Run tests with race detection
+    cmds:
+      - echo "Running tests with race detection..."
+      - go test -race -v ./...
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - mkdir -p {{.BENCH_DIR}}
+      - echo "Running benchmarks..."
+      - "go test -bench=. -benchmem -run=^$ ./... > {{.BENCH_DIR}}/benchmark.txt"
+      - echo "Benchmark results saved to {{.BENCH_DIR}}/benchmark.txt"
+
+  test-all:
+    desc: Run all tests (unit, integration, race, coverage)
+    deps: [test, test-race, test-coverage]
+    cmds:
+      - echo "All tests completed"
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - echo "Cleaning..."
+      - rm -rf bin/
+      - rm -rf {{.COVERAGE_DIR}}/
+      - rm -rf {{.BENCH_DIR}}/
+      - go clean
+      - echo "Clean complete"
+
+  fmt:
+    desc: Format code
+    cmds:
+      - echo "Formatting code..."
+      - go fmt ./...
+      - echo "Code formatting complete"
+
+  lint:
+    desc: Lint code with golangci-lint
+    cmds:
+      - echo "Linting code..."
+      - |
+        if ! command -v golangci-lint >/dev/null 2>&1; then
+          echo "Installing golangci-lint..."
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        fi
+      - golangci-lint run --timeout=5m
+      - echo "Linting complete"
+
+  lint-config:
+    desc: Lint with specific configuration
+    cmds:
+      - echo "Linting with custom config..."
+      - golangci-lint run --config .golangci.yml --timeout=5m
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - echo "Running go vet..."
+      - go vet ./...
+      - echo "Vet complete"
+
+  staticcheck:
+    desc: Run static analysis
+    cmds:
+      - echo "Running static analysis..."
+      - |
+        if ! command -v staticcheck >/dev/null 2>&1; then
+          echo "Installing staticcheck..."
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+        fi
+      - staticcheck ./...
+      - echo "Static analysis complete"
+
+  quality:
+    desc: Run all code quality checks
+    deps: [fmt, vet, lint, staticcheck]
+    cmds:
+      - echo "All code quality checks complete"
+
+  install-tools:
+    desc: Install development tools
+    cmds:
+      - echo "Installing development tools..."
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - go install honnef.co/go/tools/cmd/staticcheck@latest
+      - go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+      - echo "Development tools installed"
+
+  security:
+    desc: Run security scan
+    cmds:
+      - echo "Running security scan..."
+      - |
+        if ! command -v gosec >/dev/null 2>&1; then
+          echo "Installing gosec..."
+          go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        fi
+      - gosec ./...
+      - echo "Security scan complete"
+
+  deps-graph:
+    desc: Generate dependency graph
+    cmds:
+      - echo "Generating dependency graph..."
+      - |
+        if ! command -v go-callvis >/dev/null 2>&1; then
+          echo "Installing go-callvis..."
+          go install github.com/OfekLev/go-callvis@latest
+        fi
+      - go-callvis -group pkg,type -ignore github.com/bluenviron/gomavlib/v2 ./cmd/aero-arc-relay
+      - echo "Dependency graph generated"
+
+  ci:
+    desc: Run CI pipeline
+    deps: [install-tools, quality, test-all, security]
+    cmds:
+      - echo "CI pipeline complete"
+
+  docker-build:
+    desc: Build Docker image
+    cmds:
+      - echo "Building Docker image..."
+      - "docker build -t {{.DOCKER_IMAGE}} ."
+      - 'echo "Docker image built: {{.DOCKER_IMAGE}}"'
+
+  docker-run:
+    desc: Start services with Docker Compose
+    cmds:
+      - echo "Starting services with Docker Compose..."
+      - docker-compose up -d
+
+  docker-stop:
+    desc: Stop Docker Compose services
+    cmds:
+      - echo "Stopping Docker Compose services..."
+      - docker-compose down
+
+  logs:
+    desc: View logs
+    cmds:
+      - echo "Viewing logs..."
+      - docker-compose logs -f aero-arc-relay
+
+  deps:
+    desc: Install dependencies
+    cmds:
+      - echo "Installing dependencies..."
+      - go mod download
+      - go mod tidy
+      - go mod verify
+      - echo "Dependencies installed"
+
+  docs:
+    desc: Generate documentation
+    cmds:
+      - echo "Generating documentation..."
+      - |
+        if ! command -v godoc >/dev/null 2>&1; then
+           echo "Installing godoc..."
+           go install golang.org/x/tools/cmd/godoc@latest
+        fi
+      - godoc -http=:6060 &
+      - echo "Documentation server started at http://localhost:6060"
+
+  dev:
+    desc: Development workflow
+    deps: [deps, fmt, vet, test]
+    cmds:
+      - echo "Development checks complete"
+
+  pre-commit:
+    desc: Pre-commit checks
+    deps: [fmt, vet, lint, test-race]
+    cmds:
+      - echo "Pre-commit checks complete"
+
+  release:
+    desc: Release preparation
+    deps: [clean, build-all, test-all, quality, security]
+    cmds:
+      - echo "Release preparation complete"

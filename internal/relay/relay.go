@@ -1,5 +1,3 @@
-// Package relay runs the MAVLink relay: it manages drone sessions, exposes
-// gRPC gateway/control services, forwards telemetry to sinks, and serves metrics.
 package relay
 
 import (
@@ -7,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
-	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"github.com/bluenviron/gomavlib/v2"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
@@ -25,8 +22,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 // Relay manages MAVLink connections and data forwarding to sinks
@@ -34,25 +29,8 @@ type Relay struct {
 	config           *config.Config
 	sinks            []sinks.Sink
 	connections      sync.Map // map[string]*gomavlib.Node
+	endpointDroneIDs sync.Map // map[string]string - endpoint name -> drone_id (entity_id)
 	sinksInitialized bool
-	grpcServer       *grpc.Server
-	grpcSessions     map[string]*DroneSession
-	sessionsMu       sync.RWMutex
-	relayv1.UnimplementedRelayControlServer
-	agentv1.UnimplementedAgentGatewayServer
-}
-
-type DroneSession struct {
-	stream        agentv1.AgentGateway_TelemetryStreamServer
-	agentID       string
-	SessionID     string
-	ConnectedAt   time.Time
-	LastHeartbeat time.Time
-	Position      *common.MessageGlobalPositionInt
-	Attitude      *common.MessageAttitude
-	VfrHud        *common.MessageVfrHud
-	SystemStatus  *common.MessageSysStatus
-	sessionMu     sync.RWMutex
 }
 
 var (
@@ -70,9 +48,8 @@ var (
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		config: cfg,
+		sinks:  make([]sinks.Sink, 0),
 	}
 
 	// Initialize sinks
@@ -85,60 +62,31 @@ func New(cfg *config.Config) (*Relay, error) {
 
 // Start begins the relay operation
 func (r *Relay) Start(ctx context.Context) error {
-	slog.Info("Starting aero-arc-relay...")
+	log.Println("Starting aero-arc-relay...")
+
+	// Initialize MAVLink node with all endpoints
+	processed, errs := r.initializeMAVLinkNode(r.config.MAVLink.Dialect)
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to initialize one or more MAVLink nodes: %v", errs)
+	}
+
+	// Start new goroutines for extracting messages from the nodes
+	for _, name := range processed {
+		go func(name string) {
+			r.processMessages(ctx, name)
+		}(name)
+	}
 
 	// Wait for context cancellation or signal to shut down
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.GrpcPort))
-	if err != nil {
-		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTCPListener", slog.String("error", err.Error()))
-		return ErrCreatingTCPListener
-	}
-
-	var creds credentials.TransportCredentials
-	var homeDir string
-
-	creds, err = credentials.NewServerTLSFromFile(r.config.TLSCertPath, r.config.TLSKeyPath)
-	if r.config.Debug {
-		homeDir, err = os.UserHomeDir()
-		if err != nil {
-			slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
-			return ErrGettingHomeDir
-		}
-
-		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
-		keyPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSKeyPath)
-		creds, err = credentials.NewServerTLSFromFile(certPath, keyPath)
-	}
-
-	if err != nil {
-		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTLSCredentials", slog.String("error", err.Error()))
-		return ErrCreatingTLSCredentials
-	}
-
-	r.grpcServer = grpc.NewServer(grpc.Creds(creds))
-
-	// Register gRPC servers
-	relayv1.RegisterRelayControlServer(r.grpcServer, r)
-	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
-
-	// Start gRPC server in non blocking goroutine
-	go func() {
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "serving gRPC server", slog.String("port", fmt.Sprintf(":%d", r.config.GrpcPort)))
-		if err := r.grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
-			slog.LogAttrs(context.Background(), slog.LevelError, "failed to serve gRPC server", slog.String("error", err.Error()))
-		}
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "gRPC server stopped")
-	}()
-
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		w.Write([]byte(`{"status":"ok"}`))
 	}))
 	http.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !r.ready() {
@@ -147,7 +95,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		w.Write([]byte(`{"status":"ok"}`))
 	}))
 
 	metricsServer := &http.Server{
@@ -156,23 +104,16 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	shutdown := func() {
-		// Shutdown gRPC server
-		stopped := make(chan struct{})
-		go func() {
-			if r.grpcServer != nil {
-				slog.Info("shutting down gRPC server")
-				r.grpcServer.GracefulStop()
+		// Close MAVLink connections
+		r.connections.Range(func(key, value any) bool {
+			node, ok := value.(*gomavlib.Node)
+			if !ok {
+				return true
 			}
-			close(stopped)
-		}()
 
-		select {
-		case <-stopped:
-			slog.Info("gRPC server stopped")
-		case <-time.After(10 * time.Second):
-			slog.Info("gRPC server shutdown timed out")
-			r.grpcServer.Stop()
-		}
+			node.Close()
+			return true
+		})
 
 		// Shutdown sinks with timeout
 		baseCtx := context.Background()
@@ -207,7 +148,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	for signal := range signals {
 		if signal == os.Interrupt || signal == syscall.SIGTERM {
-			slog.Info("Received signal to shut down relay...")
+			log.Println("Received signal to shut down relay...")
 			shutdown()
 			break
 		}
@@ -222,97 +163,250 @@ func (r *Relay) ready() bool {
 
 // initializeSinks sets up all configured data sinks
 func (r *Relay) initializeSinks() error {
-	// Initialize S3 sink if configured
-	if r.config.Sinks.S3 != nil {
-		s3Sink, err := sinks.NewS3Sink(r.config.Sinks.S3)
-		if err != nil {
-			return fmt.Errorf("failed to create S3 sink: %w", err)
-		}
-		r.sinks = append(r.sinks, s3Sink)
+	factory := sinks.NewSinkFactory()
+
+	configuredSinks, err := factory.CreateConfiguredSinks(r.config)
+	if err != nil {
+		return fmt.Errorf("failed to create sinks: %w", err)
 	}
 
-	// Initialize GCS sink if configured
-	if r.config.Sinks.GCS != nil {
-		gcsSink, err := sinks.NewGCSSink(r.config.Sinks.GCS)
-		if err != nil {
-			return fmt.Errorf("failed to create GCS sink: %w", err)
-		}
-		r.sinks = append(r.sinks, gcsSink)
-	}
-
-	// Initialize BigQuery sink if configured
-	if r.config.Sinks.BigQuery != nil {
-		bigquerySink, err := sinks.NewBigQuerySink(r.config.Sinks.BigQuery)
-		if err != nil {
-			return fmt.Errorf("failed to create BigQuery sink: %w", err)
-		}
-		r.sinks = append(r.sinks, bigquerySink)
-	}
-
-	// Initialize Timestream sink if configured
-	if r.config.Sinks.Timestream != nil {
-		timestreamSink, err := sinks.NewTimestreamSink(r.config.Sinks.Timestream)
-		if err != nil {
-			return fmt.Errorf("failed to create Timestream sink: %w", err)
-		}
-		r.sinks = append(r.sinks, timestreamSink)
-	}
-
-	// Initialize InfluxDB sink if configured
-	if r.config.Sinks.InfluxDB != nil {
-		influxdbSink, err := sinks.NewInfluxDBSink(r.config.Sinks.InfluxDB)
-		if err != nil {
-			return fmt.Errorf("failed to create InfluxDB sink: %w", err)
-		}
-		r.sinks = append(r.sinks, influxdbSink)
-	}
-
-	// Initialize Prometheus sink if configured
-	if r.config.Sinks.Prometheus != nil {
-		prometheusSink, err := sinks.NewPrometheusSink(r.config.Sinks.Prometheus)
-		if err != nil {
-			return fmt.Errorf("failed to create Prometheus sink: %w", err)
-		}
-		r.sinks = append(r.sinks, prometheusSink)
-	}
-
-	// Initialize Elasticsearch sink if configured
-	if r.config.Sinks.Elasticsearch != nil {
-		elasticsearchSink, err := sinks.NewElasticsearchSink(r.config.Sinks.Elasticsearch)
-		if err != nil {
-			return fmt.Errorf("failed to create Elasticsearch sink: %w", err)
-		}
-		r.sinks = append(r.sinks, elasticsearchSink)
-	}
-
-	// Initialize Kafka sink if configured
-	if r.config.Sinks.Kafka != nil {
-		kafkaSink, err := sinks.NewKafkaSink(r.config.Sinks.Kafka)
-		if err != nil {
-			return fmt.Errorf("failed to create Kafka sink: %w", err)
-		}
-		r.sinks = append(r.sinks, kafkaSink)
-	}
-
-	// Initialize file sink if configured
-	if r.config.Sinks.File != nil {
-		fileSink, err := sinks.NewFileSink(r.config.Sinks.File)
-		if err != nil {
-			return fmt.Errorf("failed to create file sink: %w", err)
-		}
-		r.sinks = append(r.sinks, fileSink)
-	}
-
-	if len(r.sinks) == 0 {
-		return fmt.Errorf("no sinks configured")
-	}
+	r.sinks = configuredSinks
 	r.sinksInitialized = true
+
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "Sinks initialized", slog.Int("count", len(r.sinks)))
 	return nil
+}
+
+// initializeMAVLinkNode sets up a single MAVLink node with all endpoints
+func (r *Relay) initializeMAVLinkNode(dialect *dialect.Dialect) ([]string, []error) {
+	var errs []error
+	if len(r.config.MAVLink.Endpoints) == 0 {
+		return nil, []error{fmt.Errorf("no MAVLink endpoints configured")}
+	}
+
+	// Convert all endpoints to gomavlib endpoint configurations
+	processed := []string{}
+	for _, endpoint := range r.config.MAVLink.Endpoints {
+		endpointConf, err := r.createEndpointConf(endpoint)
+		if err != nil {
+			return nil, []error{fmt.Errorf("failed to create endpoint config for %s: %w", endpoint.Name, err)}
+		}
+		node, err := gomavlib.NewNode(gomavlib.NodeConf{
+			Endpoints:   []gomavlib.EndpointConf{endpointConf},
+			Dialect:     dialect,
+			OutVersion:  gomavlib.V2,
+			OutSystemID: 255,
+		})
+		// TODO handle failures but don't return and jump to the next endpoint.
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to create MAVLink node: %w", err))
+			continue
+		}
+		r.connections.Store(endpoint.Name, node)
+		// Store the drone_id (entity_id) mapping for this endpoint
+		r.endpointDroneIDs.Store(endpoint.Name, endpoint.DroneID)
+		processed = append(processed, endpoint.Name)
+	}
+
+	return processed, errs
+}
+
+// createEndpointConf converts a config endpoint to gomavlib endpoint configuration
+func (r *Relay) createEndpointConf(endpoint config.MAVLinkEndpoint) (gomavlib.EndpointConf, error) {
+	switch endpoint.Protocol {
+	case config.MAVLinkEndpointProtocolUDP:
+		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
+		return &gomavlib.EndpointUDPServer{
+			Address: address,
+		}, nil
+
+	case config.MAVLinkEndpointProtocolTCP:
+		address := fmt.Sprintf("%s:%d", "0.0.0.0", endpoint.Port)
+		return &gomavlib.EndpointTCPServer{
+			Address: address,
+		}, nil
+	case config.MAVLinkEndpointProtocolSerial:
+		return &gomavlib.EndpointSerial{
+			Device: fmt.Sprintf("/dev/ttyUSB%d", endpoint.Port),
+			Baud:   endpoint.BaudRate,
+		}, nil
+	default:
+		return nil, fmt.Errorf("%w: %s", config.ErrInvalidProtocol, endpoint.Protocol)
+	}
+}
+
+// processMessages processes incoming MAVLink messages
+func (r *Relay) processMessages(ctx context.Context, endpoint string) {
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "processing messages for endpoint", slog.String("endpoint", endpoint))
+	conn, ok := r.connections.Load(endpoint)
+	if !ok {
+		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection not found. returning from processMessages", slog.String("endpoint", endpoint))
+		return
+	}
+	node, ok := conn.(*gomavlib.Node)
+	if !ok {
+		slog.LogAttrs(context.Background(), slog.LevelError, "endpoint connection is not a valid MAVLink node. returning from processMessages", slog.String("endpoint", endpoint))
+		return
+	}
+
+	for evt := range node.Events() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if frameEvt, ok := evt.(*gomavlib.EventFrame); ok {
+				r.handleFrame(frameEvt, endpoint)
+				continue
+			}
+
+			if _, ok := evt.(*gomavlib.EventChannelOpen); ok {
+				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel open for endpoint", slog.String("endpoint", endpoint))
+				continue
+			}
+
+			if _, ok := evt.(*gomavlib.EventChannelClose); ok {
+				slog.LogAttrs(context.Background(), slog.LevelInfo, "channel closed for endpoint", slog.String("endpoint", endpoint))
+				continue
+			}
+
+			if parseErr, ok := evt.(*gomavlib.EventParseError); ok {
+				slog.LogAttrs(context.Background(), slog.LevelWarn, "MAVLink parse error",
+					slog.String("endpoint", endpoint),
+					slog.String("error", parseErr.Error.Error()))
+				continue
+			}
+
+			slog.LogAttrs(context.Background(), slog.LevelError, "unsupported event type", slog.String("event_type", fmt.Sprintf("%T", evt)))
+		}
+	}
+}
+
+// getDroneID returns the configured drone_id (entity_id) for an endpoint name
+func (r *Relay) getDroneID(endpointName string) string {
+	if droneID, ok := r.endpointDroneIDs.Load(endpointName); ok {
+		return droneID.(string)
+	}
+	// Fallback to endpoint name if not found (shouldn't happen in 1:1 mode)
+	return endpointName
+}
+
+// handleFrame processes a MAVLink frame
+func (r *Relay) handleFrame(evt *gomavlib.EventFrame, endpoint string) {
+	// Get the configured drone_id (entity_id) for this endpoint
+	droneID := r.getDroneID(endpoint)
+
+	// Determine source endpoint name from the frame
+	switch msg := evt.Frame.GetMessage().(type) {
+	case *common.MessageHeartbeat:
+		r.handleHeartbeat(msg, endpoint, droneID)
+	case *common.MessageGlobalPositionInt:
+		r.handleGlobalPosition(msg, endpoint, droneID)
+	case *common.MessageAttitude:
+		r.handleAttitude(msg, endpoint, droneID)
+	case *common.MessageVfrHud:
+		r.handleVfrHud(msg, endpoint, droneID)
+	case *common.MessageSysStatus:
+		r.handleSysStatus(msg, endpoint, droneID)
+	}
+}
+
+// handleHeartbeat processes heartbeat messages
+func (r *Relay) handleHeartbeat(msg *common.MessageHeartbeat, endpoint string, droneID string) {
+	envelope := telemetry.BuildHeartbeatEnvelope(endpoint, droneID, msg)
+	r.handleTelemetryMessage(envelope)
+}
+
+// handleGlobalPosition processes global position messages
+func (r *Relay) handleGlobalPosition(msg *common.MessageGlobalPositionInt, endpoint string, droneID string) {
+	envelope := telemetry.BuildGlobalPositionIntEnvelope(endpoint, droneID, msg)
+	r.handleTelemetryMessage(envelope)
+}
+
+// handleAttitude processes attitude messages
+func (r *Relay) handleAttitude(msg *common.MessageAttitude, endpoint string, droneID string) {
+	envelope := telemetry.BuildAttitudeEnvelope(endpoint, droneID, msg)
+	r.handleTelemetryMessage(envelope)
+}
+
+// handleVfrHud processes VFR HUD messages
+func (r *Relay) handleVfrHud(msg *common.MessageVfrHud, endpoint string, droneID string) {
+	envelope := telemetry.BuildVfrHudEnvelope(endpoint, droneID, msg)
+	r.handleTelemetryMessage(envelope)
+}
+
+// handleSysStatus processes system status messages
+func (r *Relay) handleSysStatus(msg *common.MessageSysStatus, endpoint string, droneID string) {
+	envelope := telemetry.BuildSysStatusEnvelope(endpoint, droneID, msg)
+	r.handleTelemetryMessage(envelope)
+}
+
+// getFlightMode converts custom mode to flight mode string
+func (r *Relay) getFlightMode(customMode uint32) string {
+	// This is a simplified mapping - in practice, you'd need to check
+	// the specific autopilot type and mode definitions
+	switch customMode {
+	case 0:
+		return "STABILIZE"
+	case 1:
+		return "ACRO"
+	case 2:
+		return "ALT_HOLD"
+	case 3:
+		return "AUTO"
+	case 4:
+		return "GUIDED"
+	case 5:
+		return "LOITER"
+	case 6:
+		return "RTL"
+	case 7:
+		return "CIRCLE"
+	case 8:
+		return "POSITION"
+	case 9:
+		return "LAND"
+	case 10:
+		return "OF_LOITER"
+	case 11:
+		return "DRIFT"
+	case 13:
+		return "SPORT"
+	case 14:
+		return "FLIP"
+	case 15:
+		return "AUTOTUNE"
+	case 16:
+		return "POSHOLD"
+	case 17:
+		return "BRAKE"
+	case 18:
+		return "THROW"
+	case 19:
+		return "AVOID_ADSB"
+	case 20:
+		return "GUIDED_NOGPS"
+	case 21:
+		return "SMART_RTL"
+	case 22:
+		return "FLOWHOLD"
+	case 23:
+		return "FOLLOW"
+	case 24:
+		return "ZIGZAG"
+	case 25:
+		return "SYSTEMID"
+	case 26:
+		return "AUTOROTATE"
+	case 27:
+		return "AUTO_RTL"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // handleTelemetryMessage processes incoming telemetry messages
 func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
-	relayMessagesTotal.WithLabelValues(msg.AgentID, msg.MsgName).Inc()
+	relayMessagesTotal.WithLabelValues(msg.DroneID, msg.MsgName).Inc()
 
 	// Forward to all sinks
 	for _, sink := range r.sinks {
