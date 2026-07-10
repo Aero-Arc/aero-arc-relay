@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
@@ -86,13 +87,16 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			return status.Errorf(codes.Unknown, "stream recv error: %v", err)
 		}
 
-		// Process the frame (e.g., forward to sinks)
-		r.handleTelemetryFrame(frame)
-
-		// Send ACK
 		ack := &agentv1.TelemetryAck{
 			Seq:    frame.Seq,
 			Status: agentv1.TelemetryAck_STATUS_OK,
+		}
+		if strings.TrimSpace(frame.MsgName) == "" {
+			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+			ack.Error = "telemetry frame message name is required"
+		} else {
+			// Process the frame (e.g., forward to outputs).
+			r.handleTelemetryFrame(frame)
 		}
 
 		if err := stream.Send(ack); err != nil {
