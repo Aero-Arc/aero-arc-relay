@@ -111,6 +111,41 @@ func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
 	}
 }
 
+func TestInternalOutputMessageFilters(t *testing.T) {
+	tests := []struct {
+		name     string
+		filter   outputs.MessageFilter
+		included []string
+		excluded string
+	}{
+		{
+			name:     "registry",
+			filter:   registryMessageFilter(),
+			included: []string{"Heartbeat", "GlobalPositionInt"},
+			excluded: "Attitude",
+		},
+		{
+			name:     "telemetry",
+			filter:   telemetryMessageFilter(),
+			included: []string{"GlobalPositionInt", "VFR_HUD", "SystemStatus"},
+			excluded: "Heartbeat",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, message := range tt.included {
+				if !tt.filter.Allows(message) {
+					t.Errorf("internal %s filter rejects required message %q", tt.name, message)
+				}
+			}
+			if tt.filter.Allows(tt.excluded) {
+				t.Errorf("internal %s filter allows unrelated message %q", tt.name, tt.excluded)
+			}
+		})
+	}
+}
+
 func TestHandleTelemetryMessage(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)

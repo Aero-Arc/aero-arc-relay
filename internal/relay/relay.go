@@ -237,14 +237,14 @@ func (r *Relay) initializeOutputs() error {
 	if r.config.Registry.Enabled {
 		r.router.AddConsumer(
 			registryreporter.NewNoopReporter(),
-			filterFromConfig(r.config.Registry.MessageFilterConfig),
+			registryMessageFilter(),
 		)
 	}
 
 	if r.config.Telemetry.Enabled {
 		r.router.AddConsumer(
 			telemetrywriter.NewNoopWriter(),
-			filterFromConfig(r.config.Telemetry.MessageFilterConfig),
+			telemetryMessageFilter(),
 		)
 	}
 
@@ -256,6 +256,23 @@ func (r *Relay) initializeOutputs() error {
 	}
 	r.outputsInitialized = true
 	return nil
+}
+
+// registryMessageFilter defines the telemetry required by Aero Arc registry reporting.
+func registryMessageFilter() outputs.MessageFilter {
+	return outputs.MessageFilter{Include: []string{
+		"Heartbeat",
+		"GlobalPositionInt",
+	}}
+}
+
+// telemetryMessageFilter defines the normalized hot telemetry maintained by Aero Arc.
+func telemetryMessageFilter() outputs.MessageFilter {
+	return outputs.MessageFilter{Include: []string{
+		"GlobalPositionInt",
+		"VFR_HUD",
+		"SystemStatus",
+	}}
 }
 
 // initializeSinks sets up all configured generic data sinks.
