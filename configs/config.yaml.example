@@ -1,9 +1,26 @@
+registry:
+  enabled: false
+  address: "localhost:9090"
+  include_messages:
+    - "Heartbeat"
+    - "GlobalPositionInt"
+
+telemetry:
+  enabled: false
+  backend: "noop"
+  include_messages:
+    - "GlobalPositionInt"
+    - "VFR_HUD"
+    - "SystemStatus"
+
 sinks:
   file:
     path: "/tmp/log/aero-arc-relay"
     prefix: "telemetry"
     format: "json"
     rotation_interval: "24h"
+    include_messages:
+      - "*"
   # gcs:
   #   bucket: "aero-arc-telemetry-data-dev"
   #   project_id: "aero-arc-relay"
@@ -21,6 +38,8 @@ sinks:
   #   brokers:
   #     - "localhost:9092"  # For local Kafka container
   #   topic: "quickstart-events"  # Choose your topic name
+  #   include_messages:
+  #     - "GlobalPositionInt"
 
 logging:
   level: "info"
