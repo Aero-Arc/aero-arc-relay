@@ -5,22 +5,19 @@ import "strings"
 const wildcardMessage = "*"
 
 // MessageFilter controls which normalized MAVLink message names reach a
-// consumer. Empty include lists mean "include everything".
+// consumer. Empty include lists match nothing; use "*" to include everything.
 type MessageFilter struct {
 	Include []string
 	Exclude []string
 }
 
 func (f MessageFilter) Allows(messageName string) bool {
-	normalized := NormalizeMessageName(messageName)
-	if normalized == "" {
+	if len(f.Include) == 0 {
 		return false
 	}
+	normalized := NormalizeMessageName(messageName)
 	if containsMessage(f.Exclude, normalized) {
 		return false
-	}
-	if len(f.Include) == 0 {
-		return true
 	}
 	return containsMessage(f.Include, normalized)
 }
@@ -28,6 +25,9 @@ func (f MessageFilter) Allows(messageName string) bool {
 func containsMessage(messages []string, messageName string) bool {
 	for _, item := range messages {
 		normalized := NormalizeMessageName(item)
+		if normalized == "" {
+			continue
+		}
 		if normalized == wildcardMessage || normalized == messageName {
 			return true
 		}

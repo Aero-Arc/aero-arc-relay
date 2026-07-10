@@ -154,7 +154,25 @@ func TestTelemetryStream(t *testing.T) {
 		}
 	}
 
-	// Test Case 2: Clean Shutdown
+	// Test Case 2: Reject a frame without a message name and keep the stream open.
+	unnamedFrame := &agentv1.TelemetryFrame{AgentId: "frame-2", Seq: 2}
+	stream.recvChan <- unnamedFrame
+	select {
+	case ack := <-stream.sentAckChan:
+		if ack.Status != agentv1.TelemetryAck_STATUS_PERMANENT_ERROR {
+			t.Errorf("Expected permanent error status, got %v", ack.Status)
+		}
+		if ack.Error == "" {
+			t.Error("Expected validation error for unnamed frame")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for unnamed frame ACK")
+	}
+	if mockSink.GetMessageCount() != 1 {
+		t.Errorf("Unnamed frame reached sink; message count = %d, want 1", mockSink.GetMessageCount())
+	}
+
+	// Test Case 3: Clean Shutdown
 	close(stream.recvChan) // Trigger io.EOF
 
 	select {

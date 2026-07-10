@@ -47,4 +47,18 @@ func TestMessageFilterWildcard(t *testing.T) {
 	if !filter.Allows("*common.MessageGlobalPositionInt") {
 		t.Fatal("expected wildcard to allow normalized Go type names")
 	}
+	if !filter.Allows("") {
+		t.Fatal("expected wildcard to allow any message name")
+	}
+}
+
+func TestMessageFilterEmptyIncludeMatchesNothing(t *testing.T) {
+	filter := MessageFilter{}
+
+	if filter.Allows("Heartbeat") {
+		t.Fatal("expected an empty include list to reject named messages")
+	}
+	if filter.Allows("") {
+		t.Fatal("expected an empty include list to reject unnamed messages")
+	}
 }
