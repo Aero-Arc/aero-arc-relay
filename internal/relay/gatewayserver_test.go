@@ -8,7 +8,6 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	"github.com/makinje/aero-arc-relay/internal/mock"
-	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -89,10 +88,8 @@ func (m *mockTelemetryStream) Send(ack *agentv1.TelemetryAck) error {
 func TestTelemetryStream(t *testing.T) {
 	// Setup Relay with mock sink
 	mockSink := mock.NewMockSink()
-	relay := &Relay{
-		grpcSessions: make(map[string]*DroneSession),
-		sinks:        []sinks.Sink{mockSink},
-	}
+	relay := relayWithSinks(mockSink)
+	relay.grpcSessions = make(map[string]*DroneSession)
 
 	// Pre-register session (usually required but updated via stream)
 	agentID := "agent-stream-test"
