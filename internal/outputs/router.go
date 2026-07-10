@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
+
+type RouteErrorHandler func(consumer string, err error)
 
 type route struct {
 	consumer EnvelopeConsumer
@@ -30,26 +33,37 @@ func (r *Router) AddConsumer(consumer EnvelopeConsumer, filter MessageFilter) {
 	r.routes = append(r.routes, route{consumer: consumer, filter: filter})
 }
 
-func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
+func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope, onError RouteErrorHandler) {
+	//TODO: Figure out what happens or how to get around blocked consumer
+	var wg sync.WaitGroup
+
 	if r == nil {
-		return nil
+		return
 	}
 
-	var routeErr error
 	for _, route := range r.routes {
 		if !route.filter.Allows(envelope.MsgName) {
 			continue
 		}
-		if err := route.consumer.WriteEnvelope(ctx, envelope); err != nil {
-			slog.Warn("telemetry consumer write failed",
-				slog.String("consumer", route.consumer.Name()),
-				slog.String("message_name", envelope.MsgName),
-				slog.String("error", err.Error()),
-			)
-			routeErr = fmt.Errorf("%s: %w", route.consumer.Name(), err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := route.consumer.WriteEnvelope(ctx, envelope); err != nil {
+				consumer := route.consumer.Name()
+				slog.Warn("telemetry consumer write failed",
+					slog.String("consumer", route.consumer.Name()),
+					slog.String("message_name", envelope.MsgName),
+					slog.Any("error", err),
+				)
+
+				if onError != nil {
+					onError(consumer, err)
+				}
+			}
+		}()
 	}
-	return routeErr
+
+	wg.Wait()
 }
 
 func (r *Router) Close(ctx context.Context) error {

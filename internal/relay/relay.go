@@ -5,13 +5,11 @@ package relay
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -369,25 +367,7 @@ func filterFromConfig(filter config.MessageFilterConfig) outputs.MessageFilter {
 // handleTelemetryMessage processes incoming telemetry messages
 func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
 	relayMessagesTotal.WithLabelValues(msg.AgentID, msg.MsgName).Inc()
-
-	if r.router != nil {
-		_ = r.router.Route(context.Background(), msg)
-		return
-	}
-
-	// Backward-compatible path for tests that manually construct Relay{sinks: ...}.
-	for _, sink := range r.sinks {
-		if err := sink.WriteMessage(msg); err != nil {
-			relaySinkWriteErrorsTotal.WithLabelValues(sinkNameForMetrics(sink)).Inc()
-			log.Printf("Failed to write message to sink: %v", err)
-		}
-	}
-}
-
-func sinkNameForMetrics(s sinks.Sink) string {
-	typeName := fmt.Sprintf("%T", s)
-	if idx := strings.LastIndex(typeName, "."); idx != -1 {
-		return typeName[idx+1:]
-	}
-	return typeName
+	r.router.Route(context.Background(), msg, func(consumer string, _ error) {
+		relaySinkWriteErrorsTotal.WithLabelValues(consumer).Inc()
+	})
 }

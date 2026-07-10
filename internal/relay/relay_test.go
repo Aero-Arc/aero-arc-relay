@@ -10,9 +10,43 @@ import (
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/mock"
+	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+func relayWithSinks(testSinks ...sinks.Sink) *Relay {
+	router := outputs.NewRouter()
+	for i, sink := range testSinks {
+		router.AddConsumer(
+			outputs.NewSinkConsumer(fmt.Sprintf("test-%d", i), sink),
+			outputs.MessageFilter{Include: []string{"*"}},
+		)
+	}
+	return &Relay{sinks: testSinks, router: router}
+}
+
+func sinkErrorMetricValue(t *testing.T, sink string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "aero_relay_sink_errors_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "sink" && label.GetValue() == sink {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
 
 func TestRelayCreation(t *testing.T) {
 	cfg := &config.Config{
@@ -44,9 +78,7 @@ func TestRelayCreation(t *testing.T) {
 
 func TestHandleTelemetryMessage(t *testing.T) {
 	mockSink := mock.NewMockSink()
-	relay := &Relay{
-		sinks: []sinks.Sink{mockSink},
-	}
+	relay := relayWithSinks(mockSink)
 
 	msg := telemetry.TelemetryEnvelope{
 		AgentID:        "test-agent",
@@ -74,9 +106,7 @@ func TestHandleTelemetryMessage(t *testing.T) {
 }
 
 func TestHandleTelemetryMessageMultipleSinks(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink(), mock.NewMockSink()},
-	}
+	relay := relayWithSinks(mock.NewMockSink(), mock.NewMockSink())
 
 	msg := telemetry.TelemetryEnvelope{
 		AgentID:        "test-agent",
@@ -133,9 +163,7 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 
 func TestHandleTelemetryFrame(t *testing.T) {
 	mockSink := mock.NewMockSink()
-	relay := &Relay{
-		sinks: []sinks.Sink{mockSink},
-	}
+	relay := relayWithSinks(mockSink)
 
 	frame := &agentv1.TelemetryFrame{
 		AgentId: "agent-2",
@@ -162,9 +190,7 @@ func TestHandleTelemetryFrame(t *testing.T) {
 }
 
 func TestConcurrentTelemetryHandling(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink()},
-	}
+	relay := relayWithSinks(mock.NewMockSink())
 
 	numMessages := 100
 	var wg sync.WaitGroup
@@ -193,9 +219,8 @@ func TestConcurrentTelemetryHandling(t *testing.T) {
 
 func TestRelayErrorHandling(t *testing.T) {
 	failingSink := &failingSink{}
-	relay := &Relay{
-		sinks: []sinks.Sink{failingSink, mock.NewMockSink()},
-	}
+	relay := relayWithSinks(failingSink, mock.NewMockSink())
+	errorsBefore := sinkErrorMetricValue(t, "test-0")
 
 	msg := telemetry.TelemetryEnvelope{
 		AgentID:        "test-agent",
@@ -209,6 +234,9 @@ func TestRelayErrorHandling(t *testing.T) {
 	mockSink := relay.sinks[1].(*mock.MockSink)
 	if mockSink.GetMessageCount() != 1 {
 		t.Errorf("Expected 1 message in working sink, got %d", mockSink.GetMessageCount())
+	}
+	if got := sinkErrorMetricValue(t, "test-0"); got != errorsBefore+1 {
+		t.Errorf("Expected sink error metric to increase by 1, got %v before and %v after", errorsBefore, got)
 	}
 }
 
