@@ -20,6 +20,8 @@ sinks:
   #   credentials: "/home/makinje/aero-arc-relay/secrets/service-account.json"  # Path to GCP service account JSON file
   #   prefix: "telemetry"
   #   flush_interval: "30s"
+  #   include_messages:
+  #     - "*"
   # s3:
   #   bucket: "aero-arc-relay-telemetry"
   #   region: "us-east-1"
@@ -27,6 +29,8 @@ sinks:
   #   secret_key: "${AWS_SECRET_ACCESS_KEY}"
   #   prefix: "telemetry"
   #   flush_interval: "1m"
+  #   include_messages:
+  #     - "*"
   # kafka:
   #   brokers:
   #     - "localhost:9092"  # For local Kafka container
