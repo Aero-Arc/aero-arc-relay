@@ -9,6 +9,21 @@ import (
 // TestConfigLoad tests loading configuration from YAML.
 func TestConfigLoad(t *testing.T) {
 	configContent := `
+registry:
+  enabled: true
+  address: "localhost:9090"
+  include_messages:
+    - "Heartbeat"
+    - "GlobalPositionInt"
+
+telemetry:
+  enabled: true
+  backend: "noop"
+  include_messages:
+    - "GlobalPositionInt"
+    - "VFR_HUD"
+    - "SystemStatus"
+
 sinks:
   s3:
     bucket: "test-bucket"
@@ -21,11 +36,15 @@ sinks:
       - "localhost:9092"
       - "localhost:9093"
     topic: "telemetry-data"
+    include_messages:
+      - "GlobalPositionInt"
   file:
     path: "/var/log/telemetry"
     prefix: "telemetry"
     format: "json"
     rotation_interval: "24h"
+    include_messages:
+      - "*"
 
 logging:
   level: "debug"
@@ -48,6 +67,26 @@ logging:
 	cfg, err := Load(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if !cfg.Registry.Enabled {
+		t.Error("Registry should be enabled")
+	}
+	if cfg.Registry.Address != "localhost:9090" {
+		t.Errorf("Expected registry address 'localhost:9090', got '%s'", cfg.Registry.Address)
+	}
+	if len(cfg.Registry.IncludeMessages) != 2 {
+		t.Errorf("Expected 2 registry include messages, got %d", len(cfg.Registry.IncludeMessages))
+	}
+
+	if !cfg.Telemetry.Enabled {
+		t.Error("Telemetry should be enabled")
+	}
+	if cfg.Telemetry.Backend != "noop" {
+		t.Errorf("Expected telemetry backend 'noop', got '%s'", cfg.Telemetry.Backend)
+	}
+	if len(cfg.Telemetry.IncludeMessages) != 3 {
+		t.Errorf("Expected 3 telemetry include messages, got %d", len(cfg.Telemetry.IncludeMessages))
 	}
 
 	if cfg.Sinks.S3 == nil {
@@ -73,6 +112,9 @@ logging:
 		if cfg.Sinks.Kafka.Topic != "telemetry-data" {
 			t.Errorf("Expected Kafka topic 'telemetry-data', got '%s'", cfg.Sinks.Kafka.Topic)
 		}
+		if len(cfg.Sinks.Kafka.IncludeMessages) != 1 || cfg.Sinks.Kafka.IncludeMessages[0] != "GlobalPositionInt" {
+			t.Errorf("Expected Kafka include_messages [GlobalPositionInt], got %#v", cfg.Sinks.Kafka.IncludeMessages)
+		}
 	}
 
 	if cfg.Sinks.File == nil {
@@ -86,6 +128,9 @@ logging:
 		}
 		if cfg.Sinks.File.RotationInterval != 24*time.Hour {
 			t.Errorf("Expected file rotation '24h', got '%s'", cfg.Sinks.File.RotationInterval)
+		}
+		if len(cfg.Sinks.File.IncludeMessages) != 1 || cfg.Sinks.File.IncludeMessages[0] != "*" {
+			t.Errorf("Expected file include_messages [*], got %#v", cfg.Sinks.File.IncludeMessages)
 		}
 	}
 

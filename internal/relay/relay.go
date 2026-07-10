@@ -20,7 +20,10 @@ import (
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"github.com/makinje/aero-arc-relay/internal/outputs"
+	"github.com/makinje/aero-arc-relay/internal/registryreporter"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
+	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -33,6 +36,7 @@ import (
 type Relay struct {
 	config           *config.Config
 	sinks            []sinks.Sink
+	router           *outputs.Router
 	connections      sync.Map // map[string]*gomavlib.Node
 	sinksInitialized bool
 	grpcServer       *grpc.Server
@@ -75,9 +79,8 @@ func New(cfg *config.Config) (*Relay, error) {
 		grpcSessions: make(map[string]*DroneSession),
 	}
 
-	// Initialize sinks
-	if err := relay.initializeSinks(); err != nil {
-		return nil, fmt.Errorf("failed to initialize sinks: %w", err)
+	if err := relay.initializeOutputs(); err != nil {
+		return nil, fmt.Errorf("failed to initialize outputs: %w", err)
 	}
 
 	return relay, nil
@@ -174,15 +177,24 @@ func (r *Relay) Start(ctx context.Context) error {
 			r.grpcServer.Stop()
 		}
 
-		// Shutdown sinks with timeout
+		// Shutdown outputs with timeout
 		baseCtx := context.Background()
-		for _, sink := range r.sinks {
+		if r.router != nil {
 			sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
-			if err := sink.Close(sinkCtx); err != nil {
+			if err := r.router.Close(sinkCtx); err != nil {
 				slog.LogAttrs(context.Background(), slog.LevelWarn,
-					"Error closing sink", slog.String("error", err.Error()))
+					"Error closing outputs", slog.String("error", err.Error()))
 			}
 			cancel() // Release resources
+		} else {
+			for _, sink := range r.sinks {
+				sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+				if err := sink.Close(sinkCtx); err != nil {
+					slog.LogAttrs(context.Background(), slog.LevelWarn,
+						"Error closing sink", slog.String("error", err.Error()))
+				}
+				cancel() // Release resources
+			}
 		}
 
 		// Shutdown HTTP server
@@ -220,7 +232,28 @@ func (r *Relay) ready() bool {
 	return r.sinksInitialized
 }
 
-// initializeSinks sets up all configured data sinks
+// initializeOutputs sets up internal relay outputs and configured data sinks.
+func (r *Relay) initializeOutputs() error {
+	r.router = outputs.NewRouter()
+
+	if r.config.Registry.Enabled {
+		r.router.AddConsumer(
+			registryreporter.NewNoopReporter(),
+			filterFromConfig(r.config.Registry.MessageFilterConfig),
+		)
+	}
+
+	if r.config.Telemetry.Enabled {
+		r.router.AddConsumer(
+			telemetrywriter.NewNoopWriter(),
+			filterFromConfig(r.config.Telemetry.MessageFilterConfig),
+		)
+	}
+
+	return r.initializeSinks()
+}
+
+// initializeSinks sets up all configured generic data sinks.
 func (r *Relay) initializeSinks() error {
 	// Initialize S3 sink if configured
 	if r.config.Sinks.S3 != nil {
@@ -229,6 +262,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create S3 sink: %w", err)
 		}
 		r.sinks = append(r.sinks, s3Sink)
+		r.addSinkConsumer("s3", s3Sink, r.config.Sinks.S3.MessageFilterConfig)
 	}
 
 	// Initialize GCS sink if configured
@@ -238,6 +272,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create GCS sink: %w", err)
 		}
 		r.sinks = append(r.sinks, gcsSink)
+		r.addSinkConsumer("gcs", gcsSink, r.config.Sinks.GCS.MessageFilterConfig)
 	}
 
 	// Initialize BigQuery sink if configured
@@ -247,6 +282,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create BigQuery sink: %w", err)
 		}
 		r.sinks = append(r.sinks, bigquerySink)
+		r.addSinkConsumer("bigquery", bigquerySink, r.config.Sinks.BigQuery.MessageFilterConfig)
 	}
 
 	// Initialize Timestream sink if configured
@@ -256,6 +292,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create Timestream sink: %w", err)
 		}
 		r.sinks = append(r.sinks, timestreamSink)
+		r.addSinkConsumer("timestream", timestreamSink, r.config.Sinks.Timestream.MessageFilterConfig)
 	}
 
 	// Initialize InfluxDB sink if configured
@@ -265,6 +302,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create InfluxDB sink: %w", err)
 		}
 		r.sinks = append(r.sinks, influxdbSink)
+		r.addSinkConsumer("influxdb", influxdbSink, r.config.Sinks.InfluxDB.MessageFilterConfig)
 	}
 
 	// Initialize Prometheus sink if configured
@@ -274,6 +312,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create Prometheus sink: %w", err)
 		}
 		r.sinks = append(r.sinks, prometheusSink)
+		r.addSinkConsumer("prometheus", prometheusSink, r.config.Sinks.Prometheus.MessageFilterConfig)
 	}
 
 	// Initialize Elasticsearch sink if configured
@@ -283,6 +322,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create Elasticsearch sink: %w", err)
 		}
 		r.sinks = append(r.sinks, elasticsearchSink)
+		r.addSinkConsumer("elasticsearch", elasticsearchSink, r.config.Sinks.Elasticsearch.MessageFilterConfig)
 	}
 
 	// Initialize Kafka sink if configured
@@ -292,6 +332,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create Kafka sink: %w", err)
 		}
 		r.sinks = append(r.sinks, kafkaSink)
+		r.addSinkConsumer("kafka", kafkaSink, r.config.Sinks.Kafka.MessageFilterConfig)
 	}
 
 	// Initialize file sink if configured
@@ -301,6 +342,7 @@ func (r *Relay) initializeSinks() error {
 			return fmt.Errorf("failed to create file sink: %w", err)
 		}
 		r.sinks = append(r.sinks, fileSink)
+		r.addSinkConsumer("file", fileSink, r.config.Sinks.File.MessageFilterConfig)
 	}
 
 	if len(r.sinks) == 0 {
@@ -310,11 +352,30 @@ func (r *Relay) initializeSinks() error {
 	return nil
 }
 
+func (r *Relay) addSinkConsumer(name string, sink sinks.Sink, filter config.MessageFilterConfig) {
+	if r.router == nil {
+		return
+	}
+	r.router.AddConsumer(outputs.NewSinkConsumer(name, sink), filterFromConfig(filter))
+}
+
+func filterFromConfig(filter config.MessageFilterConfig) outputs.MessageFilter {
+	return outputs.MessageFilter{
+		Include: filter.IncludeMessages,
+		Exclude: filter.ExcludeMessages,
+	}
+}
+
 // handleTelemetryMessage processes incoming telemetry messages
 func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
 	relayMessagesTotal.WithLabelValues(msg.AgentID, msg.MsgName).Inc()
 
-	// Forward to all sinks
+	if r.router != nil {
+		_ = r.router.Route(context.Background(), msg)
+		return
+	}
+
+	// Backward-compatible path for tests that manually construct Relay{sinks: ...}.
 	for _, sink := range r.sinks {
 		if err := sink.WriteMessage(msg); err != nil {
 			relaySinkWriteErrorsTotal.WithLabelValues(sinkNameForMetrics(sink)).Inc()

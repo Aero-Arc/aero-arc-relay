@@ -12,8 +12,10 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Sinks       SinksConfig   `yaml:"sinks"`
-	Logging     LoggingConfig `yaml:"logging"`
+	Sinks       SinksConfig     `yaml:"sinks"`
+	Registry    RegistryConfig  `yaml:"registry"`
+	Telemetry   TelemetryConfig `yaml:"telemetry"`
+	Logging     LoggingConfig   `yaml:"logging"`
 	Debug       bool
 	TLSCertPath string
 	TLSKeyPath  string
@@ -34,110 +36,140 @@ type SinksConfig struct {
 	File          *FileConfig          `yaml:"file,omitempty"`
 }
 
+// MessageFilterConfig controls which MAVLink message names an output receives.
+// Empty includes mean all messages, while excludes are always removed.
+type MessageFilterConfig struct {
+	IncludeMessages []string `yaml:"include_messages,omitempty"`
+	ExcludeMessages []string `yaml:"exclude_messages,omitempty"`
+}
+
+// RegistryConfig contains control-plane registry reporting configuration.
+type RegistryConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	Address             string `yaml:"address"`
+	MessageFilterConfig `yaml:",inline"`
+}
+
+// TelemetryConfig contains normalized hot telemetry writer configuration.
+type TelemetryConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	Backend             string `yaml:"backend"`
+	MessageFilterConfig `yaml:",inline"`
+}
+
 // S3Config contains S3 sink configuration
 type S3Config struct {
-	Bucket             string        `yaml:"bucket"`
-	Region             string        `yaml:"region"`
-	AccessKey          string        `yaml:"access_key"`
-	SecretKey          string        `yaml:"secret_key"`
-	Prefix             string        `yaml:"prefix"`
-	FlushInterval      time.Duration `yaml:"flush_interval"`
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Bucket              string        `yaml:"bucket"`
+	Region              string        `yaml:"region"`
+	AccessKey           string        `yaml:"access_key"`
+	SecretKey           string        `yaml:"secret_key"`
+	Prefix              string        `yaml:"prefix"`
+	FlushInterval       time.Duration `yaml:"flush_interval"`
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // GCSConfig contains Google Cloud Storage sink configuration
 type GCSConfig struct {
-	Bucket             string        `yaml:"bucket"`
-	ProjectID          string        `yaml:"project_id"`
-	Credentials        string        `yaml:"credentials"` // Path to service account JSON file
-	Prefix             string        `yaml:"prefix"`
-	FlushInterval      time.Duration `yaml:"flush_interval"` // How often to flush buffered data (e.g., "30s")
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Bucket              string        `yaml:"bucket"`
+	ProjectID           string        `yaml:"project_id"`
+	Credentials         string        `yaml:"credentials"` // Path to service account JSON file
+	Prefix              string        `yaml:"prefix"`
+	FlushInterval       time.Duration `yaml:"flush_interval"` // How often to flush buffered data (e.g., "30s")
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // BigQueryConfig contains BigQuery sink configuration
 type BigQueryConfig struct {
-	ProjectID          string `yaml:"project_id"`
-	Dataset            string `yaml:"dataset"`
-	Table              string `yaml:"table"`
-	Credentials        string `yaml:"credentials"`    // Path to service account JSON file
-	BatchSize          int    `yaml:"batch_size"`     // Number of messages to batch before insert
-	FlushInterval      string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	ProjectID           string `yaml:"project_id"`
+	Dataset             string `yaml:"dataset"`
+	Table               string `yaml:"table"`
+	Credentials         string `yaml:"credentials"`    // Path to service account JSON file
+	BatchSize           int    `yaml:"batch_size"`     // Number of messages to batch before insert
+	FlushInterval       string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // TimestreamConfig contains AWS Timestream sink configuration
 type TimestreamConfig struct {
-	Database           string `yaml:"database"`
-	Table              string `yaml:"table"`
-	Region             string `yaml:"region"`
-	AccessKey          string `yaml:"access_key"`
-	SecretKey          string `yaml:"secret_key"`
-	SessionToken       string `yaml:"session_token,omitempty"` // For temporary credentials
-	BatchSize          int    `yaml:"batch_size"`              // Number of records to batch
-	FlushInterval      string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	Database            string `yaml:"database"`
+	Table               string `yaml:"table"`
+	Region              string `yaml:"region"`
+	AccessKey           string `yaml:"access_key"`
+	SecretKey           string `yaml:"secret_key"`
+	SessionToken        string `yaml:"session_token,omitempty"` // For temporary credentials
+	BatchSize           int    `yaml:"batch_size"`              // Number of records to batch
+	FlushInterval       string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // InfluxDBConfig contains InfluxDB sink configuration
 type InfluxDBConfig struct {
-	URL                string `yaml:"url"`
-	Database           string `yaml:"database"`
-	Username           string `yaml:"username"`
-	Password           string `yaml:"password"`
-	Token              string `yaml:"token"`        // For InfluxDB 2.x
-	Organization       string `yaml:"organization"` // For InfluxDB 2.x
-	Bucket             string `yaml:"bucket"`       // For InfluxDB 2.x
-	BatchSize          int    `yaml:"batch_size"`
-	FlushInterval      string `yaml:"flush_interval"`
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	URL                 string `yaml:"url"`
+	Database            string `yaml:"database"`
+	Username            string `yaml:"username"`
+	Password            string `yaml:"password"`
+	Token               string `yaml:"token"`        // For InfluxDB 2.x
+	Organization        string `yaml:"organization"` // For InfluxDB 2.x
+	Bucket              string `yaml:"bucket"`       // For InfluxDB 2.x
+	BatchSize           int    `yaml:"batch_size"`
+	FlushInterval       string `yaml:"flush_interval"`
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // PrometheusConfig contains Prometheus sink configuration
 type PrometheusConfig struct {
-	URL                string `yaml:"url"`
-	Job                string `yaml:"job"`
-	Instance           string `yaml:"instance"`
-	BatchSize          int    `yaml:"batch_size"`
-	FlushInterval      string `yaml:"flush_interval"`
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	URL                 string `yaml:"url"`
+	Job                 string `yaml:"job"`
+	Instance            string `yaml:"instance"`
+	BatchSize           int    `yaml:"batch_size"`
+	FlushInterval       string `yaml:"flush_interval"`
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // ElasticsearchConfig contains Elasticsearch sink configuration
 type ElasticsearchConfig struct {
-	URLs               []string `yaml:"urls"`
-	Index              string   `yaml:"index"`
-	Username           string   `yaml:"username"`
-	Password           string   `yaml:"password"`
-	APIKey             string   `yaml:"api_key"`
-	BatchSize          int      `yaml:"batch_size"`
-	FlushInterval      string   `yaml:"flush_interval"`
-	QueueSize          int      `yaml:"queue_size"`
-	BackpressurePolicy string   `yaml:"backpressure_policy"`
+	URLs                []string `yaml:"urls"`
+	Index               string   `yaml:"index"`
+	Username            string   `yaml:"username"`
+	Password            string   `yaml:"password"`
+	APIKey              string   `yaml:"api_key"`
+	BatchSize           int      `yaml:"batch_size"`
+	FlushInterval       string   `yaml:"flush_interval"`
+	QueueSize           int      `yaml:"queue_size"`
+	BackpressurePolicy  string   `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // KafkaConfig contains Kafka sink configuration
 type KafkaConfig struct {
-	Brokers            []string `yaml:"brokers"`
-	Topic              string   `yaml:"topic"`
-	QueueSize          int      `yaml:"queue_size"`
-	BackpressurePolicy string   `yaml:"backpressure_policy"`
+	Brokers             []string `yaml:"brokers"`
+	Topic               string   `yaml:"topic"`
+	QueueSize           int      `yaml:"queue_size"`
+	BackpressurePolicy  string   `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // FileConfig contains file-based sink configuration
 type FileConfig struct {
-	Path               string        `yaml:"path"`              // Path to the file, without the filename
-	Prefix             string        `yaml:"prefix"`            // Prefix for the filename, will be appended to the path
-	Format             string        `yaml:"format"`            // json, csv, binary
-	RotationInterval   time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Path                string        `yaml:"path"`              // Path to the file, without the filename
+	Prefix              string        `yaml:"prefix"`            // Prefix for the filename, will be appended to the path
+	Format              string        `yaml:"format"`            // json, csv, binary
+	RotationInterval    time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // LoggingConfig contains logging configuration
