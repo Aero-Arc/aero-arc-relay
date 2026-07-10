@@ -30,6 +30,12 @@ func (r *Router) AddConsumer(consumer EnvelopeConsumer, filter MessageFilter) {
 	if consumer == nil {
 		return
 	}
+	if !filter.hasIncludes() {
+		slog.Warn("output registered without included messages; it will receive no telemetry",
+			slog.String("consumer", consumer.Name()),
+			slog.String("configuration_hint", "set include_messages to [\"*\"] to receive all messages"),
+		)
+	}
 	r.routes = append(r.routes, route{consumer: consumer, filter: filter})
 }
 

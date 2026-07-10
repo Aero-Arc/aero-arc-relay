@@ -62,3 +62,11 @@ func TestMessageFilterEmptyIncludeMatchesNothing(t *testing.T) {
 		t.Fatal("expected an empty include list to reject unnamed messages")
 	}
 }
+
+func TestMessageFilterBlankIncludesMatchNothing(t *testing.T) {
+	filter := MessageFilter{Include: []string{"", "  "}}
+
+	if filter.Allows("Heartbeat") {
+		t.Fatal("expected blank include entries to reject messages")
+	}
+}
