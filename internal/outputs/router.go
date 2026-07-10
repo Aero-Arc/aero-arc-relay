@@ -33,6 +33,10 @@ func (r *Router) AddConsumer(consumer EnvelopeConsumer, filter MessageFilter) {
 	r.routes = append(r.routes, route{consumer: consumer, filter: filter})
 }
 
+func (r *Router) HasConsumers() bool {
+	return r != nil && len(r.routes) > 0
+}
+
 func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope, onError RouteErrorHandler) {
 	//TODO: Figure out what happens or how to get around blocked consumer
 	var wg sync.WaitGroup

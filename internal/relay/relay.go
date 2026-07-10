@@ -32,14 +32,14 @@ import (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
-	config           *config.Config
-	sinks            []sinks.Sink
-	router           *outputs.Router
-	connections      sync.Map // map[string]*gomavlib.Node
-	sinksInitialized bool
-	grpcServer       *grpc.Server
-	grpcSessions     map[string]*DroneSession
-	sessionsMu       sync.RWMutex
+	config             *config.Config
+	sinks              []sinks.Sink
+	router             *outputs.Router
+	connections        sync.Map // map[string]*gomavlib.Node
+	outputsInitialized bool
+	grpcServer         *grpc.Server
+	grpcSessions       map[string]*DroneSession
+	sessionsMu         sync.RWMutex
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -227,7 +227,7 @@ func (r *Relay) Start(ctx context.Context) error {
 }
 
 func (r *Relay) ready() bool {
-	return r.sinksInitialized
+	return r.outputsInitialized
 }
 
 // initializeOutputs sets up internal relay outputs and configured data sinks.
@@ -248,7 +248,14 @@ func (r *Relay) initializeOutputs() error {
 		)
 	}
 
-	return r.initializeSinks()
+	if err := r.initializeSinks(); err != nil {
+		return err
+	}
+	if !r.router.HasConsumers() {
+		return fmt.Errorf("no outputs configured")
+	}
+	r.outputsInitialized = true
+	return nil
 }
 
 // initializeSinks sets up all configured generic data sinks.
@@ -343,10 +350,6 @@ func (r *Relay) initializeSinks() error {
 		r.addSinkConsumer("file", fileSink, r.config.Sinks.File.MessageFilterConfig)
 	}
 
-	if len(r.sinks) == 0 {
-		return fmt.Errorf("no sinks configured")
-	}
-	r.sinksInitialized = true
 	return nil
 }
 

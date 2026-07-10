@@ -46,6 +46,22 @@ func TestRouterRoutesByMessageFilter(t *testing.T) {
 	}
 }
 
+func TestRouterHasConsumers(t *testing.T) {
+	var nilRouter *Router
+	if nilRouter.HasConsumers() {
+		t.Fatal("nil router reports consumers")
+	}
+
+	router := NewRouter()
+	if router.HasConsumers() {
+		t.Fatal("empty router reports consumers")
+	}
+	router.AddConsumer(&recordingConsumer{name: "consumer"}, MessageFilter{})
+	if !router.HasConsumers() {
+		t.Fatal("router with a consumer reports no consumers")
+	}
+}
+
 func TestRouterReportsConsumerWriteError(t *testing.T) {
 	router := NewRouter()
 	wantErr := errors.New("write failed")
