@@ -12,17 +12,10 @@ func TestConfigLoad(t *testing.T) {
 registry:
   enabled: true
   address: "localhost:9090"
-  include_messages:
-    - "Heartbeat"
-    - "GlobalPositionInt"
 
 telemetry:
   enabled: true
   backend: "noop"
-  include_messages:
-    - "GlobalPositionInt"
-    - "VFR_HUD"
-    - "SystemStatus"
 
 sinks:
   s3:
@@ -75,20 +68,12 @@ logging:
 	if cfg.Registry.Address != "localhost:9090" {
 		t.Errorf("Expected registry address 'localhost:9090', got '%s'", cfg.Registry.Address)
 	}
-	if len(cfg.Registry.IncludeMessages) != 2 {
-		t.Errorf("Expected 2 registry include messages, got %d", len(cfg.Registry.IncludeMessages))
-	}
-
 	if !cfg.Telemetry.Enabled {
 		t.Error("Telemetry should be enabled")
 	}
 	if cfg.Telemetry.Backend != "noop" {
 		t.Errorf("Expected telemetry backend 'noop', got '%s'", cfg.Telemetry.Backend)
 	}
-	if len(cfg.Telemetry.IncludeMessages) != 3 {
-		t.Errorf("Expected 3 telemetry include messages, got %d", len(cfg.Telemetry.IncludeMessages))
-	}
-
 	if cfg.Sinks.S3 == nil {
 		t.Error("S3 sink should be configured")
 	} else {

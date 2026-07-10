@@ -1,17 +1,10 @@
 registry:
   enabled: false
   address: "localhost:9090"
-  include_messages:
-    - "Heartbeat"
-    - "GlobalPositionInt"
 
 telemetry:
   enabled: false
   backend: "noop"
-  include_messages:
-    - "GlobalPositionInt"
-    - "VFR_HUD"
-    - "SystemStatus"
 
 sinks:
   file:

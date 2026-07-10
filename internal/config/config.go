@@ -46,16 +46,14 @@ type MessageFilterConfig struct {
 
 // RegistryConfig contains control-plane registry reporting configuration.
 type RegistryConfig struct {
-	Enabled             bool   `yaml:"enabled"`
-	Address             string `yaml:"address"`
-	MessageFilterConfig `yaml:",inline"`
+	Enabled bool   `yaml:"enabled"`
+	Address string `yaml:"address"`
 }
 
 // TelemetryConfig contains normalized hot telemetry writer configuration.
 type TelemetryConfig struct {
-	Enabled             bool   `yaml:"enabled"`
-	Backend             string `yaml:"backend"`
-	MessageFilterConfig `yaml:",inline"`
+	Enabled bool   `yaml:"enabled"`
+	Backend string `yaml:"backend"`
 }
 
 // S3Config contains S3 sink configuration
