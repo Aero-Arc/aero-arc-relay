@@ -65,6 +65,9 @@ func TestRelayCreation(t *testing.T) {
 		Prefix:           "telemetry",
 		Format:           "json",
 		RotationInterval: time.Hour,
+		MessageFilterConfig: config.MessageFilterConfig{
+			IncludeMessages: []string{"*"},
+		},
 	}
 
 	relay, err := New(cfg)
