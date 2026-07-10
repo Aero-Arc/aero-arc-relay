@@ -76,6 +76,41 @@ func TestRelayCreation(t *testing.T) {
 	}
 }
 
+func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.Config
+	}{
+		{
+			name: "registry",
+			config: &config.Config{
+				Registry: config.RegistryConfig{Enabled: true},
+			},
+		},
+		{
+			name: "telemetry",
+			config: &config.Config{
+				Telemetry: config.TelemetryConfig{Enabled: true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relay, err := New(tt.config)
+			if err != nil {
+				t.Fatalf("New() with only %s output: %v", tt.name, err)
+			}
+			if !relay.ready() {
+				t.Fatalf("relay with only %s output is not ready", tt.name)
+			}
+			if len(relay.sinks) != 0 {
+				t.Fatalf("relay with only %s output has %d generic sinks", tt.name, len(relay.sinks))
+			}
+		})
+	}
+}
+
 func TestHandleTelemetryMessage(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)
