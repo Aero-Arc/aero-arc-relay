@@ -37,7 +37,8 @@ type SinksConfig struct {
 }
 
 // MessageFilterConfig controls which MAVLink message names an output receives.
-// Empty includes mean all messages, while excludes are always removed.
+// Empty or omitted includes match nothing; use "*" to include all messages.
+// Excludes take precedence over includes.
 type MessageFilterConfig struct {
 	IncludeMessages []string `yaml:"include_messages,omitempty"`
 	ExcludeMessages []string `yaml:"exclude_messages,omitempty"`
