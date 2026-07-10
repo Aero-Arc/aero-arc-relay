@@ -11,8 +11,17 @@ type MessageFilter struct {
 	Exclude []string
 }
 
+func (f MessageFilter) hasIncludes() bool {
+	for _, message := range f.Include {
+		if NormalizeMessageName(message) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (f MessageFilter) Allows(messageName string) bool {
-	if len(f.Include) == 0 {
+	if !f.hasIncludes() {
 		return false
 	}
 	normalized := NormalizeMessageName(messageName)
