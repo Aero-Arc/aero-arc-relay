@@ -120,24 +120,21 @@ invented placeholders.
 
 ### Source context
 
-`frame_id` is the record's required idempotency key. The intended logical key
-is the unambiguous encoding of:
+`frame_id` is the record's required idempotency key. Version 1 uses the
+unambiguous encoding of:
 
 ```text
-agent_id + WAL generation + durable agent WAL sequence
+agent_id + agent capture Unix nanoseconds + durable agent WAL sequence
 ```
 
 The concrete encoding must be stable, documented, and collision-safe. A
 length-delimited or escaped encoding is required; raw concatenation is not.
 Resending the same WAL entry produces the same `frame_id`.
 
-The current agent exposes only the WAL sequence. Its SQLite `AUTOINCREMENT`
-value is not reused during normal cleanup, but deleting and recreating the WAL
-can reuse a sequence while the persisted `agent_id` remains unchanged.
-Therefore `agent_id + sequence` is only a provisional key for the lifetime of
-one WAL database. Before claiming global idempotency, the agent contract must
-add either a persisted WAL generation ID or a frame ID assigned before WAL
-insertion and preserved in the WAL payload.
+The capture timestamp is persisted in the frame before WAL insertion and is
+stable across retry. Combining it with the WAL sequence prevents ordinary WAL
+recreation from reusing an idempotency key. A future explicit frame UUID may
+replace this derived encoding in a new transport contract.
 
 `sequence` is the agent WAL sequence carried by the frame. It is required and
 must not be replaced with the MAVLink packet sequence.

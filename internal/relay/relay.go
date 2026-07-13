@@ -22,6 +22,7 @@ import (
 	"github.com/makinje/aero-arc-relay/internal/registryreporter"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
+	telemetryinflux "github.com/makinje/aero-arc-relay/internal/telemetrywriter/influx"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -54,7 +55,13 @@ type DroneSession struct {
 	Attitude      *common.MessageAttitude
 	VfrHud        *common.MessageVfrHud
 	SystemStatus  *common.MessageSysStatus
+	FlightID      string
+	IntentID      string
+	IntentVersion uint32
 	sessionMu     sync.RWMutex
+	sendMu        sync.Mutex
+	pendingMu     sync.Mutex
+	pending       map[string]chan *agentv1.OperationContextCommandAck
 }
 
 var (
@@ -242,10 +249,11 @@ func (r *Relay) initializeOutputs() error {
 	}
 
 	if r.config.Telemetry.Enabled {
-		r.router.AddConsumer(
-			telemetrywriter.NewNoopWriter(),
-			telemetryMessageFilter(),
-		)
+		consumer, err := r.newTelemetryWriter()
+		if err != nil {
+			return err
+		}
+		r.router.AddConsumer(consumer, telemetryMessageFilter())
 	}
 
 	if err := r.initializeSinks(); err != nil {
@@ -256,6 +264,42 @@ func (r *Relay) initializeOutputs() error {
 	}
 	r.outputsInitialized = true
 	return nil
+}
+
+func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
+	if r.config.Telemetry.Backend == "noop" {
+		return telemetrywriter.NewNoopWriter(), nil
+	}
+	if r.config.Telemetry.Backend != "influxdb3" {
+		return nil, fmt.Errorf("unsupported normalized telemetry backend %q", r.config.Telemetry.Backend)
+	}
+	if r.config.Telemetry.InfluxDB == nil {
+		return nil, fmt.Errorf("normalized telemetry InfluxDB 3 configuration is required")
+	}
+	backend, err := telemetryinflux.New(telemetryinflux.Config{
+		Host:     r.config.Telemetry.InfluxDB.Host,
+		Token:    r.config.Telemetry.InfluxDB.Token,
+		Database: r.config.Telemetry.InfluxDB.Database,
+		Timeout:  r.config.Telemetry.WriteTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize normalized telemetry InfluxDB 3 backend: %w", err)
+	}
+	writer, err := telemetrywriter.NewWriter(telemetrywriter.Config{
+		QueueCapacity:  r.config.Telemetry.QueueCapacity,
+		Workers:        r.config.Telemetry.Workers,
+		BatchSize:      r.config.Telemetry.BatchSize,
+		FlushInterval:  r.config.Telemetry.FlushInterval,
+		EnqueueTimeout: r.config.Telemetry.EnqueueTimeout,
+		WriteTimeout:   r.config.Telemetry.WriteTimeout,
+		MaxRetries:     r.config.Telemetry.MaxRetries,
+		RetryBackoff:   r.config.Telemetry.RetryBackoff,
+	}, backend, nil)
+	if err != nil {
+		_ = backend.Close(context.Background())
+		return nil, fmt.Errorf("initialize normalized telemetry writer: %w", err)
+	}
+	return writer, nil
 }
 
 // registryMessageFilter defines the telemetry required by Aero Arc registry reporting.
@@ -269,9 +313,14 @@ func registryMessageFilter() outputs.MessageFilter {
 // telemetryMessageFilter defines the normalized hot telemetry maintained by Aero Arc.
 func telemetryMessageFilter() outputs.MessageFilter {
 	return outputs.MessageFilter{Include: []string{
+		"Heartbeat",
 		"GlobalPositionInt",
-		"VFR_HUD",
-		"SystemStatus",
+		"BatteryStatus",
+		"SysStatus",
+		"VfrHud",
+		"ExtendedSysState",
+		"GpsRawInt",
+		"SystemTime",
 	}}
 }
 

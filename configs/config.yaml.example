@@ -4,7 +4,24 @@ registry:
 
 telemetry:
   enabled: false
-  backend: "noop"
+  backend: "influxdb3"
+  relay_id: "relay-local-1"
+  queue_capacity: 10000
+  workers: 2
+  batch_size: 500
+  flush_interval: "1s"
+  enqueue_timeout: "100ms"
+  write_timeout: "5s"
+  max_retries: 3
+  retry_backoff: "200ms"
+  influxdb:
+    host: "http://localhost:8181"
+    token: "${INFLUXDB3_TOKEN}"
+    database: "aero_arc"
+  agent_mappings:
+    "replace-with-agent-id":
+      operator_id: "replace-with-operator-id"
+      aircraft_id: "replace-with-aircraft-id"
 
 sinks:
   file:

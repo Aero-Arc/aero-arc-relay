@@ -52,8 +52,32 @@ type RegistryConfig struct {
 
 // TelemetryConfig contains normalized hot telemetry writer configuration.
 type TelemetryConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Backend string `yaml:"backend"`
+	Enabled        bool                      `yaml:"enabled"`
+	Backend        string                    `yaml:"backend"`
+	QueueCapacity  int                       `yaml:"queue_capacity"`
+	Workers        int                       `yaml:"workers"`
+	BatchSize      int                       `yaml:"batch_size"`
+	FlushInterval  time.Duration             `yaml:"flush_interval"`
+	EnqueueTimeout time.Duration             `yaml:"enqueue_timeout"`
+	WriteTimeout   time.Duration             `yaml:"write_timeout"`
+	MaxRetries     int                       `yaml:"max_retries"`
+	RetryBackoff   time.Duration             `yaml:"retry_backoff"`
+	RelayID        string                    `yaml:"relay_id"`
+	AgentMappings  map[string]AgentMapping   `yaml:"agent_mappings,omitempty"`
+	InfluxDB       *NormalizedInfluxDBConfig `yaml:"influxdb,omitempty"`
+}
+
+type AgentMapping struct {
+	OperatorID string `yaml:"operator_id"`
+	AircraftID string `yaml:"aircraft_id"`
+}
+
+// NormalizedInfluxDBConfig configures the official InfluxDB 3 Core telemetry
+// backend. It is intentionally separate from the generic InfluxDB sink.
+type NormalizedInfluxDBConfig struct {
+	Host     string `yaml:"host"`
+	Token    string `yaml:"token"`
+	Database string `yaml:"database"`
 }
 
 // S3Config contains S3 sink configuration
@@ -201,6 +225,35 @@ func Load(path string) (*Config, error) {
 	}
 	if config.Logging.Output == "" {
 		config.Logging.Output = "stdout"
+	}
+	if config.Telemetry.Enabled {
+		if config.Telemetry.Backend == "" {
+			config.Telemetry.Backend = "influxdb3"
+		}
+		if config.Telemetry.QueueCapacity <= 0 {
+			config.Telemetry.QueueCapacity = 10_000
+		}
+		if config.Telemetry.Workers <= 0 {
+			config.Telemetry.Workers = 2
+		}
+		if config.Telemetry.BatchSize <= 0 {
+			config.Telemetry.BatchSize = 500
+		}
+		if config.Telemetry.FlushInterval <= 0 {
+			config.Telemetry.FlushInterval = time.Second
+		}
+		if config.Telemetry.EnqueueTimeout <= 0 {
+			config.Telemetry.EnqueueTimeout = 100 * time.Millisecond
+		}
+		if config.Telemetry.WriteTimeout <= 0 {
+			config.Telemetry.WriteTimeout = 5 * time.Second
+		}
+		if config.Telemetry.MaxRetries == 0 {
+			config.Telemetry.MaxRetries = 3
+		}
+		if config.Telemetry.RetryBackoff <= 0 {
+			config.Telemetry.RetryBackoff = 200 * time.Millisecond
+		}
 	}
 
 	return &config, nil

@@ -15,7 +15,22 @@ registry:
 
 telemetry:
   enabled: true
-  backend: "noop"
+  backend: "influxdb3"
+  relay_id: "relay-test"
+  queue_capacity: 123
+  workers: 3
+  batch_size: 25
+  flush_interval: "2s"
+  enqueue_timeout: "50ms"
+  write_timeout: "4s"
+  influxdb:
+    host: "http://localhost:8181"
+    token: "test-token"
+    database: "aero_arc_test"
+  agent_mappings:
+    "agent-1":
+      operator_id: "operator-1"
+      aircraft_id: "aircraft-1"
 
 sinks:
   s3:
@@ -71,8 +86,17 @@ logging:
 	if !cfg.Telemetry.Enabled {
 		t.Error("Telemetry should be enabled")
 	}
-	if cfg.Telemetry.Backend != "noop" {
-		t.Errorf("Expected telemetry backend 'noop', got '%s'", cfg.Telemetry.Backend)
+	if cfg.Telemetry.Backend != "influxdb3" {
+		t.Errorf("Expected telemetry backend 'influxdb3', got '%s'", cfg.Telemetry.Backend)
+	}
+	if cfg.Telemetry.InfluxDB == nil || cfg.Telemetry.InfluxDB.Database != "aero_arc_test" {
+		t.Fatalf("unexpected normalized InfluxDB config: %#v", cfg.Telemetry.InfluxDB)
+	}
+	if cfg.Telemetry.QueueCapacity != 123 || cfg.Telemetry.Workers != 3 || cfg.Telemetry.BatchSize != 25 {
+		t.Errorf("unexpected telemetry writer sizing: %#v", cfg.Telemetry)
+	}
+	if cfg.Telemetry.AgentMappings["agent-1"].AircraftID != "aircraft-1" {
+		t.Errorf("unexpected agent mapping: %#v", cfg.Telemetry.AgentMappings)
 	}
 	if cfg.Sinks.S3 == nil {
 		t.Error("S3 sink should be configured")

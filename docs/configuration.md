@@ -1,3 +1,39 @@
+### Normalized telemetry
+
+The official Aero Arc telemetry path uses InfluxDB 3 Core and is configured
+separately from generic sinks:
+
+```yaml
+telemetry:
+  enabled: true
+  backend: "influxdb3"
+  relay_id: "relay-us-central-1"
+  queue_capacity: 10000
+  workers: 2
+  batch_size: 500
+  flush_interval: "1s"
+  enqueue_timeout: "100ms"
+  write_timeout: "5s"
+  max_retries: 3
+  retry_backoff: "200ms"
+  influxdb:
+    host: "http://localhost:8181"
+    token: "${INFLUXDB3_TOKEN}"
+    database: "aero_arc"
+  agent_mappings:
+    "agent-id":
+      operator_id: "operator-id"
+      aircraft_id: "aircraft-id"
+```
+
+The mapping is a bootstrap mechanism until the relay consumes the API-owned
+aircraft assignment view. Attributed points are written to
+`aircraft_telemetry`; authenticated but unmapped agent points are isolated in
+`unassigned_telemetry`.
+
+Set `backend: "noop"` only when normalized telemetry is deliberately disabled
+for tests or local routing demonstrations.
+
 ### Data Sinks
 
 > **Note:** v0.1 supports the following sinks: AWS S3, Google Cloud Storage, Apache Kafka, and Local File. Additional sinks may be available in future versions.
