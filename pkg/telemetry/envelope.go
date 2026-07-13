@@ -22,14 +22,24 @@ import (
 
 type TelemetryEnvelope struct {
 	AgentID         string         `json:"agent_id"`
+	OperatorID      string         `json:"operator_id,omitempty"`
+	AircraftID      string         `json:"aircraft_id,omitempty"`
+	RelayID         string         `json:"relay_id,omitempty"`
+	SessionID       string         `json:"session_id,omitempty"`
+	FlightID        string         `json:"flight_id,omitempty"`
+	IntentID        string         `json:"intent_id,omitempty"`
+	IntentVersion   uint32         `json:"intent_version,omitempty"`
 	Source          string         `json:"source"`
 	TimestampRelay  time.Time      `json:"timestamp_relay"`
+	TimestampAgent  time.Time      `json:"timestamp_agent,omitempty"`
 	TimestampDevice float64        `json:"timestamp_device"`
+	Dialect         string         `json:"dialect,omitempty"`
 	MsgID           uint32         `json:"msg_id"`
 	MsgName         string         `json:"msg_name"`
+	WALSequence     uint64         `json:"wal_sequence,omitempty"`
 	SystemID        uint8          `json:"system_id"`
 	ComponentID     uint8          `json:"component_id"`
-	Sequence        uint16         `json:"sequence"`
+	Sequence        uint16         `json:"sequence"` // MAVLink packet sequence, when available.
 	Fields          map[string]any `json:"fields"`
 	Raw             []byte         `json:"raw"`
 }

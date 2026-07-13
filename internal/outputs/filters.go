@@ -11,7 +11,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 package outputs
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 const wildcardMessage = "*"
 
@@ -55,8 +58,9 @@ func containsMessage(messages []string, messageName string) bool {
 	return false
 }
 
-// NormalizeMessageName collapses Go type strings, pointer prefixes, and package
-// paths to the stable MAVLink message name used by filters.
+// NormalizeMessageName collapses Go type strings, pointer prefixes, package
+// paths, and legacy aliases to the canonical lower-snake-case MAVLink message
+// name used by filters and the internal normalizer registry.
 func NormalizeMessageName(messageName string) string {
 	name := strings.TrimSpace(messageName)
 	if name == "" {
@@ -72,5 +76,37 @@ func NormalizeMessageName(messageName string) string {
 		name = name[idx+1:]
 	}
 	name = strings.TrimPrefix(name, "Message")
-	return name
+	name = strings.ReplaceAll(name, "-", "_")
+	name = strings.ReplaceAll(name, " ", "_")
+
+	var normalized strings.Builder
+	runes := []rune(name)
+	for i, current := range runes {
+		if current == '_' {
+			if normalized.Len() > 0 && !strings.HasSuffix(normalized.String(), "_") {
+				normalized.WriteRune('_')
+			}
+			continue
+		}
+		if unicode.IsUpper(current) {
+			if i > 0 && runes[i-1] != '_' &&
+				(unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1]) ||
+					(i+1 < len(runes) && unicode.IsLower(runes[i+1]))) {
+				normalized.WriteRune('_')
+			}
+			normalized.WriteRune(unicode.ToLower(current))
+			continue
+		}
+		normalized.WriteRune(unicode.ToLower(current))
+	}
+
+	result := strings.Trim(normalized.String(), "_")
+	switch result {
+	case "system_status":
+		return "sys_status"
+	case "gpsraw_int":
+		return "gps_raw_int"
+	default:
+		return result
+	}
 }

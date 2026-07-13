@@ -104,7 +104,7 @@ func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
 		{
 			name: "telemetry",
 			config: &config.Config{
-				Telemetry: config.TelemetryConfig{Enabled: true},
+				Telemetry: config.TelemetryConfig{Enabled: true, Backend: "noop"},
 			},
 		},
 	}
@@ -141,8 +141,8 @@ func TestInternalOutputMessageFilters(t *testing.T) {
 		{
 			name:     "telemetry",
 			filter:   telemetryMessageFilter(),
-			included: []string{"GlobalPositionInt", "VFR_HUD", "SystemStatus"},
-			excluded: "Heartbeat",
+			included: []string{"Heartbeat", "GlobalPositionInt", "BatteryStatus", "SysStatus", "VFR_HUD", "ExtendedSysState", "GpsRawInt", "SystemTime"},
+			excluded: "Attitude",
 		},
 	}
 
@@ -213,10 +213,17 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 	relay := &Relay{}
 
 	before := time.Now().UTC()
+	agentTime := time.Date(2026, 7, 12, 12, 30, 0, 123, time.UTC)
 	frame := &agentv1.TelemetryFrame{
-		AgentId: "agent-1",
-		MsgId:   42,
-		MsgName: "Status",
+		AgentId:            "agent-1",
+		SessionId:          "session-1",
+		FlightId:           "flight-1",
+		Seq:                99,
+		SentAtUnixNs:       agentTime.UnixNano(),
+		DeviceTimestampSec: 42.5,
+		Dialect:            "common",
+		MsgId:              42,
+		MsgName:            "Status",
 		Fields: map[string]string{
 			"mode": "AUTO",
 		},
@@ -233,6 +240,15 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 	}
 	if envelope.MsgName != "Status" {
 		t.Errorf("Expected MsgName 'Status', got '%s'", envelope.MsgName)
+	}
+	if envelope.SessionID != "session-1" || envelope.FlightID != "flight-1" {
+		t.Errorf("session/flight metadata = %q/%q", envelope.SessionID, envelope.FlightID)
+	}
+	if envelope.WALSequence != 99 || envelope.Dialect != "common" {
+		t.Errorf("sequence/dialect metadata = %d/%q", envelope.WALSequence, envelope.Dialect)
+	}
+	if !envelope.TimestampAgent.Equal(agentTime) || envelope.TimestampDevice != 42.5 {
+		t.Errorf("agent/device timestamps = %v/%v", envelope.TimestampAgent, envelope.TimestampDevice)
 	}
 	if got := envelope.Fields["mode"]; got != "AUTO" {
 		t.Errorf("Expected field 'mode' to be 'AUTO', got '%v'", got)

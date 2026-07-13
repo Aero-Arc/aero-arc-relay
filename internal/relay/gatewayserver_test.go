@@ -64,8 +64,8 @@ func TestRegister(t *testing.T) {
 type mockTelemetryStream struct {
 	grpc.ServerStream
 	ctx         context.Context
-	recvChan    chan *agentv1.TelemetryFrame
-	sentAckChan chan *agentv1.TelemetryAck
+	recvChan    chan *agentv1.AgentStreamMessage
+	sentAckChan chan *agentv1.RelayStreamMessage
 	errChan     chan error
 }
 
@@ -73,7 +73,7 @@ func (m *mockTelemetryStream) Context() context.Context {
 	return m.ctx
 }
 
-func (m *mockTelemetryStream) Recv() (*agentv1.TelemetryFrame, error) {
+func (m *mockTelemetryStream) Recv() (*agentv1.AgentStreamMessage, error) {
 	select {
 	case msg, ok := <-m.recvChan:
 		if !ok {
@@ -87,7 +87,7 @@ func (m *mockTelemetryStream) Recv() (*agentv1.TelemetryFrame, error) {
 	}
 }
 
-func (m *mockTelemetryStream) Send(ack *agentv1.TelemetryAck) error {
+func (m *mockTelemetryStream) Send(ack *agentv1.RelayStreamMessage) error {
 	select {
 	case m.sentAckChan <- ack:
 		return nil
@@ -105,8 +105,9 @@ func TestTelemetryStream(t *testing.T) {
 	// Pre-register session (usually required but updated via stream)
 	agentID := "agent-stream-test"
 	relay.grpcSessions[agentID] = &DroneSession{
-		agentID:   "drone-stream-test",
-		SessionID: agentID,
+		agentID:   agentID,
+		SessionID: "session-stream-test",
+		pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
 
 	// Setup Mock Stream
@@ -119,8 +120,8 @@ func TestTelemetryStream(t *testing.T) {
 
 	stream := &mockTelemetryStream{
 		ctx:         ctx,
-		recvChan:    make(chan *agentv1.TelemetryFrame, 10),
-		sentAckChan: make(chan *agentv1.TelemetryAck, 10),
+		recvChan:    make(chan *agentv1.AgentStreamMessage, 10),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 10),
 		errChan:     make(chan error, 1),
 	}
 
@@ -132,17 +133,22 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Test Case 1: Send Frame
 	frame := &agentv1.TelemetryFrame{
-		AgentId: "frame-1",
-		MsgName: "Heartbeat",
+		AgentId:   agentID,
+		SessionId: "session-stream-test",
+		MsgName:   "Heartbeat",
 		Fields: map[string]string{
 			"type": "1",
 		},
 	}
-	stream.recvChan <- frame
+	stream.recvChan <- telemetryStreamMessage(frame)
 
 	// Verify ACK
 	select {
-	case ack := <-stream.sentAckChan:
+	case message := <-stream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil {
+			t.Fatal("expected telemetry ACK payload")
+		}
 		if ack.Seq != frame.Seq {
 			t.Errorf("Expected ACK for frame %v, got %v", frame.Seq, ack.Seq)
 		}
@@ -166,10 +172,14 @@ func TestTelemetryStream(t *testing.T) {
 	}
 
 	// Test Case 2: Reject a frame without a message name and keep the stream open.
-	unnamedFrame := &agentv1.TelemetryFrame{AgentId: "frame-2", Seq: 2}
-	stream.recvChan <- unnamedFrame
+	unnamedFrame := &agentv1.TelemetryFrame{AgentId: agentID, SessionId: "session-stream-test", Seq: 2}
+	stream.recvChan <- telemetryStreamMessage(unnamedFrame)
 	select {
-	case ack := <-stream.sentAckChan:
+	case message := <-stream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil {
+			t.Fatal("expected telemetry ACK payload")
+		}
 		if ack.Status != agentv1.TelemetryAck_STATUS_PERMANENT_ERROR {
 			t.Errorf("Expected permanent error status, got %v", ack.Status)
 		}
@@ -205,6 +215,12 @@ func TestTelemetryStream(t *testing.T) {
 		t.Error("Expected stream to be stored in session")
 	}
 	session.sessionMu.RUnlock()
+}
+
+func telemetryStreamMessage(frame *agentv1.TelemetryFrame) *agentv1.AgentStreamMessage {
+	return &agentv1.AgentStreamMessage{
+		Payload: &agentv1.AgentStreamMessage_TelemetryFrame{TelemetryFrame: frame},
+	}
 }
 
 func TestTelemetryStream_MissingMetadata(t *testing.T) {

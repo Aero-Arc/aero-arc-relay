@@ -18,10 +18,12 @@ func TestNormalizeMessageName(t *testing.T) {
 		name string
 		want string
 	}{
-		{name: "GlobalPositionInt", want: "GlobalPositionInt"},
-		{name: "*common.MessageGlobalPositionInt", want: "GlobalPositionInt"},
-		{name: "github.com/bluenviron/gomavlib/v2/pkg/dialects/common.MessageSysStatus", want: "SysStatus"},
-		{name: "VFR_HUD", want: "VFR_HUD"},
+		{name: "GlobalPositionInt", want: "global_position_int"},
+		{name: "*common.MessageGlobalPositionInt", want: "global_position_int"},
+		{name: "github.com/bluenviron/gomavlib/v2/pkg/dialects/common.MessageSysStatus", want: "sys_status"},
+		{name: "SystemStatus", want: "sys_status"},
+		{name: "VFR_HUD", want: "vfr_hud"},
+		{name: "GpsRawInt", want: "gps_raw_int"},
 		{name: "*", want: "*"},
 	}
 
