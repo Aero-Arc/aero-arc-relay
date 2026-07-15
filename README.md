@@ -228,7 +228,7 @@ Prometheus metrics are exposed at `http://localhost:2112/metrics`:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Mozilla Public License 2.0 — see the LICENSE file for details.
 
 ## Support
 
