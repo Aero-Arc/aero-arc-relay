@@ -45,6 +45,12 @@ go test -race ./...
 go test ./internal/relay -tags=integration
 ```
 
+### Agent stream lifecycle
+
+See [Agent Telemetry Stream Lifecycle](agent-telemetry-stream-lifecycle.md) for
+the registration, telemetry ACK, control-command, stream replacement, and cleanup
+ownership rules.
+
 ### Code Quality
 
 ```bash
