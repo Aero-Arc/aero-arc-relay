@@ -289,21 +289,7 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	}
 	relay.grpcSessions[agentID] = session
 
-	newStream := func() (*mockTelemetryStream, context.CancelFunc) {
-		ctx := metadata.NewIncomingContext(
-			context.Background(),
-			metadata.Pairs("aero-arc-agent-id", agentID),
-		)
-		ctx, cancel := context.WithCancel(ctx)
-		return &mockTelemetryStream{
-			ctx:         ctx,
-			recvChan:    make(chan *agentv1.AgentStreamMessage, 1),
-			sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
-			errChan:     make(chan error, 1),
-		}, cancel
-	}
-
-	oldStream, cancelOld := newStream()
+	oldStream, cancelOld := newAgentTelemetryStream(agentID)
 	defer cancelOld()
 	oldErr := make(chan error, 1)
 	go func() {
@@ -311,7 +297,7 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	}()
 	waitForStreamGeneration(t, session, 1)
 
-	replacementStream, cancelReplacement := newStream()
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
 	defer cancelReplacement()
 	replacementErr := make(chan error, 1)
 	go func() {
@@ -367,6 +353,196 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	if ok {
 		t.Fatal("active replacement stream cleanup did not remove its session")
 	}
+}
+
+func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+	relay.grpcSessions = make(map[string]*DroneSession)
+	agentID := "reconnecting-agent"
+	session := &DroneSession{
+		agentID:   agentID,
+		SessionID: "shared-session",
+		pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = session
+
+	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	defer cancelOld()
+	oldErr := make(chan error, 1)
+	go func() {
+		oldErr <- relay.TelemetryStream(oldStream)
+	}()
+	waitForStreamGeneration(t, session, 1)
+
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
+	defer cancelReplacement()
+	replacementErr := make(chan error, 1)
+	go func() {
+		replacementErr <- relay.TelemetryStream(replacementStream)
+	}()
+	waitForStreamGeneration(t, session, 2)
+
+	close(replacementStream.recvChan)
+	select {
+	case err := <-replacementErr:
+		if err != nil {
+			t.Fatalf("replacement stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for replacement stream to close")
+	}
+
+	oldStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId:   agentID,
+		SessionId: session.SessionID,
+		Seq:       43,
+		MsgName:   "Heartbeat",
+	})
+	select {
+	case message := <-oldStream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil {
+			t.Fatal("old stream response did not contain a telemetry ACK")
+		}
+		if ack.Status != agentv1.TelemetryAck_STATUS_PERMANENT_ERROR {
+			t.Fatalf("old stream ACK status = %v, want permanent error", ack.Status)
+		}
+		if ack.Error == "" {
+			t.Fatal("old stream rejection did not include an error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for stale-stream rejection ACK")
+	}
+	if got := mockSink.GetMessageCount(); got != 0 {
+		t.Fatalf("stale stream routed %d telemetry messages, want 0", got)
+	}
+
+	close(oldStream.recvChan)
+	select {
+	case err := <-oldErr:
+		if err != nil {
+			t.Fatalf("old stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to close")
+	}
+}
+
+func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	agentID := "reconnecting-agent"
+	oldPending := make(chan *agentv1.OperationContextCommandAck, 1)
+	oldSession := &DroneSession{
+		agentID:   agentID,
+		SessionID: "old-session",
+		pending: map[string]chan *agentv1.OperationContextCommandAck{
+			"shared-command": oldPending,
+		},
+	}
+	relay.grpcSessions[agentID] = oldSession
+
+	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	defer cancelOld()
+	oldErr := make(chan error, 1)
+	go func() {
+		oldErr <- relay.TelemetryStream(oldStream)
+	}()
+	waitForStreamGeneration(t, oldSession, 1)
+
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID}); err != nil {
+		t.Fatalf("Register() replacement error = %v", err)
+	}
+	relay.sessionsMu.RLock()
+	replacementSession := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if replacementSession == oldSession {
+		t.Fatal("registration did not replace the old session")
+	}
+	replacementPending := make(chan *agentv1.OperationContextCommandAck, 1)
+	replacementSession.pendingMu.Lock()
+	replacementSession.pending["shared-command"] = replacementPending
+	replacementSession.pendingMu.Unlock()
+
+	commandAck := &agentv1.OperationContextCommandAck{
+		CommandId: "shared-command",
+		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: &agentv1.OperationContext{
+			FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
+		},
+	}
+	oldStream.recvChan <- &agentv1.AgentStreamMessage{
+		Payload: &agentv1.AgentStreamMessage_OperationContextCommandAck{
+			OperationContextCommandAck: commandAck,
+		},
+	}
+	select {
+	case got := <-oldPending:
+		if got != commandAck {
+			t.Fatalf("old pending command received ACK %#v, want %#v", got, commandAck)
+		}
+	case <-replacementPending:
+		t.Fatal("replacement session received a command ACK from the old stream")
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for command ACK on the receiving session")
+	}
+
+	oldSession.sessionMu.RLock()
+	oldFlightID := oldSession.FlightID
+	oldIntentID := oldSession.IntentID
+	oldIntentVersion := oldSession.IntentVersion
+	oldSession.sessionMu.RUnlock()
+	if oldFlightID != "old-flight" || oldIntentID != "old-intent" || oldIntentVersion != 7 {
+		t.Fatalf("old session context = (%q, %q, %d)", oldFlightID, oldIntentID, oldIntentVersion)
+	}
+	replacementSession.sessionMu.RLock()
+	replacementFlightID := replacementSession.FlightID
+	replacementIntentID := replacementSession.IntentID
+	replacementIntentVersion := replacementSession.IntentVersion
+	replacementSession.sessionMu.RUnlock()
+	if replacementFlightID != "" || replacementIntentID != "" || replacementIntentVersion != 0 {
+		t.Fatalf(
+			"replacement session context was changed to (%q, %q, %d)",
+			replacementFlightID, replacementIntentID, replacementIntentVersion,
+		)
+	}
+	replacementSession.pendingMu.Lock()
+	_, replacementStillPending := replacementSession.pending["shared-command"]
+	replacementSession.pendingMu.Unlock()
+	if !replacementStillPending {
+		t.Fatal("old stream ACK removed the replacement session's pending command")
+	}
+
+	close(oldStream.recvChan)
+	select {
+	case err := <-oldErr:
+		if err != nil {
+			t.Fatalf("old stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to close")
+	}
+	relay.sessionsMu.RLock()
+	current := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if current != replacementSession {
+		t.Fatal("old stream cleanup removed the replacement session")
+	}
+}
+
+func newAgentTelemetryStream(agentID string) (*mockTelemetryStream, context.CancelFunc) {
+	ctx := metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs("aero-arc-agent-id", agentID),
+	)
+	ctx, cancel := context.WithCancel(ctx)
+	return &mockTelemetryStream{
+		ctx:         ctx,
+		recvChan:    make(chan *agentv1.AgentStreamMessage, 1),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		errChan:     make(chan error, 1),
+	}, cancel
 }
 
 func waitForStreamGeneration(t *testing.T, session *DroneSession, want uint64) {
