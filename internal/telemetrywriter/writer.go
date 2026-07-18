@@ -18,6 +18,7 @@ import (
 var (
 	ErrQueueFull = errors.New("normalized telemetry queue is full")
 	ErrClosed    = errors.New("normalized telemetry writer is closed")
+	ErrNormalize = errors.New("normalize telemetry envelope")
 
 	acceptedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "aero_telemetry_writer_accepted_total",
@@ -54,6 +55,8 @@ var (
 		Help: "Current normalized telemetry queue depth.",
 	})
 )
+
+const ConsumerName = "telemetry"
 
 type Config struct {
 	QueueCapacity  int
@@ -98,7 +101,7 @@ type Writer struct {
 	config     Config
 	backend    Backend
 	registry   *telemetrynormalize.Registry
-	queue      chan telemetry.TelemetryEnvelope
+	queue      chan telemetrynormalize.Record
 	workerCtx  context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -122,7 +125,7 @@ func NewWriter(config Config, backend Backend, registry *telemetrynormalize.Regi
 		config:    config,
 		backend:   backend,
 		registry:  registry,
-		queue:     make(chan telemetry.TelemetryEnvelope, config.QueueCapacity),
+		queue:     make(chan telemetrynormalize.Record, config.QueueCapacity),
 		workerCtx: ctx,
 		cancel:    cancel,
 	}
@@ -133,13 +136,20 @@ func NewWriter(config Config, backend Backend, registry *telemetrynormalize.Regi
 	return w, nil
 }
 
-func (w *Writer) Name() string { return "telemetry" }
+func (w *Writer) Name() string { return ConsumerName }
 
 func (w *Writer) WriteEnvelope(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
-	if _, supported := w.registry.Lookup(envelope.MsgName); !supported {
+	normalizer, supported := w.registry.Lookup(envelope.MsgName)
+	if !supported {
 		return nil
 	}
 	canonicalName := outputs.NormalizeMessageName(envelope.MsgName)
+	record, err := normalizer.Normalize(envelope)
+	if err != nil {
+		normalizationTotal.WithLabelValues(canonicalName, "failed").Inc()
+		return fmt.Errorf("%w: %v", ErrNormalize, err)
+	}
+	normalizationTotal.WithLabelValues(record.MessageName, "succeeded").Inc()
 	w.stateMu.RLock()
 	defer w.stateMu.RUnlock()
 	if w.closed {
@@ -148,7 +158,7 @@ func (w *Writer) WriteEnvelope(ctx context.Context, envelope telemetry.Telemetry
 	timer := time.NewTimer(w.config.EnqueueTimeout)
 	defer timer.Stop()
 	select {
-	case w.queue <- envelope:
+	case w.queue <- record:
 		acceptedTotal.WithLabelValues(canonicalName).Inc()
 		queueDepth.Set(float64(len(w.queue)))
 		return nil
@@ -180,24 +190,12 @@ func (w *Writer) runWorker(worker int) {
 	}
 	for {
 		select {
-		case envelope, ok := <-w.queue:
+		case record, ok := <-w.queue:
 			if !ok {
 				flush()
 				return
 			}
 			queueDepth.Set(float64(len(w.queue)))
-			normalizer, supported := w.registry.Lookup(envelope.MsgName)
-			if !supported {
-				normalizationTotal.WithLabelValues(outputs.NormalizeMessageName(envelope.MsgName), "unsupported").Inc()
-				continue
-			}
-			record, err := normalizer.Normalize(envelope)
-			if err != nil {
-				normalizationTotal.WithLabelValues(outputs.NormalizeMessageName(envelope.MsgName), "failed").Inc()
-				slog.Warn("telemetry normalization failed", "message_name", envelope.MsgName, "error", err)
-				continue
-			}
-			normalizationTotal.WithLabelValues(record.MessageName, "succeeded").Inc()
 			batch = append(batch, record)
 			if len(batch) >= w.config.BatchSize {
 				flush()

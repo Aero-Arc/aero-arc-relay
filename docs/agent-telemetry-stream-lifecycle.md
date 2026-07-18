@@ -60,10 +60,11 @@ metadata, missing agent ID, or no prior registration.
 For an accepted call, `updateStream`:
 
 1. Resolves the current `DroneSession` for the agent ID.
-2. Serializes the attachment with sends targeting the active stream.
-3. Increments the session's stream generation.
-4. Stores the new stream as the session's active stream.
-5. Returns the exact session pointer and generation to the stream handler.
+2. Increments the session's stream generation.
+3. Creates a stream binding containing the RPC stream, generation, and a send
+   lock owned by that stream.
+4. Stores the new binding as the session's active stream.
+5. Returns the exact session pointer and binding to the stream handler.
 
 The handler retains both values for its entire lifetime. They form the ownership
 token used during cleanup.
@@ -83,18 +84,33 @@ the relay builds an ACK using the frame sequence number and validates:
 - The frame session ID matches that captured session's ID.
 - The MAVLink message name is not empty.
 
-An invalid frame receives a permanent-error ACK and is not routed. An accepted
-frame updates the session heartbeat, is converted into a telemetry envelope, and
-is routed to configured outputs.
+An invalid frame receives a permanent-error ACK and is not routed. A valid frame
+updates the session heartbeat and is converted into a telemetry envelope using
+the session's authoritative flight and intent context. Frame-provided operation
+context cannot override the session state.
+
+The envelope is then offered to configured outputs. An `OK` ACK means the
+official normalized telemetry consumer accepted the envelope into its in-memory
+queue after successful normalization. A deterministic normalization failure
+returns `PERMANENT_ERROR`. If the queue is full, closed, or otherwise cannot
+admit the record, the relay returns `RETRY_WITH_BACKOFF` so the agent retains and
+retries its WAL entry. Failures from optional generic sinks are recorded but do
+not change the official telemetry ACK.
+
+Queue admission is currently an in-memory handoff, not confirmation that the
+backend has durably stored the record. End-to-end durability across relay process
+failure requires a relay-side durable queue or delaying `OK` until durable backend
+confirmation.
 
 The ACK is then sent on the same stream from which the frame was read. This is a
 response-bound operation: the sender of a frame must receive the corresponding
 ACK even if another stream becomes active between `Recv` and `Send`.
 
-All sends associated with a session use `sendMu`. gRPC permits one concurrent
-reader and one concurrent writer for a stream, but multiple concurrent writers
-must be serialized. The shared send lock prevents ACK and control-command sends
-from calling `Send` concurrently.
+All sends use the `sendMu` on their selected stream binding. gRPC permits one
+concurrent reader and one concurrent writer for a stream, but multiple concurrent
+writers must be serialized. Per-stream locks prevent concurrent calls to `Send`
+without allowing a blocked old stream to prevent a replacement from attaching or
+sending.
 
 ## 4. Delivering Control Commands
 
@@ -107,8 +123,8 @@ The delivery path:
 1. Validates the agent ID and command ID.
 2. Resolves the current registered session.
 3. Adds a pending ACK channel keyed by command ID.
-4. Calls `sendToAgent`, which selects the active stream while holding the session
-   send lock.
+4. Sends through the captured session, which selects and locks that session's
+   current stream binding.
 5. Waits for the matching command ACK or for the caller's context to end.
 6. Removes the pending entry when delivery fails, times out, is cancelled, or
    receives an ACK.
@@ -137,7 +153,9 @@ After replacement:
 - New control commands target the replacement stream.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
   old stream while the shared session remains registered.
-- Sends remain serialized through the session's shared send lock.
+- Sends remain serialized independently on each stream binding.
+- A blocked send on the old binding does not delay attachment or sending on the
+  replacement binding.
 - Cleanup from the old generation cannot remove the replacement.
 
 The generation is necessary because both streams can belong to the same
@@ -181,7 +199,7 @@ The stream lifecycle uses four locks with separate responsibilities:
 | --- | --- |
 | `sessionsMu` | The `grpcSessions` map and session identity replacement. |
 | `sessionMu` | Mutable session state, active stream, and stream generation. |
-| `sendMu` | Serialized stream sends and active-stream replacement relative to sends. |
+| Binding `sendMu` | Sends on one specific RPC stream; each replacement has an independent lock. |
 | `pendingMu` | The pending operation-command ACK map. |
 
 The important ownership invariants are:
@@ -190,10 +208,14 @@ The important ownership invariants are:
 2. A telemetry ACK is sent through that same stream argument.
 3. An unsolicited command resolves the session's active stream.
 4. A handler may clean up only the exact session and stream generation it owns.
-5. Replacing an active stream is serialized with active-stream command sends.
+5. A command rechecks its selected binding after acquiring that binding's send
+   lock and retries selection if replacement occurred while it waited.
 6. A frame is routed only while its handler's captured session is still the
    registered session.
 7. A command ACK mutates only the session captured by its receiving handler.
+8. A command and its pending ACK are owned by the same captured session.
+9. A successful telemetry ACK requires admission by the official normalized
+   telemetry consumer.
 
 These rules prevent a replacement connection from receiving an unrelated ACK and
 prevent stale handler cleanup from tearing down the current connection.
@@ -230,6 +252,14 @@ removes the registered session.
 delayed command ACK from an old registration updates and notifies only the old
 session, even when the replacement session has a pending command with the same
 ID.
+
+`TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend` verifies that a
+blocked ACK on an old stream does not prevent a replacement stream from attaching
+and sending.
+
+`TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure` verifies that queue
+admission failures are retryable and deterministic normalization failures are
+permanent.
 
 The relay package is also run under Go's race detector to check the synchronization
 paths used by stream attachment, sending, and cleanup.

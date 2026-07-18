@@ -20,7 +20,10 @@ import (
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
 
-type RouteErrorHandler func(consumer string, err error)
+type RouteError struct {
+	Consumer string
+	Err      error
+}
 
 type route struct {
 	consumer EnvelopeConsumer
@@ -54,12 +57,14 @@ func (r *Router) HasConsumers() bool {
 	return r != nil && len(r.routes) > 0
 }
 
-func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope, onError RouteErrorHandler) {
+func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope) []RouteError {
 	//TODO: Figure out what happens or how to get around blocked consumer
 	var wg sync.WaitGroup
+	var errorsMu sync.Mutex
+	var routeErrors []RouteError
 
 	if r == nil {
-		return
+		return nil
 	}
 
 	for _, route := range r.routes {
@@ -77,14 +82,15 @@ func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope
 					slog.Any("error", err),
 				)
 
-				if onError != nil {
-					onError(consumer, err)
-				}
+				errorsMu.Lock()
+				routeErrors = append(routeErrors, RouteError{Consumer: consumer, Err: err})
+				errorsMu.Unlock()
 			}
 		}()
 	}
 
 	wg.Wait()
+	return routeErrors
 }
 
 func (r *Router) Close(ctx context.Context) error {

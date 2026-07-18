@@ -16,7 +16,7 @@ func TestSetOperationContextDeliversAndWaitsForAgentAck(t *testing.T) {
 	}
 	relay := &Relay{grpcSessions: map[string]*DroneSession{
 		"agent-1": {
-			agentID: "agent-1", SessionID: "session-1", stream: stream,
+			agentID: "agent-1", SessionID: "session-1", stream: &telemetryStreamBinding{stream: stream},
 			pending: make(map[string]chan *agentv1.OperationContextCommandAck),
 		},
 	}}
@@ -63,5 +63,75 @@ func TestSetOperationContextDeliversAndWaitsForAgentAck(t *testing.T) {
 	}
 	if statusResponse.Drone.FlightId != "flight-1" || statusResponse.Drone.IntentVersion != 3 {
 		t.Fatalf("drone context = %#v", statusResponse.Drone)
+	}
+}
+
+func TestDeliverOperationCommandUsesCapturedSession(t *testing.T) {
+	oldStream := &mockTelemetryStream{
+		ctx:         context.Background(),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+	}
+	replacementStream := &mockTelemetryStream{
+		ctx:         context.Background(),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+	}
+	oldSession := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		stream:  &telemetryStreamBinding{stream: oldStream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	replacementSession := &DroneSession{
+		agentID: "agent-1", SessionID: "replacement-session",
+		stream:  &telemetryStreamBinding{stream: replacementStream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{grpcSessions: map[string]*DroneSession{"agent-1": replacementSession}}
+
+	type result struct {
+		ack *agentv1.OperationContextCommandAck
+		err error
+	}
+	resultChannel := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		ack, err := deliverOperationCommandToSession(ctx, oldSession, "command-1", &agentv1.RelayStreamMessage{
+			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
+				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "command-1", FlightId: "flight-1"},
+			},
+		})
+		resultChannel <- result{ack: ack, err: err}
+	}()
+
+	select {
+	case message := <-oldStream.sentAckChan:
+		if message.GetClearOperationContext().GetCommandId() != "command-1" {
+			t.Fatalf("old stream message = %#v", message)
+		}
+	case <-replacementStream.sentAckChan:
+		t.Fatal("command for the captured session was sent to the replacement session")
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for command on the captured session")
+	}
+
+	wantAck := &agentv1.OperationContextCommandAck{
+		CommandId: "command-1",
+		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+	}
+	oldSession.handleOperationContextCommandAck(wantAck)
+	select {
+	case got := <-resultChannel:
+		if got.err != nil {
+			t.Fatalf("deliverOperationCommandToSession() error = %v", got.err)
+		}
+		if got.ack != wantAck {
+			t.Fatalf("ACK = %#v, want %#v", got.ack, wantAck)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for captured session command result")
+	}
+
+	if relay.grpcSessions["agent-1"] != replacementSession {
+		t.Fatal("captured-session command changed the registered replacement")
 	}
 }

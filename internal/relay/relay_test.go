@@ -125,6 +125,21 @@ func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
 	}
 }
 
+func TestNormalizedTelemetryRequiresRelayID(t *testing.T) {
+	cfg := &config.Config{
+		Telemetry: config.TelemetryConfig{
+			Enabled: true,
+			Backend: "influxdb3",
+			InfluxDB: &config.NormalizedInfluxDBConfig{
+				Host: "http://localhost:8181", Token: "token", Database: "telemetry",
+			},
+		},
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New() accepted normalized telemetry without a relay ID")
+	}
+}
+
 func TestInternalOutputMessageFilters(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -174,7 +189,9 @@ func TestHandleTelemetryMessage(t *testing.T) {
 		},
 	}
 
-	relay.handleTelemetryMessage(msg)
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleTelemetryMessage() error = %v", err)
+	}
 
 	if mockSink.GetMessageCount() != 1 {
 		t.Fatalf("Expected 1 message, got %d", mockSink.GetMessageCount())
@@ -199,7 +216,9 @@ func TestHandleTelemetryMessageMultipleSinks(t *testing.T) {
 		MsgName:        "Status",
 	}
 
-	relay.handleTelemetryMessage(msg)
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleTelemetryMessage() error = %v", err)
+	}
 
 	for i, sink := range relay.sinks {
 		mockSink := sink.(*mock.MockSink)
@@ -211,13 +230,22 @@ func TestHandleTelemetryMessageMultipleSinks(t *testing.T) {
 
 func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 	relay := &Relay{}
+	session := &DroneSession{
+		agentID:       "agent-1",
+		SessionID:     "session-1",
+		FlightID:      "authoritative-flight",
+		IntentID:      "authoritative-intent",
+		IntentVersion: 4,
+	}
 
 	before := time.Now().UTC()
 	agentTime := time.Date(2026, 7, 12, 12, 30, 0, 123, time.UTC)
 	frame := &agentv1.TelemetryFrame{
 		AgentId:            "agent-1",
 		SessionId:          "session-1",
-		FlightId:           "flight-1",
+		FlightId:           "stale-frame-flight",
+		IntentId:           "stale-frame-intent",
+		IntentVersion:      1,
 		Seq:                99,
 		SentAtUnixNs:       agentTime.UnixNano(),
 		DeviceTimestampSec: 42.5,
@@ -229,7 +257,7 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 		},
 	}
 
-	envelope := relay.buildTelemetryFrameEnvelope(frame)
+	envelope := relay.buildTelemetryFrameEnvelope(session, frame)
 	after := time.Now().UTC()
 
 	if envelope.AgentID != "agent-1" {
@@ -241,8 +269,11 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 	if envelope.MsgName != "Status" {
 		t.Errorf("Expected MsgName 'Status', got '%s'", envelope.MsgName)
 	}
-	if envelope.SessionID != "session-1" || envelope.FlightID != "flight-1" {
+	if envelope.SessionID != "session-1" || envelope.FlightID != "authoritative-flight" {
 		t.Errorf("session/flight metadata = %q/%q", envelope.SessionID, envelope.FlightID)
+	}
+	if envelope.IntentID != "authoritative-intent" || envelope.IntentVersion != 4 {
+		t.Errorf("intent metadata = %q/%d", envelope.IntentID, envelope.IntentVersion)
 	}
 	if envelope.WALSequence != 99 || envelope.Dialect != "common" {
 		t.Errorf("sequence/dialect metadata = %d/%q", envelope.WALSequence, envelope.Dialect)
@@ -264,6 +295,7 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 func TestHandleTelemetryFrame(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)
+	session := &DroneSession{agentID: "agent-2", SessionID: "session-2"}
 
 	frame := &agentv1.TelemetryFrame{
 		AgentId: "agent-2",
@@ -274,7 +306,9 @@ func TestHandleTelemetryFrame(t *testing.T) {
 		},
 	}
 
-	relay.handleTelemetryFrame(frame)
+	if err := relay.handleTelemetryFrame(context.Background(), session, frame); err != nil {
+		t.Fatalf("handleTelemetryFrame() error = %v", err)
+	}
 
 	if mockSink.GetMessageCount() != 1 {
 		t.Fatalf("Expected 1 message, got %d", mockSink.GetMessageCount())
@@ -305,7 +339,9 @@ func TestConcurrentTelemetryHandling(t *testing.T) {
 				TimestampRelay: time.Now().UTC(),
 				MsgName:        fmt.Sprintf("Status-%d", id),
 			}
-			relay.handleTelemetryMessage(msg)
+			if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+				t.Errorf("handleTelemetryMessage() error = %v", err)
+			}
 		}(i)
 	}
 
@@ -329,7 +365,9 @@ func TestRelayErrorHandling(t *testing.T) {
 		MsgName:        "Heartbeat",
 	}
 
-	relay.handleTelemetryMessage(msg)
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("generic sink failure changed telemetry admission result: %v", err)
+	}
 
 	mockSink := relay.sinks[1].(*mock.MockSink)
 	if mockSink.GetMessageCount() != 1 {

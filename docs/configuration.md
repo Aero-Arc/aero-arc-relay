@@ -31,6 +31,9 @@ aircraft assignment view. Attributed points are written to
 `aircraft_telemetry`; authenticated but unmapped agent points are isolated in
 `unassigned_telemetry`.
 
+`relay_id` is required when the `influxdb3` backend is enabled. The relay fails
+startup rather than writing normalized records without deployment identity.
+
 Set `backend: "noop"` only when normalized telemetry is deliberately disabled
 for tests or local routing demonstrations.
 

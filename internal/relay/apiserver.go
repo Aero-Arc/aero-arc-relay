@@ -86,6 +86,10 @@ func (s *Relay) deliverOperationCommand(ctx context.Context, agentID, commandID 
 	if !ok {
 		return nil, status.Error(codes.NotFound, "agent is not registered on this relay")
 	}
+	return deliverOperationCommandToSession(ctx, session, commandID, message)
+}
+
+func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage) (*agentv1.OperationContextCommandAck, error) {
 	pending := make(chan *agentv1.OperationContextCommandAck, 1)
 	session.pendingMu.Lock()
 	if session.pending == nil {
@@ -102,7 +106,7 @@ func (s *Relay) deliverOperationCommand(ctx context.Context, agentID, commandID 
 		delete(session.pending, commandID)
 		session.pendingMu.Unlock()
 	}
-	if err := s.sendToAgent(agentID, message); err != nil {
+	if err := sendToSession(session, message); err != nil {
 		cleanup()
 		return nil, err
 	}

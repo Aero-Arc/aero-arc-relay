@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -57,7 +58,7 @@ type Relay struct {
 }
 
 type DroneSession struct {
-	stream           agentv1.AgentGateway_TelemetryStreamServer
+	stream           *telemetryStreamBinding
 	streamGeneration uint64
 	agentID          string
 	SessionID        string
@@ -71,9 +72,14 @@ type DroneSession struct {
 	IntentID         string
 	IntentVersion    uint32
 	sessionMu        sync.RWMutex
-	sendMu           sync.Mutex
 	pendingMu        sync.Mutex
 	pending          map[string]chan *agentv1.OperationContextCommandAck
+}
+
+type telemetryStreamBinding struct {
+	stream     agentv1.AgentGateway_TelemetryStreamServer
+	generation uint64
+	sendMu     sync.Mutex
 }
 
 var (
@@ -282,6 +288,9 @@ func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
 	if r.config.Telemetry.Backend == "noop" {
 		return telemetrywriter.NewNoopWriter(), nil
 	}
+	if strings.TrimSpace(r.config.Telemetry.RelayID) == "" {
+		return nil, fmt.Errorf("normalized telemetry relay ID is required")
+	}
 	if r.config.Telemetry.Backend != "influxdb3" {
 		return nil, fmt.Errorf("unsupported normalized telemetry backend %q", r.config.Telemetry.Backend)
 	}
@@ -446,9 +455,14 @@ func filterFromConfig(filter config.MessageFilterConfig) outputs.MessageFilter {
 }
 
 // handleTelemetryMessage processes incoming telemetry messages
-func (r *Relay) handleTelemetryMessage(msg telemetry.TelemetryEnvelope) {
+func (r *Relay) handleTelemetryMessage(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	relayMessagesTotal.WithLabelValues(msg.AgentID, msg.MsgName).Inc()
-	r.router.Route(context.Background(), msg, func(consumer string, _ error) {
-		relaySinkWriteErrorsTotal.WithLabelValues(consumer).Inc()
-	})
+	var telemetryErr error
+	for _, routeErr := range r.router.Route(ctx, msg) {
+		relaySinkWriteErrorsTotal.WithLabelValues(routeErr.Consumer).Inc()
+		if routeErr.Consumer == telemetrywriter.ConsumerName {
+			telemetryErr = routeErr.Err
+		}
+	}
+	return telemetryErr
 }

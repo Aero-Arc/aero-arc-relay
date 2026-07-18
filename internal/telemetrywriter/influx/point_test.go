@@ -51,8 +51,10 @@ func TestRecordToPoint(t *testing.T) {
 func TestRecordToPointUsesUnassignedMeasurement(t *testing.T) {
 	record := telemetrynormalize.Record{
 		SchemaVersion: 1,
-		Identity:      telemetrynormalize.IdentityContext{AgentID: "agent-1"},
-		Source:        telemetrynormalize.SourceContext{FrameID: "7:agent-1:1", Sequence: 1, MessageID: 0, Dialect: "common"},
+		Identity: telemetrynormalize.IdentityContext{
+			AgentID: "agent-1", RelayID: "relay-1", SessionID: "session-1",
+		},
+		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1", Sequence: 1, MessageID: 0, Dialect: "common"},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: time.Now().UTC(), RelayTime: time.Now().UTC(), TimestampSource: telemetrynormalize.TimestampSourceRelay,
 		},

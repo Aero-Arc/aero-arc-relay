@@ -74,6 +74,12 @@ func (r Record) Validate() error {
 	if r.Identity.AgentID == "" {
 		return errors.New("agent ID is required")
 	}
+	if r.Identity.RelayID == "" {
+		return errors.New("relay ID is required")
+	}
+	if r.Identity.SessionID == "" {
+		return errors.New("session ID is required")
+	}
 	if r.Source.FrameID == "" {
 		return errors.New("frame ID is required")
 	}
