@@ -8,6 +8,9 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	"github.com/makinje/aero-arc-relay/internal/mock"
+	"github.com/makinje/aero-arc-relay/internal/outputs"
+	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
+	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -56,6 +59,8 @@ type mockTelemetryStream struct {
 	recvChan    chan *agentv1.AgentStreamMessage
 	sentAckChan chan *agentv1.RelayStreamMessage
 	errChan     chan error
+	sendStarted chan struct{}
+	sendBlock   chan struct{}
 }
 
 func (m *mockTelemetryStream) Context() context.Context {
@@ -77,11 +82,90 @@ func (m *mockTelemetryStream) Recv() (*agentv1.AgentStreamMessage, error) {
 }
 
 func (m *mockTelemetryStream) Send(ack *agentv1.RelayStreamMessage) error {
+	if m.sendStarted != nil {
+		select {
+		case m.sendStarted <- struct{}{}:
+		default:
+		}
+	}
+	if m.sendBlock != nil {
+		select {
+		case <-m.sendBlock:
+		case <-m.ctx.Done():
+			return m.ctx.Err()
+		}
+	}
 	select {
 	case m.sentAckChan <- ack:
 		return nil
 	case <-m.ctx.Done():
 		return m.ctx.Err()
+	}
+}
+
+func TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		writeErr   error
+		wantStatus agentv1.TelemetryAck_Status
+	}{
+		{name: "queue full", writeErr: telemetrywriter.ErrQueueFull, wantStatus: agentv1.TelemetryAck_STATUS_RETRY_WITH_BACKOFF},
+		{name: "normalization", writeErr: telemetrywriter.ErrNormalize, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relay := relayWithSinks(mock.NewMockSink())
+			relay.router.AddConsumer(
+				&errorEnvelopeConsumer{name: telemetrywriter.ConsumerName, err: tt.writeErr},
+				outputs.MessageFilter{Include: []string{"*"}},
+			)
+			relay.grpcSessions = make(map[string]*DroneSession)
+			agentID := "admission-agent"
+			session := &DroneSession{
+				agentID:   agentID,
+				SessionID: "admission-session",
+				pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
+			}
+			relay.grpcSessions[agentID] = session
+
+			stream, cancel := newAgentTelemetryStream(agentID)
+			defer cancel()
+			errChannel := make(chan error, 1)
+			go func() {
+				errChannel <- relay.TelemetryStream(stream)
+			}()
+			waitForStreamGeneration(t, session, 1)
+
+			stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+				AgentId: agentID, SessionId: session.SessionID, Seq: 44, MsgName: "Heartbeat",
+			})
+			select {
+			case message := <-stream.sentAckChan:
+				ack := message.GetTelemetryAck()
+				if ack == nil {
+					t.Fatal("stream response did not contain a telemetry ACK")
+					return
+				}
+				if ack.Status != tt.wantStatus {
+					t.Fatalf("ACK status = %v, want %v", ack.Status, tt.wantStatus)
+				}
+				if ack.Error == "" {
+					t.Fatal("failure ACK did not include the admission error")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for telemetry ACK")
+			}
+
+			close(stream.recvChan)
+			select {
+			case err := <-errChannel:
+				if err != nil {
+					t.Fatalf("stream returned an error on EOF: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for telemetry stream to close")
+			}
+		})
 	}
 }
 
@@ -344,6 +428,84 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	}
 }
 
+func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	agentID := "blocked-stream-agent"
+	session := &DroneSession{
+		agentID:   agentID,
+		SessionID: "shared-session",
+		pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = session
+
+	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	defer cancelOld()
+	oldStream.sendStarted = make(chan struct{}, 1)
+	oldStream.sendBlock = make(chan struct{})
+	oldErr := make(chan error, 1)
+	go func() {
+		oldErr <- relay.TelemetryStream(oldStream)
+	}()
+	waitForStreamGeneration(t, session, 1)
+
+	oldStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: session.SessionID, Seq: 45, MsgName: "Heartbeat",
+	})
+	select {
+	case <-oldStream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old stream did not block while sending its ACK")
+	}
+
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
+	defer cancelReplacement()
+	replacementErr := make(chan error, 1)
+	go func() {
+		replacementErr <- relay.TelemetryStream(replacementStream)
+	}()
+	waitForStreamGeneration(t, session, 2)
+
+	replacementStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: session.SessionID, Seq: 46, MsgName: "Heartbeat",
+	})
+	select {
+	case message := <-replacementStream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil || ack.Seq != 46 || ack.Status != agentv1.TelemetryAck_STATUS_OK {
+			t.Fatalf("replacement stream ACK = %#v", ack)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement stream could not send while the old stream send was blocked")
+	}
+
+	close(oldStream.sendBlock)
+	select {
+	case <-oldStream.sentAckChan:
+	case <-time.After(time.Second):
+		t.Fatal("old stream did not finish sending after it was unblocked")
+	}
+	close(oldStream.recvChan)
+	select {
+	case err := <-oldErr:
+		if err != nil {
+			t.Fatalf("old stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to close")
+	}
+
+	close(replacementStream.recvChan)
+	select {
+	case err := <-replacementErr:
+		if err != nil {
+			t.Fatalf("replacement stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for replacement stream to close")
+	}
+}
+
 func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)
@@ -554,6 +716,19 @@ func telemetryStreamMessage(frame *agentv1.TelemetryFrame) *agentv1.AgentStreamM
 		Payload: &agentv1.AgentStreamMessage_TelemetryFrame{TelemetryFrame: frame},
 	}
 }
+
+type errorEnvelopeConsumer struct {
+	name string
+	err  error
+}
+
+func (c *errorEnvelopeConsumer) Name() string { return c.name }
+
+func (c *errorEnvelopeConsumer) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope) error {
+	return c.err
+}
+
+func (c *errorEnvelopeConsumer) Close(context.Context) error { return nil }
 
 func TestTelemetryStream_MissingMetadata(t *testing.T) {
 	relay := &Relay{

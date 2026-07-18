@@ -10,7 +10,7 @@ type NoopWriter struct{}
 
 func NewNoopWriter() *NoopWriter { return &NoopWriter{} }
 
-func (n *NoopWriter) Name() string { return "telemetry" }
+func (n *NoopWriter) Name() string { return ConsumerName }
 
 func (n *NoopWriter) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope) error { return nil }
 

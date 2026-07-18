@@ -118,6 +118,24 @@ func TestGlobalPositionRejectsMissingRequiredCoordinates(t *testing.T) {
 	}
 }
 
+func TestRecordValidationRequiresRelayAndSessionIdentity(t *testing.T) {
+	normalizer, _ := NewRegistry().Lookup("Heartbeat")
+	record, err := normalizer.Normalize(testEnvelope("Heartbeat", 0, nil))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	record.Identity.RelayID = ""
+	if err := record.Validate(); err == nil {
+		t.Fatal("record without relay ID passed validation")
+	}
+	record.Identity.RelayID = "relay-1"
+	record.Identity.SessionID = ""
+	if err := record.Validate(); err == nil {
+		t.Fatal("record without session ID passed validation")
+	}
+}
+
 func testEnvelope(message string, messageID uint32, fields map[string]any) telemetry.TelemetryEnvelope {
 	return telemetry.TelemetryEnvelope{
 		AgentID:        "agent-1",

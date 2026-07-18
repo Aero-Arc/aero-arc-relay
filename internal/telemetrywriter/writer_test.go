@@ -2,6 +2,7 @@ package telemetrywriter
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -16,9 +17,11 @@ type fakeBackend struct {
 	writes  chan struct{}
 	err     error
 	calls   int
+	started chan struct{}
+	block   chan struct{}
 }
 
-func (f *fakeBackend) WriteBatch(_ context.Context, records []telemetrynormalize.Record) error {
+func (f *fakeBackend) WriteBatch(ctx context.Context, records []telemetrynormalize.Record) error {
 	f.mu.Lock()
 	f.calls++
 	f.records = append(f.records, records...)
@@ -27,6 +30,19 @@ func (f *fakeBackend) WriteBatch(_ context.Context, records []telemetrynormalize
 		select {
 		case f.writes <- struct{}{}:
 		default:
+		}
+	}
+	if f.started != nil {
+		select {
+		case f.started <- struct{}{}:
+		default:
+		}
+	}
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return f.err
@@ -96,6 +112,61 @@ func TestWriterIgnoresUnsupportedMessage(t *testing.T) {
 	}
 	if len(backend.records) != 0 {
 		t.Fatalf("unexpected records = %#v", backend.records)
+	}
+}
+
+func TestWriterReturnsNormalizationFailureBeforeAdmission(t *testing.T) {
+	backend := &fakeBackend{}
+	writer, err := NewWriter(Config{Workers: 1, BatchSize: 1}, backend, nil)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	envelope := validPositionEnvelope()
+	envelope.Fields = map[string]any{}
+	if err := writer.WriteEnvelope(context.Background(), envelope); !errors.Is(err, ErrNormalize) {
+		t.Fatalf("WriteEnvelope() error = %v, want ErrNormalize", err)
+	}
+	if err := writer.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.records) != 0 {
+		t.Fatalf("invalid envelope reached backend: %#v", backend.records)
+	}
+}
+
+func TestWriterReturnsQueueFullWhenAdmissionTimesOut(t *testing.T) {
+	backend := &fakeBackend{started: make(chan struct{}, 1), block: make(chan struct{})}
+	writer, err := NewWriter(Config{
+		QueueCapacity:  1,
+		Workers:        1,
+		BatchSize:      1,
+		EnqueueTimeout: 5 * time.Millisecond,
+		WriteTimeout:   time.Second,
+	}, backend, nil)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+
+	if err := writer.WriteEnvelope(context.Background(), validPositionEnvelope()); err != nil {
+		t.Fatalf("first WriteEnvelope() error = %v", err)
+	}
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("backend write did not start")
+	}
+	if err := writer.WriteEnvelope(context.Background(), validPositionEnvelope()); err != nil {
+		t.Fatalf("second WriteEnvelope() error = %v", err)
+	}
+	if err := writer.WriteEnvelope(context.Background(), validPositionEnvelope()); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("third WriteEnvelope() error = %v, want ErrQueueFull", err)
+	}
+
+	close(backend.block)
+	if err := writer.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
 	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -68,13 +70,13 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.InvalidArgument, "missing aero-arc-agent-id")
 	}
 
-	streamSession, streamGeneration, err := r.updateStream(agentID[0], stream)
+	streamSession, streamBinding, err := r.updateStream(agentID[0], stream)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID[0])
 
-	defer r.deleteStream(agentID[0], streamSession, streamGeneration)
+	defer r.deleteStream(agentID[0], streamSession, streamBinding)
 
 	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back
 	// independently of receiving frames, but for strict request-response style streaming
@@ -132,10 +134,18 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			streamSession.sessionMu.Lock()
 			streamSession.LastHeartbeat = time.Now().UTC()
 			streamSession.sessionMu.Unlock()
-			r.handleTelemetryFrame(frame)
+			if err := r.handleTelemetryFrame(ctx, streamSession, frame); err != nil {
+				if errors.Is(err, telemetrywriter.ErrNormalize) {
+					ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+					ack.Error = "telemetry normalization failed: " + err.Error()
+				} else {
+					ack.Status = agentv1.TelemetryAck_STATUS_RETRY_WITH_BACKOFF
+					ack.Error = "telemetry admission failed: " + err.Error()
+				}
+			}
 		}
 
-		if err := sendOnStream(streamSession, stream, &agentv1.RelayStreamMessage{
+		if err := sendOnStream(streamBinding, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_TelemetryAck{TelemetryAck: ack},
 		}); err != nil {
 			slog.LogAttrs(
@@ -156,29 +166,33 @@ func newSessionID() (string, error) {
 	return "sess-" + hex.EncodeToString(bytes[:]), nil
 }
 
-func (r *Relay) sendToAgent(agentID string, message *agentv1.RelayStreamMessage) error {
-	r.sessionsMu.RLock()
-	session, ok := r.grpcSessions[agentID]
-	r.sessionsMu.RUnlock()
-	if !ok {
-		return status.Error(codes.NotFound, "agent session not found")
-	}
-	session.sendMu.Lock()
-	defer session.sendMu.Unlock()
+func sendToSession(session *DroneSession, message *agentv1.RelayStreamMessage) error {
+	for {
+		session.sessionMu.RLock()
+		binding := session.stream
+		session.sessionMu.RUnlock()
+		if binding == nil {
+			return status.Error(codes.Unavailable, "agent stream is not connected")
+		}
 
-	session.sessionMu.RLock()
-	stream := session.stream
-	session.sessionMu.RUnlock()
-	if stream == nil {
-		return status.Error(codes.Unavailable, "agent stream is not connected")
+		binding.sendMu.Lock()
+		session.sessionMu.RLock()
+		isCurrent := session.stream == binding
+		session.sessionMu.RUnlock()
+		if !isCurrent {
+			binding.sendMu.Unlock()
+			continue
+		}
+		err := binding.stream.Send(message)
+		binding.sendMu.Unlock()
+		return err
 	}
-	return stream.Send(message)
 }
 
-func sendOnStream(session *DroneSession, stream agentv1.AgentGateway_TelemetryStreamServer, message *agentv1.RelayStreamMessage) error {
-	session.sendMu.Lock()
-	defer session.sendMu.Unlock()
-	return stream.Send(message)
+func sendOnStream(binding *telemetryStreamBinding, message *agentv1.RelayStreamMessage) error {
+	binding.sendMu.Lock()
+	defer binding.sendMu.Unlock()
+	return binding.stream.Send(message)
 }
 
 func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.OperationContextCommandAck) {
@@ -213,12 +227,12 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 	}
 }
 
-func (r *Relay) handleTelemetryFrame(frame *agentv1.TelemetryFrame) {
-	envelope := r.buildTelemetryFrameEnvelope(frame)
-	r.handleTelemetryMessage(envelope)
+func (r *Relay) handleTelemetryFrame(ctx context.Context, session *DroneSession, frame *agentv1.TelemetryFrame) error {
+	envelope := r.buildTelemetryFrameEnvelope(session, frame)
+	return r.handleTelemetryMessage(ctx, envelope)
 }
 
-func (r *Relay) buildTelemetryFrameEnvelope(frame *agentv1.TelemetryFrame) telemetry.TelemetryEnvelope {
+func (r *Relay) buildTelemetryFrameEnvelope(session *DroneSession, frame *agentv1.TelemetryFrame) telemetry.TelemetryEnvelope {
 	// TODO: This is going to have stringified values, so we need to handle that. Possibly
 	fields := make(map[string]any, len(frame.Fields))
 	for k, v := range frame.Fields {
@@ -229,14 +243,21 @@ func (r *Relay) buildTelemetryFrameEnvelope(frame *agentv1.TelemetryFrame) telem
 	if frame.SentAtUnixNs > 0 {
 		agentTime = time.Unix(0, frame.SentAtUnixNs).UTC()
 	}
+	session.sessionMu.RLock()
+	agentID := session.agentID
+	sessionID := session.SessionID
+	flightID := session.FlightID
+	intentID := session.IntentID
+	intentVersion := session.IntentVersion
+	session.sessionMu.RUnlock()
 
 	envelope := telemetry.TelemetryEnvelope{
-		AgentID:         frame.AgentId,
-		Source:          frame.AgentId,
-		SessionID:       frame.SessionId,
-		FlightID:        frame.FlightId,
-		IntentID:        frame.IntentId,
-		IntentVersion:   frame.IntentVersion,
+		AgentID:         agentID,
+		Source:          agentID,
+		SessionID:       sessionID,
+		FlightID:        flightID,
+		IntentID:        intentID,
+		IntentVersion:   intentVersion,
 		TimestampRelay:  time.Now().UTC(),
 		TimestampAgent:  agentTime,
 		TimestampDevice: frame.DeviceTimestampSec,
@@ -248,7 +269,7 @@ func (r *Relay) buildTelemetryFrameEnvelope(frame *agentv1.TelemetryFrame) telem
 	}
 	if r.config != nil {
 		envelope.RelayID = r.config.Telemetry.RelayID
-		if mapping, ok := r.config.Telemetry.AgentMappings[frame.AgentId]; ok {
+		if mapping, ok := r.config.Telemetry.AgentMappings[agentID]; ok {
 			envelope.OperatorID = mapping.OperatorID
 			envelope.AircraftID = mapping.AircraftID
 		}

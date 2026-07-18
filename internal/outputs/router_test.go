@@ -35,8 +35,8 @@ func TestRouterRoutesByMessageFilter(t *testing.T) {
 	router.AddConsumer(global, MessageFilter{Include: []string{"GlobalPositionInt"}})
 	router.AddConsumer(all, MessageFilter{Include: []string{"*"}})
 
-	router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "*common.MessageGlobalPositionInt"}, nil)
-	router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "Heartbeat"}, nil)
+	router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "*common.MessageGlobalPositionInt"})
+	router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "Heartbeat"})
 
 	if got := len(global.messages); got != 1 {
 		t.Fatalf("global consumer got %d messages, want 1", got)
@@ -67,12 +67,12 @@ func TestRouterReportsConsumerWriteError(t *testing.T) {
 	wantErr := errors.New("write failed")
 	router.AddConsumer(&recordingConsumer{name: "failing", err: wantErr}, MessageFilter{Include: []string{"*"}})
 
-	var gotConsumer string
-	var gotErr error
-	router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "Heartbeat"}, func(consumer string, err error) {
-		gotConsumer = consumer
-		gotErr = err
-	})
+	routeErrors := router.Route(context.Background(), telemetry.TelemetryEnvelope{MsgName: "Heartbeat"})
+	if len(routeErrors) != 1 {
+		t.Fatalf("route errors = %#v, want one error", routeErrors)
+	}
+	gotConsumer := routeErrors[0].Consumer
+	gotErr := routeErrors[0].Err
 
 	if gotConsumer != "failing" {
 		t.Fatalf("error consumer = %q, want %q", gotConsumer, "failing")
