@@ -78,8 +78,9 @@ Each stream handler reads messages from its own RPC stream. For a telemetry fram
 the relay builds an ACK using the frame sequence number and validates:
 
 - The frame agent ID matches the authenticated metadata agent ID.
-- The frame session ID matches the currently registered session ID, when an
-  active session exists.
+- The handler's captured session still exists as the currently registered
+  session for the agent.
+- The frame session ID matches that captured session's ID.
 - The MAVLink message name is not empty.
 
 An invalid frame receives a permanent-error ACK and is not routed. An accepted
@@ -112,8 +113,11 @@ The delivery path:
 6. Removes the pending entry when delivery fails, times out, is cancelled, or
    receives an ACK.
 
-Incoming operation-context ACKs update the session's active flight and intent
-state when applicable, then notify the pending control request.
+Incoming operation-context ACKs are applied to the session captured by the
+receiving stream handler. They update that session's active flight and intent
+state when applicable, then notify its pending control request. The relay does
+not look the session up again by agent ID because the same agent may have
+registered a replacement session while an old command ACK was in flight.
 
 This creates an intentional routing distinction:
 
@@ -132,7 +136,7 @@ After replacement:
 
 - New control commands target the replacement stream.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
-  old stream.
+  old stream while the shared session remains registered.
 - Sends remain serialized through the session's shared send lock.
 - Cleanup from the old generation cannot remove the replacement.
 
@@ -143,8 +147,10 @@ alone cannot distinguish an old connection from its replacement.
 If the agent registers again instead of only replacing its stream, the new map
 entry has a different `DroneSession` pointer and session ID. The old handler's
 cleanup is rejected by the session pointer check. Frames from the old registration
-also fail the active-session-ID validation and receive their error ACK on the old
-stream.
+also fail the active-session-identity validation and receive their error ACK on
+the old stream. Delayed operation-command ACKs received by the old handler remain
+bound to the old session and cannot update the replacement session's context or
+pending commands.
 
 ## 6. Disconnect and Cleanup
 
@@ -161,6 +167,8 @@ The relay removes the session only when both conditions hold. Consequently:
 - An old stream generation cannot delete a replacement stream in the same
   session.
 - Closing the currently active stream removes its session from the active map.
+- Any older handler that remains alive after active-session removal rejects new
+  telemetry instead of routing it.
 
 Once the active session is removed, the agent must register again before opening
 another telemetry stream.
@@ -183,6 +191,9 @@ The important ownership invariants are:
 3. An unsolicited command resolves the session's active stream.
 4. A handler may clean up only the exact session and stream generation it owns.
 5. Replacing an active stream is serialized with active-stream command sends.
+6. A frame is routed only while its handler's captured session is still the
+   registered session.
+7. A command ACK mutates only the session captured by its receiving handler.
 
 These rules prevent a replacement connection from receiving an unrelated ACK and
 prevent stale handler cleanup from tearing down the current connection.
@@ -191,8 +202,10 @@ prevent stale handler cleanup from tearing down the current connection.
 
 Stream replacement changes which stream is active, but it does not cancel the old
 handler. This allows a short drain period in which the old stream can finish work
-and receive ACKs for its own frames. It also means both handlers can temporarily
-submit valid telemetry for the same session.
+and receive ACKs for its own frames while the shared session remains registered.
+It also means both handlers can temporarily submit valid telemetry for the same
+session. If the active replacement closes and removes the session, any surviving
+old handler returns permanent-error ACKs for later frames and does not route them.
 
 If the protocol later requires strict single-stream ingestion, replacement should
 also cancel the previous handler or cause stale generations to reject new frames.
@@ -208,6 +221,15 @@ that:
 - A frame read by the old stream is ACKed only on the old stream.
 - Closing the old stream preserves the replacement session.
 - Closing the active replacement stream removes the session.
+
+`TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses` verifies that
+a surviving old handler cannot route telemetry after the active replacement
+removes the registered session.
+
+`TestTelemetryStream_CommandACKStaysBoundToReceivingSession` verifies that a
+delayed command ACK from an old registration updates and notifies only the old
+session, even when the replacement session has a pending command with the same
+ID.
 
 The relay package is also run under Go's race detector to check the synchronization
 paths used by stream attachment, sending, and cleanup.

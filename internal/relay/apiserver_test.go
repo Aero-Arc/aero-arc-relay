@@ -43,7 +43,7 @@ func TestSetOperationContextDeliversAndWaitsForAgentAck(t *testing.T) {
 	if message.GetSetOperationContext() == nil || message.GetSetOperationContext().CommandId != "command-1" {
 		t.Fatalf("unexpected relay stream message: %#v", message)
 	}
-	relay.handleOperationContextCommandAck("agent-1", &agentv1.OperationContextCommandAck{
+	relay.grpcSessions["agent-1"].handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
 		CommandId: "command-1",
 		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
 		ActiveContext: &agentv1.OperationContext{

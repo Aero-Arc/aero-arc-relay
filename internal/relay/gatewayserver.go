@@ -99,7 +99,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
-			r.handleOperationContextCommandAck(agentID[0], commandAck)
+			streamSession.handleOperationContextCommandAck(commandAck)
 			continue
 		}
 		frame := message.GetTelemetryFrame()
@@ -118,7 +118,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		if frame.AgentId != agentID[0] {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame agent ID does not match authenticated stream"
-		} else if session != nil && frame.SessionId != session.SessionID {
+		} else if session != streamSession {
+			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+			ack.Error = "telemetry stream session is no longer active"
+		} else if frame.SessionId != streamSession.SessionID {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame session ID does not match active session"
 		} else if strings.TrimSpace(frame.MsgName) == "" {
@@ -126,11 +129,9 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			ack.Error = "telemetry frame message name is required"
 		} else {
 			// Process the frame (e.g., forward to outputs).
-			if session != nil {
-				session.sessionMu.Lock()
-				session.LastHeartbeat = time.Now().UTC()
-				session.sessionMu.Unlock()
-			}
+			streamSession.sessionMu.Lock()
+			streamSession.LastHeartbeat = time.Now().UTC()
+			streamSession.sessionMu.Unlock()
 			r.handleTelemetryFrame(frame)
 		}
 
@@ -180,11 +181,8 @@ func sendOnStream(session *DroneSession, stream agentv1.AgentGateway_TelemetrySt
 	return stream.Send(message)
 }
 
-func (r *Relay) handleOperationContextCommandAck(agentID string, ack *agentv1.OperationContextCommandAck) {
-	r.sessionsMu.RLock()
-	session, ok := r.grpcSessions[agentID]
-	r.sessionsMu.RUnlock()
-	if !ok {
+func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.OperationContextCommandAck) {
+	if session == nil {
 		return
 	}
 	if ack.Status == agentv1.OperationContextCommandAck_STATUS_APPLIED ||
