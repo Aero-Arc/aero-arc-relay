@@ -30,7 +30,8 @@ import (
 
 // Register handles the initial connection handshake from an agent.
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
-	slog.Info("Received registration request",
+	slog.Info(
+		"Received registration request",
 		"agent_id", req.AgentId,
 	)
 
@@ -78,11 +79,13 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.InvalidArgument, "missing aero-arc-agent-id")
 	}
 
-	if err := r.updateStream(agentID[0], stream); err != nil {
+	sessionID, err := r.updateStream(agentID[0], stream)
+	if err != nil {
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
-
 	slog.Info("Updated stream for agent", "agent_id", agentID[0])
+
+	defer r.deleteStream(agentID[0], sessionID)
 
 	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back
 	// independently of receiving frames, but for strict request-response style streaming
@@ -97,12 +100,13 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 
 		message, err := stream.Recv()
 		if err == io.EOF {
-			return nil // Stream closed by client
+			slog.Info("client closed stream")
+			return nil
 		}
 		if err != nil {
-			slog.Error("Error receiving telemetry frame", "error", err)
-			// TODO: prolly shouldn't close stream. Really should only close stream if agent is disconnected.
-			return status.Errorf(codes.Unknown, "stream recv error: %v", err)
+			slog.Error("Error receiving telemetry frame. Cancelling stream.", "error", err)
+
+			return err
 		}
 
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
@@ -144,7 +148,8 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		if err := r.sendToAgent(agentID[0], &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_TelemetryAck{TelemetryAck: ack},
 		}); err != nil {
-			slog.LogAttrs(ctx, slog.LevelWarn, "Failed to send ACK", slog.Uint64("seq", frame.Seq),
+			slog.LogAttrs(
+				ctx, slog.LevelWarn, "Failed to send ACK", slog.Uint64("seq", frame.Seq),
 				slog.String("agent_id", frame.AgentId), slog.String("err", err.Error()),
 			)
 

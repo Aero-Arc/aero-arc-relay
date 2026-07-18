@@ -205,16 +205,77 @@ func TestTelemetryStream(t *testing.T) {
 		t.Fatal("Timeout waiting for handler to return")
 	}
 
-	// Verify Stream updated in Session
+	// Verify the disconnected session is no longer reported as active.
 	relay.sessionsMu.RLock()
-	session := relay.grpcSessions[agentID]
+	_, ok := relay.grpcSessions[agentID]
 	relay.sessionsMu.RUnlock()
-
-	session.sessionMu.RLock()
-	if session.stream == nil {
-		t.Error("Expected stream to be stored in session")
+	if ok {
+		t.Error("expected session to be removed after stream closes")
 	}
-	session.sessionMu.RUnlock()
+}
+
+func TestTelemetryStream_OldStreamDoesNotDeleteReplacementSession(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	agentID := "reconnecting-agent"
+	oldSession := &DroneSession{
+		agentID:   agentID,
+		SessionID: "old-session",
+		pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = oldSession
+
+	ctx := metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs("aero-arc-agent-id", agentID),
+	)
+	stream := &mockTelemetryStream{
+		ctx:         ctx,
+		recvChan:    make(chan *agentv1.AgentStreamMessage, 1),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		errChan:     make(chan error, 1),
+	}
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- relay.TelemetryStream(stream)
+	}()
+
+	stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId:   agentID,
+		SessionId: oldSession.SessionID,
+		MsgName:   "Heartbeat",
+	})
+	select {
+	case <-stream.sentAckChan:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to become active")
+	}
+
+	replacement := &DroneSession{
+		agentID:   agentID,
+		SessionID: "replacement-session",
+		pending:   make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.sessionsMu.Lock()
+	relay.grpcSessions[agentID] = replacement
+	relay.sessionsMu.Unlock()
+	close(stream.recvChan)
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("old stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to close")
+	}
+
+	relay.sessionsMu.RLock()
+	current := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if current != replacement {
+		t.Fatal("old stream cleanup removed or replaced the current session")
+	}
 }
 
 func telemetryStreamMessage(frame *agentv1.TelemetryFrame) *agentv1.AgentStreamMessage {
