@@ -4,34 +4,41 @@ import (
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 )
 
-func (r *Relay) updateStream(agentID string, stream agentv1.AgentGateway_TelemetryStreamServer) (string, error) {
-	// 1. Lock map to find session
+func (r *Relay) updateStream(agentID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, uint64, error) {
 	r.sessionsMu.RLock()
-	session, ok := r.grpcSessions[agentID]
+	defer r.sessionsMu.RUnlock()
 
-	// 2. Handle missing session
+	session, ok := r.grpcSessions[agentID]
 	if !ok {
-		r.sessionsMu.RUnlock()
-		return "", ErrSessionNotFound
+		return nil, 0, ErrSessionNotFound
 	}
 
-	storedID := session.SessionID
-	r.sessionsMu.RUnlock()
-
-	// 3. Update stream safely
+	// Serialize replacement with sends that target the active stream. This keeps
+	// a command from selecting one stream while a replacement installs another.
+	session.sendMu.Lock()
+	defer session.sendMu.Unlock()
 	session.sessionMu.Lock()
-	session.stream = stream
-	session.sessionMu.Unlock()
+	defer session.sessionMu.Unlock()
 
-	return storedID, nil
+	session.streamGeneration++
+	session.stream = stream
+
+	return session, session.streamGeneration, nil
 }
 
-func (r *Relay) deleteStream(agentID, sessionID string) {
+func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, streamGeneration uint64) {
 	r.sessionsMu.Lock()
 	defer r.sessionsMu.Unlock()
 
 	session, ok := r.grpcSessions[agentID]
-	if ok && session.SessionID == sessionID {
+	if !ok || session != expectedSession {
+		return
+	}
+
+	session.sessionMu.RLock()
+	isCurrentStream := session.streamGeneration == streamGeneration
+	session.sessionMu.RUnlock()
+	if isCurrentStream {
 		delete(r.grpcSessions, agentID)
 	}
 }

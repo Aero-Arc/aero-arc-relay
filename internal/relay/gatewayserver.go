@@ -68,13 +68,13 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.InvalidArgument, "missing aero-arc-agent-id")
 	}
 
-	sessionID, err := r.updateStream(agentID[0], stream)
+	streamSession, streamGeneration, err := r.updateStream(agentID[0], stream)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID[0])
 
-	defer r.deleteStream(agentID[0], sessionID)
+	defer r.deleteStream(agentID[0], streamSession, streamGeneration)
 
 	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back
 	// independently of receiving frames, but for strict request-response style streaming
@@ -134,7 +134,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			r.handleTelemetryFrame(frame)
 		}
 
-		if err := r.sendToAgent(agentID[0], &agentv1.RelayStreamMessage{
+		if err := sendOnStream(streamSession, stream, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_TelemetryAck{TelemetryAck: ack},
 		}); err != nil {
 			slog.LogAttrs(
@@ -162,12 +162,19 @@ func (r *Relay) sendToAgent(agentID string, message *agentv1.RelayStreamMessage)
 	if !ok {
 		return status.Error(codes.NotFound, "agent session not found")
 	}
+	session.sendMu.Lock()
+	defer session.sendMu.Unlock()
+
 	session.sessionMu.RLock()
 	stream := session.stream
 	session.sessionMu.RUnlock()
 	if stream == nil {
 		return status.Error(codes.Unavailable, "agent stream is not connected")
 	}
+	return stream.Send(message)
+}
+
+func sendOnStream(session *DroneSession, stream agentv1.AgentGateway_TelemetryStreamServer, message *agentv1.RelayStreamMessage) error {
 	session.sendMu.Lock()
 	defer session.sendMu.Unlock()
 	return stream.Send(message)

@@ -46,22 +46,23 @@ type Relay struct {
 }
 
 type DroneSession struct {
-	stream        agentv1.AgentGateway_TelemetryStreamServer
-	agentID       string
-	SessionID     string
-	ConnectedAt   time.Time
-	LastHeartbeat time.Time
-	Position      *common.MessageGlobalPositionInt
-	Attitude      *common.MessageAttitude
-	VfrHud        *common.MessageVfrHud
-	SystemStatus  *common.MessageSysStatus
-	FlightID      string
-	IntentID      string
-	IntentVersion uint32
-	sessionMu     sync.RWMutex
-	sendMu        sync.Mutex
-	pendingMu     sync.Mutex
-	pending       map[string]chan *agentv1.OperationContextCommandAck
+	stream           agentv1.AgentGateway_TelemetryStreamServer
+	streamGeneration uint64
+	agentID          string
+	SessionID        string
+	ConnectedAt      time.Time
+	LastHeartbeat    time.Time
+	Position         *common.MessageGlobalPositionInt
+	Attitude         *common.MessageAttitude
+	VfrHud           *common.MessageVfrHud
+	SystemStatus     *common.MessageSysStatus
+	FlightID         string
+	IntentID         string
+	IntentVersion    uint32
+	sessionMu        sync.RWMutex
+	sendMu           sync.Mutex
+	pendingMu        sync.Mutex
+	pending          map[string]chan *agentv1.OperationContextCommandAck
 }
 
 var (
