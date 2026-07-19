@@ -13,6 +13,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -122,6 +123,27 @@ func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
 				t.Fatalf("relay with only %s output has %d generic sinks", tt.name, len(relay.sinks))
 			}
 		})
+	}
+}
+
+func TestInitializeOutputsClosesConsumersWhenSinkInitializationFails(t *testing.T) {
+	consumer := &closeTrackingConsumer{}
+	sinkErr := errors.New("sink initialization failed")
+	relay := &Relay{
+		config: &config.Config{
+			Telemetry: config.TelemetryConfig{Enabled: true},
+		},
+	}
+
+	err := relay.initializeOutputsWith(
+		func() (outputs.EnvelopeConsumer, error) { return consumer, nil },
+		func() error { return sinkErr },
+	)
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("initializeOutputsWith() error = %v, want %v", err, sinkErr)
+	}
+	if !consumer.closed {
+		t.Fatal("initialized telemetry consumer was not closed")
 	}
 }
 
@@ -380,6 +402,21 @@ func TestRelayErrorHandling(t *testing.T) {
 
 type failingSink struct {
 	closed bool
+}
+
+type closeTrackingConsumer struct {
+	closed bool
+}
+
+func (c *closeTrackingConsumer) Name() string { return "close-tracking" }
+
+func (c *closeTrackingConsumer) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope) error {
+	return nil
+}
+
+func (c *closeTrackingConsumer) Close(context.Context) error {
+	c.closed = true
+	return nil
 }
 
 func (f *failingSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {

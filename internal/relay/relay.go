@@ -15,6 +15,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -290,7 +291,24 @@ func (r *Relay) ready() bool {
 
 // initializeOutputs sets up internal relay outputs and configured data sinks.
 func (r *Relay) initializeOutputs() error {
+	return r.initializeOutputsWith(r.newTelemetryWriter, r.initializeSinks)
+}
+
+func (r *Relay) initializeOutputsWith(
+	newTelemetryWriter func() (outputs.EnvelopeConsumer, error),
+	initializeSinks func() error,
+) (err error) {
 	r.router = outputs.NewRouter()
+	defer func() {
+		if err == nil {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if closeErr := r.router.Close(closeCtx); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("clean up initialized outputs: %w", closeErr))
+		}
+	}()
 
 	if r.config.Registry.Enabled {
 		r.router.AddConsumer(
@@ -300,14 +318,14 @@ func (r *Relay) initializeOutputs() error {
 	}
 
 	if r.config.Telemetry.Enabled {
-		consumer, err := r.newTelemetryWriter()
+		consumer, err := newTelemetryWriter()
 		if err != nil {
 			return err
 		}
 		r.router.AddConsumer(consumer, telemetryMessageFilter())
 	}
 
-	if err := r.initializeSinks(); err != nil {
+	if err := initializeSinks(); err != nil {
 		return err
 	}
 	if !r.router.HasConsumers() {
