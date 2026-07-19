@@ -64,7 +64,10 @@ func NormalizeMessageName(messageName string) string {
 	if idx := strings.LastIndex(name, "."); idx >= 0 {
 		name = name[idx+1:]
 	}
-	name = strings.TrimPrefix(name, "Message")
+	const goTypePrefix = "message"
+	if len(name) >= len(goTypePrefix) && strings.EqualFold(name[:len(goTypePrefix)], goTypePrefix) {
+		name = name[len(goTypePrefix):]
+	}
 	name = strings.ReplaceAll(name, "-", "_")
 	name = strings.ReplaceAll(name, " ", "_")
 

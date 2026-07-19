@@ -23,8 +23,9 @@ func TestRegister(t *testing.T) {
 	}
 
 	req := &agentv1.RegisterRequest{
-		AgentId: "agent-123",
+		AgentId: "  agent-123  ",
 	}
+	const agentID = "agent-123"
 
 	// Execute
 	resp, err := relay.Register(context.Background(), req)
@@ -33,8 +34,8 @@ func TestRegister(t *testing.T) {
 		t.Fatalf("Register failed: %v", err)
 	}
 
-	if resp.AgentId != req.AgentId {
-		t.Errorf("Expected AgentId %s, got %s", req.AgentId, resp.AgentId)
+	if resp.AgentId != agentID {
+		t.Errorf("Expected AgentId %s, got %s", agentID, resp.AgentId)
 	}
 	if resp.SessionId == "" {
 		t.Error("Expected non-empty SessionId")
@@ -42,14 +43,18 @@ func TestRegister(t *testing.T) {
 
 	// Verify session storage
 	relay.sessionsMu.RLock()
-	session, ok := relay.grpcSessions[req.AgentId]
+	session, ok := relay.grpcSessions[agentID]
+	_, untrimmedExists := relay.grpcSessions[req.AgentId]
 	relay.sessionsMu.RUnlock()
 
 	if !ok {
 		t.Fatal("Session was not stored in map")
 	}
-	if session.agentID != req.AgentId {
-		t.Errorf("Expected session agentID %s, got %s", req.AgentId, session.agentID)
+	if session.agentID != agentID {
+		t.Errorf("Expected session agentID %s, got %s", agentID, session.agentID)
+	}
+	if untrimmedExists {
+		t.Fatal("Session was stored under the untrimmed agent ID")
 	}
 }
 
