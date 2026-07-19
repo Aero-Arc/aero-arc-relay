@@ -146,6 +146,167 @@ func TestGPSRawIntOmitsUnavailableExtendedAccuracy(t *testing.T) {
 	}
 }
 
+func TestNormalizersOmitValuesOutsideMAVLinkBounds(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   string
+		messageID uint32
+		fields    map[string]any
+		omitted   []string
+	}{
+		{
+			name:      "global position source widths",
+			message:   "GlobalPositionInt",
+			messageID: 33,
+			fields: map[string]any{
+				"Lat": "0", "Lon": "0", "TimeBootMs": "4294967296",
+				"Alt": "2147483648", "RelativeAlt": "-2147483649",
+				"Vx": "32768", "Vy": "-32769", "Vz": "32768", "Hdg": "36000",
+			},
+			omitted: []string{
+				"device_boot_time_ms", "altitude_msl_m", "relative_altitude_m",
+				"velocity_north_mps", "velocity_east_mps", "velocity_down_mps",
+				"groundspeed_mps", "heading_deg",
+			},
+		},
+		{
+			name:      "battery source widths and sentinels",
+			message:   "BatteryStatus",
+			messageID: 147,
+			fields: map[string]any{
+				"Id": "0", "Temperature": "32768", "CurrentBattery": "32768",
+				"CurrentConsumed": "-2", "EnergyConsumed": "2147483648",
+				"BatteryRemaining": "101", "TimeRemaining": "2147483648",
+				"Voltages":    "[1,1,1,1,1,1,1,1,1,1,1]",
+				"VoltagesExt": "[1,1,1,1,1]",
+			},
+			omitted: []string{
+				"battery_temperature_c", "battery_voltage_v", "battery_current_a", "battery_consumed_mah",
+				"battery_consumed_wh", "battery_remaining_pct", "battery_time_remaining_s",
+			},
+		},
+		{
+			name:      "heartbeat source widths",
+			message:   "Heartbeat",
+			messageID: 0,
+			fields:    map[string]any{"CustomMode": "4294967296", "MavlinkVersion": "256"},
+			omitted:   []string{"custom_mode", "mavlink_version"},
+		},
+		{
+			name:      "system status percentages and counts",
+			message:   "SysStatus",
+			messageID: 1,
+			fields: map[string]any{
+				"Load": "1001", "DropRateComm": "10001", "ErrorsComm": "65536",
+				"ErrorsCount1": "65536", "ErrorsCount2": "65536",
+				"ErrorsCount3": "65536", "ErrorsCount4": "65536",
+			},
+			omitted: []string{
+				"mainloop_load_pct", "communication_drop_rate_pct", "communication_error_count",
+				"autopilot_error_count_1", "autopilot_error_count_2",
+				"autopilot_error_count_3", "autopilot_error_count_4",
+			},
+		},
+		{
+			name:      "VFR HUD source widths and ranges",
+			message:   "VFR_HUD",
+			messageID: 74,
+			fields: map[string]any{
+				"Airspeed": "1e39", "Groundspeed": "-1e39", "Heading": "361",
+				"Throttle": "101", "Alt": "1e39", "Climb": "-1e39",
+			},
+			omitted: []string{
+				"airspeed_mps", "groundspeed_mps", "heading_deg",
+				"throttle_pct", "altitude_msl_m", "climb_rate_mps",
+			},
+		},
+		{
+			name:      "raw GPS source widths and ranges",
+			message:   "GpsRawInt",
+			messageID: 24,
+			fields: map[string]any{
+				"Lat": "900000001", "Lon": "1800000001", "Alt": "2147483648",
+				"AltEllipsoid": "-2147483649", "Eph": "65536", "Epv": "65536",
+				"Vel": "65536", "Cog": "36000", "SatellitesVisible": "256",
+				"HAcc": "4294967296", "VAcc": "4294967296", "VelAcc": "4294967296",
+				"HdgAcc": "4294967296", "Yaw": "36001",
+			},
+			omitted: []string{
+				"gps_latitude_deg", "gps_longitude_deg", "gps_altitude_msl_m",
+				"gps_altitude_ellipsoid_m", "gps_hdop", "gps_vdop", "gps_groundspeed_mps",
+				"gps_course_over_ground_deg", "gps_satellites_visible",
+				"gps_horizontal_accuracy_m", "gps_vertical_accuracy_m",
+				"gps_speed_accuracy_mps", "gps_heading_accuracy_deg", "gps_yaw_deg",
+			},
+		},
+		{
+			name:      "system time source width",
+			message:   "SystemTime",
+			messageID: 2,
+			fields:    map[string]any{"TimeUnixUsec": "0", "TimeBootMs": "4294967296"},
+			omitted:   []string{"device_unix_time_usec", "device_boot_time_ms"},
+		},
+	}
+
+	registry := NewRegistry()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalizer, ok := registry.Lookup(test.message)
+			if !ok {
+				t.Fatalf("normalizer not found for %s", test.message)
+			}
+			record, err := normalizer.Normalize(testEnvelope(test.message, test.messageID, test.fields))
+			if err != nil {
+				t.Fatalf("Normalize() error = %v", err)
+			}
+			for _, field := range test.omitted {
+				if value, exists := record.Fields[field]; exists {
+					t.Errorf("out-of-range field %q was retained as %#v", field, value)
+				}
+			}
+		})
+	}
+}
+
+func TestDocumentedUpperBoundsArePreserved(t *testing.T) {
+	registry := NewRegistry()
+
+	sysStatus, _ := registry.Lookup("SysStatus")
+	record, err := sysStatus.Normalize(testEnvelope("SysStatus", 1, map[string]any{"DropRateComm": "10000"}))
+	if err != nil {
+		t.Fatalf("normalize SYS_STATUS: %v", err)
+	}
+	if got := record.Fields["communication_drop_rate_pct"]; got != 100.0 {
+		t.Errorf("communication_drop_rate_pct = %#v, want 100", got)
+	}
+
+	gps, _ := registry.Lookup("GpsRawInt")
+	record, err = gps.Normalize(testEnvelope("GpsRawInt", 24, map[string]any{"Cog": "35999"}))
+	if err != nil {
+		t.Fatalf("normalize GPS_RAW_INT: %v", err)
+	}
+	if got := record.Fields["gps_course_over_ground_deg"]; got != 359.99 {
+		t.Errorf("gps_course_over_ground_deg = %#v, want 359.99", got)
+	}
+}
+
+func TestEnumNamesRemainForwardCompatible(t *testing.T) {
+	normalizer, _ := NewRegistry().Lookup("ExtendedSysState")
+	record, err := normalizer.Normalize(testEnvelope("ExtendedSysState", 245, map[string]any{
+		"VtolState":   "MAV_VTOL_STATE_FUTURE",
+		"LandedState": "MAV_LANDED_STATE_FUTURE",
+	}))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if got := record.Fields["vtol_state"]; got != "mav_vtol_state_future" {
+		t.Errorf("vtol_state = %#v", got)
+	}
+	if got := record.Fields["landed_state"]; got != "mav_landed_state_future" {
+		t.Errorf("landed_state = %#v", got)
+	}
+}
+
 func TestRecordValidationRequiresRelayAndSessionIdentity(t *testing.T) {
 	normalizer, _ := NewRegistry().Lookup("Heartbeat")
 	record, err := normalizer.Normalize(testEnvelope("Heartbeat", 0, nil))
