@@ -197,10 +197,10 @@ func normalizeGPSRawInt(envelope telemetry.TelemetryEnvelope) (Record, error) {
 	if value, ok := optionalUint64(envelope.Fields, "SatellitesVisible"); ok && value != math.MaxUint8 {
 		record.Fields["gps_satellites_visible"] = value
 	}
-	copyScaledUint(record.Fields, "gps_horizontal_accuracy_m", envelope.Fields, "HAcc", 1000)
-	copyScaledUint(record.Fields, "gps_vertical_accuracy_m", envelope.Fields, "VAcc", 1000)
-	copyScaledUint(record.Fields, "gps_speed_accuracy_mps", envelope.Fields, "VelAcc", 1000)
-	copyScaledUint(record.Fields, "gps_heading_accuracy_deg", envelope.Fields, "HdgAcc", 1e5)
+	copyScaledUintUnless(record.Fields, "gps_horizontal_accuracy_m", envelope.Fields, "HAcc", math.MaxUint32, 1000)
+	copyScaledUintUnless(record.Fields, "gps_vertical_accuracy_m", envelope.Fields, "VAcc", math.MaxUint32, 1000)
+	copyScaledUintUnless(record.Fields, "gps_speed_accuracy_mps", envelope.Fields, "VelAcc", math.MaxUint32, 1000)
+	copyScaledUintUnless(record.Fields, "gps_heading_accuracy_deg", envelope.Fields, "HdgAcc", math.MaxUint32, 1e5)
 	if value, ok := optionalUint64(envelope.Fields, "Yaw"); ok && value != 0 && value != math.MaxUint16 && value <= 36000 {
 		record.Fields["gps_yaw_deg"] = float64(value) / 100
 	}
@@ -243,12 +243,6 @@ func copyUint(target Fields, output string, source map[string]any, input string)
 func copyFloat(target Fields, output string, source map[string]any, input string) {
 	if value, ok := optionalFloat64(source, input); ok {
 		target[output] = value
-	}
-}
-
-func copyScaledUint(target Fields, output string, source map[string]any, input string, divisor float64) {
-	if value, ok := optionalUint64(source, input); ok {
-		target[output] = float64(value) / divisor
 	}
 }
 
