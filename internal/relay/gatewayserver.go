@@ -32,12 +32,13 @@ import (
 
 // Register handles the initial connection handshake from an agent.
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
+	agentID := strings.TrimSpace(req.AgentId)
 	slog.Info(
 		"Received registration request",
-		"agent_id", req.AgentId,
+		"agent_id", agentID,
 	)
 
-	if strings.TrimSpace(req.AgentId) == "" {
+	if agentID == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent ID is required")
 	}
 	sessionID, err := newSessionID()
@@ -46,7 +47,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	}
 
 	newSession := &DroneSession{
-		agentID:       req.AgentId,
+		agentID:       agentID,
 		SessionID:     sessionID,
 		ConnectedAt:   time.Now(),
 		LastHeartbeat: time.Now(),
@@ -61,14 +62,14 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	// the global map lock while waiting for one agent's admission lease.
 	for {
 		r.sessionsMu.RLock()
-		previous := r.grpcSessions[req.AgentId]
+		previous := r.grpcSessions[agentID]
 		r.sessionsMu.RUnlock()
 		if previous != nil {
 			previous.ownershipMu.Lock()
 		}
 
 		r.sessionsMu.Lock()
-		if r.grpcSessions[req.AgentId] != previous {
+		if r.grpcSessions[agentID] != previous {
 			r.sessionsMu.Unlock()
 			if previous != nil {
 				previous.ownershipMu.Unlock()
@@ -78,7 +79,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		if previous != nil {
 			previous.retired = true
 		}
-		r.grpcSessions[req.AgentId] = newSession
+		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
 		if previous != nil {
 			previous.ownershipMu.Unlock()
@@ -87,7 +88,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	}
 
 	return &agentv1.RegisterResponse{
-		AgentId:     req.AgentId,
+		AgentId:     agentID,
 		SessionId:   sessionID,
 		MaxInflight: 100, // Example default
 	}, nil

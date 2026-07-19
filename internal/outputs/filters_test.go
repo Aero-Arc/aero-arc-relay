@@ -20,6 +20,8 @@ func TestNormalizeMessageName(t *testing.T) {
 	}{
 		{name: "GlobalPositionInt", want: "global_position_int"},
 		{name: "*common.MessageGlobalPositionInt", want: "global_position_int"},
+		{name: "messageHeartbeat", want: "heartbeat"},
+		{name: "common.messageGlobalPositionInt", want: "global_position_int"},
 		{name: "github.com/bluenviron/gomavlib/v2/pkg/dialects/common.MessageSysStatus", want: "sys_status"},
 		{name: "SystemStatus", want: "sys_status"},
 		{name: "VFR_HUD", want: "vfr_hud"},
@@ -42,6 +44,9 @@ func TestMessageFilterAllows(t *testing.T) {
 
 	if !filter.Allows("*common.MessageGlobalPositionInt") {
 		t.Fatal("expected GlobalPositionInt to be allowed")
+	}
+	if !filter.Allows("common.messageGlobalPositionInt") {
+		t.Fatal("expected lowercase Go message prefix to be allowed")
 	}
 	if filter.Allows("VFR_HUD") {
 		t.Fatal("expected excluded VFR_HUD to be blocked")
