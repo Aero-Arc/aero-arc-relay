@@ -134,10 +134,10 @@ not confused with the filtered vehicle estimate from `GLOBAL_POSITION_INT`.
 | `Vel` | `gps_groundspeed_mps` | float64 | Divide cm/s by 100; omit `UINT16_MAX` |
 | `Cog` | `gps_course_over_ground_deg` | float64 | Divide centidegrees by 100; omit `UINT16_MAX` |
 | `SatellitesVisible` | `gps_satellites_visible` | uint64 | Omit `UINT8_MAX` |
-| `HAcc` | `gps_horizontal_accuracy_m` | float64 | Divide millimeters by 1,000 |
-| `VAcc` | `gps_vertical_accuracy_m` | float64 | Divide millimeters by 1,000 |
-| `VelAcc` | `gps_speed_accuracy_mps` | float64 | Divide mm/s by 1,000 |
-| `HdgAcc` | `gps_heading_accuracy_deg` | float64 | Divide degE5 by 1e5 |
+| `HAcc` | `gps_horizontal_accuracy_m` | float64 | Divide millimeters by 1,000; omit `UINT32_MAX` |
+| `VAcc` | `gps_vertical_accuracy_m` | float64 | Divide millimeters by 1,000; omit `UINT32_MAX` |
+| `VelAcc` | `gps_speed_accuracy_mps` | float64 | Divide mm/s by 1,000; omit `UINT32_MAX` |
+| `HdgAcc` | `gps_heading_accuracy_deg` | float64 | Divide degE5 by 1e5; omit `UINT32_MAX` |
 | `Yaw` | `gps_yaw_deg` | float64 | Divide centidegrees by 100; omit 0 and `UINT16_MAX`; preserve 360 as north |
 
 ## SYSTEM_TIME (2)

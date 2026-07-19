@@ -118,6 +118,34 @@ func TestGlobalPositionRejectsMissingRequiredCoordinates(t *testing.T) {
 	}
 }
 
+func TestGPSRawIntOmitsUnavailableExtendedAccuracy(t *testing.T) {
+	normalizer, _ := NewRegistry().Lookup("GpsRawInt")
+	record, err := normalizer.Normalize(testEnvelope("GpsRawInt", 24, map[string]any{
+		"FixType": "GPS_FIX_TYPE_3D_FIX",
+		"HAcc":    "4294967295",
+		"VAcc":    "4294967295",
+		"VelAcc":  "4294967295",
+		"HdgAcc":  "4294967295",
+	}))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	for _, field := range []string{
+		"gps_horizontal_accuracy_m",
+		"gps_vertical_accuracy_m",
+		"gps_speed_accuracy_mps",
+		"gps_heading_accuracy_deg",
+	} {
+		if _, ok := record.Fields[field]; ok {
+			t.Errorf("unavailable accuracy field %q was retained", field)
+		}
+	}
+	if got := record.Fields["gps_fix_type"]; got != "gps_fix_type_3d_fix" {
+		t.Errorf("gps_fix_type = %#v, want %q", got, "gps_fix_type_3d_fix")
+	}
+}
+
 func TestRecordValidationRequiresRelayAndSessionIdentity(t *testing.T) {
 	normalizer, _ := NewRegistry().Lookup("Heartbeat")
 	record, err := normalizer.Normalize(testEnvelope("Heartbeat", 0, nil))
