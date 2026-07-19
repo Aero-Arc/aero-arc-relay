@@ -95,6 +95,9 @@ logging:
 	if cfg.Telemetry.QueueCapacity != 123 || cfg.Telemetry.Workers != 3 || cfg.Telemetry.BatchSize != 25 {
 		t.Errorf("unexpected telemetry writer sizing: %#v", cfg.Telemetry)
 	}
+	if cfg.Telemetry.MaxRetries == nil || *cfg.Telemetry.MaxRetries != 3 {
+		t.Errorf("default telemetry max retries = %v, want 3", cfg.Telemetry.MaxRetries)
+	}
 	if cfg.Telemetry.AgentMappings["agent-1"].AircraftID != "aircraft-1" {
 		t.Errorf("unexpected agent mapping: %#v", cfg.Telemetry.AgentMappings)
 	}
@@ -154,6 +157,34 @@ logging:
 	}
 	if cfg.Logging.File != "/var/log/aero-arc-relay/app.log" {
 		t.Errorf("Expected log file '/var/log/aero-arc-relay/app.log', got '%s'", cfg.Logging.File)
+	}
+}
+
+func TestConfigPreservesExplicitZeroTelemetryRetries(t *testing.T) {
+	configContent := `
+telemetry:
+  enabled: true
+  backend: noop
+  max_retries: 0
+`
+	tmpFile, err := os.CreateTemp("", "test-config-zero-retries-*.yaml")
+	if err != nil {
+		t.Fatalf("create temporary config: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatalf("write temporary config: %v", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("close temporary config: %v", err)
+	}
+
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Telemetry.MaxRetries == nil || *cfg.Telemetry.MaxRetries != 0 {
+		t.Fatalf("telemetry max retries = %v, want explicit zero", cfg.Telemetry.MaxRetries)
 	}
 }
 

@@ -83,6 +83,7 @@ the relay builds an ACK using the frame sequence number and validates:
   session for the agent.
 - The frame session ID matches that captured session's ID.
 - The MAVLink message name is not empty.
+- The durable agent capture timestamp is present and positive.
 
 An invalid frame receives a permanent-error ACK and is not routed. A valid frame
 updates the session heartbeat and is converted into a telemetry envelope using
@@ -128,6 +129,13 @@ The delivery path:
 5. Waits for the matching command ACK or for the caller's context to end.
 6. Removes the pending entry when delivery fails, times out, is cancelled, or
    receives an ACK.
+
+Waiting for the stream's send lock observes the control API context. If an
+already-started gRPC `Send` remains flow-controlled past the API deadline, the
+API request returns at its deadline while that send retains its binding's lock
+until gRPC completes. This preserves send serialization without allowing a
+wedged agent connection to accumulate blocked control handlers or prevent a
+replacement stream from attaching.
 
 Incoming operation-context ACKs are applied to the session captured by the
 receiving stream handler. They update that session's active flight and intent

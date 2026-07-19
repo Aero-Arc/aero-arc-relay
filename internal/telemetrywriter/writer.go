@@ -250,18 +250,19 @@ func (w *Writer) Close(ctx context.Context) error {
 		w.wg.Wait()
 		close(drained)
 	}()
+	var closeErr error
 	select {
 	case <-drained:
 	case <-ctx.Done():
 		w.cancel()
 		<-drained
-		return fmt.Errorf("drain normalized telemetry writer: %w", ctx.Err())
+		closeErr = fmt.Errorf("drain normalized telemetry writer: %w", ctx.Err())
 	}
 	w.cancel()
 	if err := w.backend.Close(ctx); err != nil {
-		return fmt.Errorf("close normalized telemetry backend: %w", err)
+		closeErr = errors.Join(closeErr, fmt.Errorf("close normalized telemetry backend: %w", err))
 	}
 	w.errMu.Lock()
 	defer w.errMu.Unlock()
-	return w.backendErr
+	return errors.Join(closeErr, w.backendErr)
 }

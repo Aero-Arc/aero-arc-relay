@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure(t *testing.T) {
 			waitForStreamGeneration(t, session, 1)
 
 			stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-				AgentId: agentID, SessionId: session.SessionID, Seq: 44, MsgName: "Heartbeat",
+				AgentId: agentID, SessionId: session.SessionID, Seq: 44, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
 			})
 			select {
 			case message := <-stream.sentAckChan:
@@ -206,9 +207,10 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Test Case 1: Send Frame
 	frame := &agentv1.TelemetryFrame{
-		AgentId:   agentID,
-		SessionId: "session-stream-test",
-		MsgName:   "Heartbeat",
+		AgentId:      agentID,
+		SessionId:    "session-stream-test",
+		MsgName:      "Heartbeat",
+		SentAtUnixNs: time.Now().UnixNano(),
 		Fields: map[string]string{
 			"type": "1",
 		},
@@ -242,6 +244,27 @@ func TestTelemetryStream(t *testing.T) {
 		if msg.AgentID != frame.AgentId {
 			t.Errorf("Expected DroneID %s, got %s", frame.AgentId, msg.AgentID)
 		}
+	}
+
+	// Test Case 3: Reject a named frame without its durable capture timestamp.
+	missingTimestampFrame := &agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: "session-stream-test", Seq: 3, MsgName: "Heartbeat",
+	}
+	stream.recvChan <- telemetryStreamMessage(missingTimestampFrame)
+	select {
+	case message := <-stream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil || ack.Status != agentv1.TelemetryAck_STATUS_PERMANENT_ERROR {
+			t.Fatalf("missing timestamp ACK = %#v, want permanent error", ack)
+		}
+		if !strings.Contains(ack.Error, "capture timestamp") {
+			t.Fatalf("missing timestamp ACK error = %q", ack.Error)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for missing timestamp ACK")
+	}
+	if mockSink.GetMessageCount() != 1 {
+		t.Fatalf("missing timestamp frame reached sink; count = %d", mockSink.GetMessageCount())
 	}
 
 	// Test Case 2: Reject a frame without a message name and keep the stream open.
@@ -314,9 +337,10 @@ func TestTelemetryStream_OldStreamDoesNotDeleteReplacementSession(t *testing.T) 
 	}()
 
 	stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId:   agentID,
-		SessionId: oldSession.SessionID,
-		MsgName:   "Heartbeat",
+		AgentId:      agentID,
+		SessionId:    oldSession.SessionID,
+		MsgName:      "Heartbeat",
+		SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case <-stream.sentAckChan:
@@ -379,10 +403,11 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	waitForStreamGeneration(t, session, 2)
 
 	oldStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId:   agentID,
-		SessionId: session.SessionID,
-		Seq:       42,
-		MsgName:   "Heartbeat",
+		AgentId:      agentID,
+		SessionId:    session.SessionID,
+		Seq:          42,
+		MsgName:      "Heartbeat",
+		SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case message := <-oldStream.sentAckChan:
@@ -450,7 +475,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	waitForStreamGeneration(t, session, 1)
 
 	oldStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId: agentID, SessionId: session.SessionID, Seq: 45, MsgName: "Heartbeat",
+		AgentId: agentID, SessionId: session.SessionID, Seq: 45, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case <-oldStream.sendStarted:
@@ -467,7 +492,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	waitForStreamGeneration(t, session, 2)
 
 	replacementStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId: agentID, SessionId: session.SessionID, Seq: 46, MsgName: "Heartbeat",
+		AgentId: agentID, SessionId: session.SessionID, Seq: 46, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case message := <-replacementStream.sentAckChan:

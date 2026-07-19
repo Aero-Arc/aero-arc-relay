@@ -150,3 +150,17 @@ func testEnvelope(message string, messageID uint32, fields map[string]any) telem
 		Fields:         fields,
 	}
 }
+
+func TestNormalizeRejectsMissingAgentCaptureTime(t *testing.T) {
+	envelope := testEnvelope("GlobalPositionInt", 33, map[string]any{
+		"Lat": "418781000", "Lon": "-876291000", "Alt": "123450",
+	})
+	envelope.TimestampAgent = time.Time{}
+	normalizer, ok := NewRegistry().Lookup(envelope.MsgName)
+	if !ok {
+		t.Fatal("GlobalPositionInt normalizer is not registered")
+	}
+	if _, err := normalizer.Normalize(envelope); err == nil {
+		t.Fatal("Normalize() accepted an envelope without agent capture time")
+	}
+}
