@@ -103,8 +103,9 @@ still normalized. Missing identity is explicit:
 - The relay does not manufacture an aircraft record or infer identity from
   MAVLink system ID, component ID, position, registration-like text, or other
   telemetry fields.
-- The normalized record is isolated from attributed aircraft telemetry, for
-  example in an `unassigned_telemetry` measurement with short retention.
+- The normalized record uses the same retry-stable measurement as attributed
+  telemetry but omits `aircraft_id` and `operator_id`; queries isolate it with
+  an `aircraft_id IS NULL` predicate.
 - Generic forwarding continues according to its existing routing policy.
 - The relay reports the unassigned condition with bounded-cardinality metrics
   and rate-limited logs.

@@ -63,6 +63,8 @@ type DroneSession struct {
 	sessionMu        sync.RWMutex
 	pendingMu        sync.Mutex
 	pending          map[string]chan *agentv1.OperationContextCommandAck
+	ownershipMu      sync.RWMutex
+	retired          bool
 }
 
 type telemetryStreamBinding struct {

@@ -27,9 +27,10 @@ telemetry:
 ```
 
 The mapping is a bootstrap mechanism until the relay consumes the API-owned
-aircraft assignment view. Attributed points are written to
-`aircraft_telemetry`; authenticated but unmapped agent points are isolated in
-`unassigned_telemetry`.
+aircraft assignment view. All normalized points use the stable
+`aircraft_telemetry` measurement. Authenticated but unmapped agent points omit
+the `aircraft_id` and `operator_id` fields and can be isolated in queries with
+an `aircraft_id IS NULL` predicate.
 
 `relay_id` is required when the `influxdb3` backend is enabled. The relay fails
 startup rather than writing normalized records without deployment identity.
