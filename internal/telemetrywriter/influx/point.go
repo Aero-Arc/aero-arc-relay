@@ -23,6 +23,7 @@ func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 	}
 	tags := map[string]string{
 		"agent_id":       record.Identity.AgentID,
+		"frame_id":       record.Source.FrameID,
 		"message_name":   record.MessageName,
 		"schema_version": strconv.FormatUint(uint64(record.SchemaVersion), 10),
 	}
@@ -39,7 +40,6 @@ func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 	for name, value := range record.Fields {
 		fields[name] = value
 	}
-	fields["frame_id"] = record.Source.FrameID
 	fields["wal_sequence"] = record.Source.Sequence
 	fields["message_id"] = uint64(record.Source.MessageID)
 	fields["dialect"] = record.Source.Dialect
