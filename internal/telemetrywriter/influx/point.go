@@ -8,18 +8,11 @@ import (
 	"github.com/makinje/aero-arc-relay/internal/telemetrynormalize"
 )
 
-const (
-	AircraftTelemetryMeasurement   = "aircraft_telemetry"
-	UnassignedTelemetryMeasurement = "unassigned_telemetry"
-)
+const AircraftTelemetryMeasurement = "aircraft_telemetry"
 
 func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 	if err := record.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid normalized record: %w", err)
-	}
-	measurement := AircraftTelemetryMeasurement
-	if record.Identity.AircraftID == "" {
-		measurement = UnassignedTelemetryMeasurement
 	}
 	tags := map[string]string{
 		"agent_id":       record.Identity.AgentID,
@@ -27,18 +20,18 @@ func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 		"message_name":   record.MessageName,
 		"schema_version": strconv.FormatUint(uint64(record.SchemaVersion), 10),
 	}
-	optionalTag(tags, "operator_id", record.Identity.OperatorID)
-	optionalTag(tags, "aircraft_id", record.Identity.AircraftID)
-	optionalTag(tags, "relay_id", record.Identity.RelayID)
-	optionalTag(tags, "flight_id", record.Identity.FlightID)
-	optionalTag(tags, "intent_id", record.Identity.IntentID)
-	if record.Identity.IntentVersion != 0 {
-		tags["intent_version"] = strconv.FormatUint(uint64(record.Identity.IntentVersion), 10)
-	}
 
-	fields := make(map[string]interface{}, len(record.Fields)+12)
+	fields := make(map[string]interface{}, len(record.Fields)+19)
 	for name, value := range record.Fields {
 		fields[name] = value
+	}
+	fields["relay_id"] = record.Identity.RelayID
+	optionalField(fields, "operator_id", record.Identity.OperatorID)
+	optionalField(fields, "aircraft_id", record.Identity.AircraftID)
+	optionalField(fields, "flight_id", record.Identity.FlightID)
+	optionalField(fields, "intent_id", record.Identity.IntentID)
+	if record.Identity.IntentVersion != 0 {
+		fields["intent_version"] = uint64(record.Identity.IntentVersion)
 	}
 	fields["wal_sequence"] = record.Source.Sequence
 	fields["message_id"] = uint64(record.Source.MessageID)
@@ -62,11 +55,11 @@ func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 	if record.Source.ComponentID != nil {
 		fields["mavlink_component_id"] = uint64(*record.Source.ComponentID)
 	}
-	return influxdb3.NewPoint(measurement, tags, fields, record.Timing.EventTime), nil
+	return influxdb3.NewPoint(AircraftTelemetryMeasurement, tags, fields, record.Timing.EventTime), nil
 }
 
-func optionalTag(tags map[string]string, name, value string) {
+func optionalField(fields map[string]interface{}, name, value string) {
 	if value != "" {
-		tags[name] = value
+		fields[name] = value
 	}
 }

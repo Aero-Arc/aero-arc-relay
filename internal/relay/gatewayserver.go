@@ -45,9 +45,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 
-	// Store the session in the grpcSessions map.
-	r.sessionsMu.Lock()
-	r.grpcSessions[req.AgentId] = &DroneSession{
+	newSession := &DroneSession{
 		agentID:       req.AgentId,
 		SessionID:     sessionID,
 		ConnectedAt:   time.Now(),
@@ -58,7 +56,35 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		SystemStatus:  nil,
 		pending:       make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
-	r.sessionsMu.Unlock()
+
+	// Retire the previous session before publishing its replacement. Do not hold
+	// the global map lock while waiting for one agent's admission lease.
+	for {
+		r.sessionsMu.RLock()
+		previous := r.grpcSessions[req.AgentId]
+		r.sessionsMu.RUnlock()
+		if previous != nil {
+			previous.ownershipMu.Lock()
+		}
+
+		r.sessionsMu.Lock()
+		if r.grpcSessions[req.AgentId] != previous {
+			r.sessionsMu.Unlock()
+			if previous != nil {
+				previous.ownershipMu.Unlock()
+			}
+			continue
+		}
+		if previous != nil {
+			previous.retired = true
+		}
+		r.grpcSessions[req.AgentId] = newSession
+		r.sessionsMu.Unlock()
+		if previous != nil {
+			previous.ownershipMu.Unlock()
+		}
+		break
+	}
 
 	return &agentv1.RegisterResponse{
 		AgentId:     req.AgentId,
@@ -125,13 +151,17 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			Seq:    frame.Seq,
 			Status: agentv1.TelemetryAck_STATUS_OK,
 		}
+		// Acquire the per-session ownership lease before checking the map. Session
+		// replacement and cleanup use the same ownership-to-map lock order.
+		streamSession.ownershipMu.RLock()
 		r.sessionsMu.RLock()
 		session := r.grpcSessions[agentID[0]]
+		ownsSession := session == streamSession && !streamSession.retired
 		r.sessionsMu.RUnlock()
 		if frame.AgentId != agentID[0] {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame agent ID does not match authenticated stream"
-		} else if session != streamSession {
+		} else if !ownsSession {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry stream session is no longer active"
 		} else if frame.SessionId != streamSession.SessionID {
@@ -158,6 +188,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 				}
 			}
 		}
+		streamSession.ownershipMu.RUnlock()
 
 		if err := sendOnStream(streamBinding, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_TelemetryAck{TelemetryAck: ack},

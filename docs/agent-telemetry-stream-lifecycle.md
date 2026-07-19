@@ -90,6 +90,13 @@ updates the session heartbeat and is converted into a telemetry envelope using
 the session's authoritative flight and intent context. Frame-provided operation
 context cannot override the session state.
 
+Validation and routing occur while holding a read lease on the captured
+session's ownership. Re-registration and active-stream cleanup retire a session
+under the corresponding write lock. They therefore linearize before or after
+frame admission and cannot replace or remove the session halfway through an
+accepted frame. The global session-map lock is not held while waiting for this
+lease, so a blocked admission for one agent does not delay unrelated agents.
+
 The envelope is then offered to configured outputs. An `OK` ACK means the
 official normalized telemetry consumer accepted the envelope into its in-memory
 queue after successful normalization. A deterministic normalization failure
@@ -207,6 +214,7 @@ The stream lifecycle uses four locks with separate responsibilities:
 | --- | --- |
 | `sessionsMu` | The `grpcSessions` map and session identity replacement. |
 | `sessionMu` | Mutable session state, active stream, and stream generation. |
+| `ownershipMu` | Session retirement and the frame-admission ownership lease. |
 | Binding `sendMu` | Sends on one specific RPC stream; each replacement has an independent lock. |
 | `pendingMu` | The pending operation-command ACK map. |
 
@@ -218,8 +226,8 @@ The important ownership invariants are:
 4. A handler may clean up only the exact session and stream generation it owns.
 5. A command rechecks its selected binding after acquiring that binding's send
    lock and retries selection if replacement occurred while it waited.
-6. A frame is routed only while its handler's captured session is still the
-   registered session.
+6. A frame holds its captured session's ownership lease through routing and is
+   admitted only while that session is still registered and not retired.
 7. A command ACK mutates only the session captured by its receiving handler.
 8. A command and its pending ACK are owned by the same captured session.
 9. A successful telemetry ACK requires admission by the official normalized

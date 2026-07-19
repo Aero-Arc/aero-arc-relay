@@ -542,6 +542,103 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	}
 }
 
+func TestTelemetryStream_KeepsSessionOwnershipThroughAdmission(t *testing.T) {
+	consumer := &blockingEnvelopeConsumer{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	relay := relayWithSinks()
+	relay.router.AddConsumer(consumer, outputs.MessageFilter{Include: []string{"*"}})
+	relay.grpcSessions = make(map[string]*DroneSession)
+	agentID := "admission-owner-agent"
+	session := &DroneSession{
+		agentID: agentID, SessionID: "admission-owner-session",
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = session
+
+	stream, cancel := newAgentTelemetryStream(agentID)
+	defer cancel()
+	streamErr := make(chan error, 1)
+	go func() {
+		streamErr <- relay.TelemetryStream(stream)
+	}()
+	waitForStreamGeneration(t, session, 1)
+
+	stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: session.SessionID, Seq: 47,
+		MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+	})
+	select {
+	case <-consumer.started:
+	case <-time.After(time.Second):
+		t.Fatal("frame admission did not start")
+	}
+
+	registerStarted := make(chan struct{})
+	registerDone := make(chan error, 1)
+	go func() {
+		close(registerStarted)
+		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID})
+		registerDone <- err
+	}()
+	<-registerStarted
+	select {
+	case err := <-registerDone:
+		t.Fatalf("replacement registration completed during frame admission: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	unrelatedDone := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "unrelated-agent"})
+		unrelatedDone <- err
+	}()
+	select {
+	case err := <-unrelatedDone:
+		if err != nil {
+			t.Fatalf("unrelated Register() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("one session's admission blocked unrelated registration")
+	}
+
+	close(consumer.release)
+	select {
+	case message := <-stream.sentAckChan:
+		ack := message.GetTelemetryAck()
+		if ack == nil || ack.Seq != 47 || ack.Status != agentv1.TelemetryAck_STATUS_OK {
+			t.Fatalf("admitted frame ACK = %#v", ack)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for admitted frame ACK")
+	}
+	select {
+	case err := <-registerDone:
+		if err != nil {
+			t.Fatalf("replacement Register() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement registration did not finish after admission")
+	}
+
+	session.ownershipMu.RLock()
+	retired := session.retired
+	session.ownershipMu.RUnlock()
+	if !retired {
+		t.Fatal("replaced session was not retired")
+	}
+
+	close(stream.recvChan)
+	select {
+	case err := <-streamErr:
+		if err != nil {
+			t.Fatalf("stream returned an error on EOF: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for old stream to close")
+	}
+}
+
 func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)
@@ -765,6 +862,28 @@ func (c *errorEnvelopeConsumer) WriteEnvelope(context.Context, telemetry.Telemet
 }
 
 func (c *errorEnvelopeConsumer) Close(context.Context) error { return nil }
+
+type blockingEnvelopeConsumer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingEnvelopeConsumer) Name() string { return "blocking-admission" }
+
+func (c *blockingEnvelopeConsumer) WriteEnvelope(ctx context.Context, _ telemetry.TelemetryEnvelope) error {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-c.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *blockingEnvelopeConsumer) Close(context.Context) error { return nil }
 
 func TestTelemetryStream_MissingMetadata(t *testing.T) {
 	relay := &Relay{

@@ -1,6 +1,7 @@
 package influx
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -31,8 +32,11 @@ func TestRecordToPoint(t *testing.T) {
 	if point.GetMeasurement() != AircraftTelemetryMeasurement {
 		t.Errorf("measurement = %q", point.GetMeasurement())
 	}
-	if got, _ := point.GetTag("aircraft_id"); got != "aircraft-1" {
-		t.Errorf("aircraft tag = %q", got)
+	if _, ok := point.GetTag("aircraft_id"); ok {
+		t.Error("mutable aircraft ID unexpectedly participates in point identity")
+	}
+	if got := point.GetField("aircraft_id"); got != "aircraft-1" {
+		t.Errorf("aircraft field = %#v", got)
 	}
 	if got, _ := point.GetTag("message_name"); got != "global_position_int" {
 		t.Errorf("message tag = %q", got)
@@ -77,7 +81,14 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recordToPoint(first) error = %v", err)
 	}
-	retry, err := recordToPoint(record)
+	retryRecord := record
+	retryRecord.Identity = telemetrynormalize.IdentityContext{
+		OperatorID: "operator-2", AircraftID: "", AgentID: "agent-1",
+		RelayID: "relay-2", SessionID: "session-2", FlightID: "flight-2",
+		IntentID: "intent-2", IntentVersion: 7,
+	}
+	retryRecord.Timing.RelayTime = eventTime.Add(time.Second)
+	retry, err := recordToPoint(retryRecord)
 	if err != nil {
 		t.Fatalf("recordToPoint(retry) error = %v", err)
 	}
@@ -90,11 +101,19 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 	}
 
 	firstFrameID, _ := first.GetTag("frame_id")
-	retryFrameID, _ := retry.GetTag("frame_id")
 	secondFrameID, _ := second.GetTag("frame_id")
-	if firstFrameID != retryFrameID || !first.Values.Timestamp.Equal(retry.Values.Timestamp) {
-		t.Fatalf("retry identity changed: first=(%q, %v), retry=(%q, %v)",
-			firstFrameID, first.Values.Timestamp, retryFrameID, retry.Values.Timestamp)
+	if first.GetMeasurement() != retry.GetMeasurement() ||
+		!maps.Equal(first.Values.Tags, retry.Values.Tags) ||
+		!first.Values.Timestamp.Equal(retry.Values.Timestamp) {
+		t.Fatalf("retry identity changed: first=(%q, %#v, %v), retry=(%q, %#v, %v)",
+			first.GetMeasurement(), first.Values.Tags, first.Values.Timestamp,
+			retry.GetMeasurement(), retry.Values.Tags, retry.Values.Timestamp)
+	}
+	if got := retry.GetField("relay_id"); got != "relay-2" {
+		t.Fatalf("retry relay field = %#v", got)
+	}
+	if got := retry.GetField("flight_id"); got != "flight-2" {
+		t.Fatalf("retry flight field = %#v", got)
 	}
 	if firstFrameID == secondFrameID {
 		t.Fatalf("distinct WAL frames share frame ID tag %q", firstFrameID)
@@ -104,7 +123,7 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 	}
 }
 
-func TestRecordToPointUsesUnassignedMeasurement(t *testing.T) {
+func TestRecordToPointUsesStableMeasurementWithoutAssignment(t *testing.T) {
 	record := telemetrynormalize.Record{
 		SchemaVersion: 1,
 		Identity: telemetrynormalize.IdentityContext{
@@ -121,7 +140,7 @@ func TestRecordToPointUsesUnassignedMeasurement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recordToPoint() error = %v", err)
 	}
-	if point.GetMeasurement() != UnassignedTelemetryMeasurement {
+	if point.GetMeasurement() != AircraftTelemetryMeasurement {
 		t.Errorf("measurement = %q", point.GetMeasurement())
 	}
 	if _, ok := point.GetTag("aircraft_id"); ok {

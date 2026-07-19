@@ -38,6 +38,9 @@ func (r *Relay) updateStream(agentID string, stream agentv1.AgentGateway_Telemet
 }
 
 func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expectedStream *telemetryStreamBinding) {
+	expectedSession.ownershipMu.Lock()
+	defer expectedSession.ownershipMu.Unlock()
+
 	r.sessionsMu.Lock()
 	defer r.sessionsMu.Unlock()
 
@@ -50,6 +53,7 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 	isCurrentStream := session.stream == expectedStream && session.streamGeneration == expectedStream.generation
 	session.sessionMu.RUnlock()
 	if isCurrentStream {
+		session.retired = true
 		delete(r.grpcSessions, agentID)
 	}
 }

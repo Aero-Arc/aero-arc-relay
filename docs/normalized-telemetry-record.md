@@ -313,10 +313,14 @@ tags, measurements, indexes, batching, and retry behavior, but it must not:
 The InfluxDB backend is therefore a `Record`-to-point adapter. A memory backend
 stores the same logical records for tests and local use.
 
-For InfluxDB, `frame_id` is a tag because measurement, tag set, and timestamp
-form the point identity. This keeps retries idempotent while ensuring frames
+For InfluxDB, measurement, tag set, and timestamp form the point identity. All
+records therefore use the stable `aircraft_telemetry` measurement, and only
+frame-invariant values (`frame_id`, `agent_id`, `message_name`, and
+`schema_version`) are tags. This keeps retries idempotent while ensuring frames
 with the same capture timestamp and different WAL sequences remain distinct.
-`wal_sequence` remains a field for inspection and diagnostics.
+Retry-variable relay, session, assignment, flight, and intent metadata remain
+queryable fields. `wal_sequence` also remains a field for inspection and
+diagnostics.
 
 ## API relationship
 
