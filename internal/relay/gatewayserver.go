@@ -140,6 +140,9 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		} else if strings.TrimSpace(frame.MsgName) == "" {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame message name is required"
+		} else if frame.SentAtUnixNs <= 0 {
+			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+			ack.Error = "telemetry frame capture timestamp is required"
 		} else {
 			// Process the frame (e.g., forward to outputs).
 			streamSession.sessionMu.Lock()
@@ -177,8 +180,11 @@ func newSessionID() (string, error) {
 	return "sess-" + hex.EncodeToString(bytes[:]), nil
 }
 
-func sendToSession(session *DroneSession, message *agentv1.RelayStreamMessage) error {
+func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return status.FromContextError(err).Err()
+		}
 		session.sessionMu.RLock()
 		binding := session.stream
 		session.sessionMu.RUnlock()
@@ -186,7 +192,9 @@ func sendToSession(session *DroneSession, message *agentv1.RelayStreamMessage) e
 			return status.Error(codes.Unavailable, "agent stream is not connected")
 		}
 
-		binding.sendMu.Lock()
+		if err := binding.sendMu.Lock(ctx); err != nil {
+			return status.FromContextError(err).Err()
+		}
 		session.sessionMu.RLock()
 		isCurrent := session.stream == binding
 		session.sessionMu.RUnlock()
@@ -194,14 +202,34 @@ func sendToSession(session *DroneSession, message *agentv1.RelayStreamMessage) e
 			binding.sendMu.Unlock()
 			continue
 		}
-		err := binding.stream.Send(message)
-		binding.sendMu.Unlock()
-		return err
+		if err := ctx.Err(); err != nil {
+			binding.sendMu.Unlock()
+			return status.FromContextError(err).Err()
+		}
+		sent := make(chan error, 1)
+		go func() {
+			err := binding.stream.Send(message)
+			binding.sendMu.Unlock()
+			sent <- err
+		}()
+		select {
+		case err := <-sent:
+			return err
+		case <-ctx.Done():
+			select {
+			case err := <-sent:
+				return err
+			default:
+				return status.FromContextError(ctx.Err()).Err()
+			}
+		}
 	}
 }
 
 func sendOnStream(binding *telemetryStreamBinding, message *agentv1.RelayStreamMessage) error {
-	binding.sendMu.Lock()
+	if err := binding.sendMu.Lock(context.Background()); err != nil {
+		return err
+	}
 	defer binding.sendMu.Unlock()
 	return binding.stream.Send(message)
 }

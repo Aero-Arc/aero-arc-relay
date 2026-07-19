@@ -19,6 +19,7 @@ type fakeBackend struct {
 	calls   int
 	started chan struct{}
 	block   chan struct{}
+	closed  chan struct{}
 }
 
 func (f *fakeBackend) WriteBatch(ctx context.Context, records []telemetrynormalize.Record) error {
@@ -70,7 +71,15 @@ func TestWriterRetriesBackendBatch(t *testing.T) {
 	}
 }
 
-func (f *fakeBackend) Close(context.Context) error { return nil }
+func (f *fakeBackend) Close(context.Context) error {
+	if f.closed != nil {
+		select {
+		case f.closed <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
 
 func TestWriterNormalizesAndWritesBatch(t *testing.T) {
 	backend := &fakeBackend{writes: make(chan struct{}, 1)}
@@ -167,6 +176,39 @@ func TestWriterReturnsQueueFullWhenAdmissionTimesOut(t *testing.T) {
 	close(backend.block)
 	if err := writer.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestWriterClosesBackendAfterDrainTimeout(t *testing.T) {
+	backend := &fakeBackend{
+		started: make(chan struct{}, 1),
+		block:   make(chan struct{}),
+		closed:  make(chan struct{}, 1),
+	}
+	writer, err := NewWriter(Config{
+		Workers: 1, BatchSize: 1, WriteTimeout: time.Minute,
+	}, backend, nil)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.WriteEnvelope(context.Background(), validPositionEnvelope()); err != nil {
+		t.Fatalf("WriteEnvelope() error = %v", err)
+	}
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("backend write did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := writer.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v, want deadline exceeded", err)
+	}
+	select {
+	case <-backend.closed:
+	case <-time.After(time.Second):
+		t.Fatal("backend was not closed after writer drain timed out")
 	}
 }
 

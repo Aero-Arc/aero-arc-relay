@@ -7,6 +7,8 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestSetOperationContextDeliversAndWaitsForAgentAck(t *testing.T) {
@@ -134,4 +136,52 @@ func TestDeliverOperationCommandUsesCapturedSession(t *testing.T) {
 	if relay.grpcSessions["agent-1"] != replacementSession {
 		t.Fatal("captured-session command changed the registered replacement")
 	}
+}
+
+func TestDeliverOperationCommandReturnsWhenSendOutlivesContext(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx:         context.Background(),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1),
+		sendBlock:   make(chan struct{}),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:  &telemetryStreamBinding{stream: stream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := deliverOperationCommandToSession(ctx, session, "command-1", &agentv1.RelayStreamMessage{
+			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
+				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "command-1", FlightId: "flight-1"},
+			},
+		})
+		result <- err
+	}()
+
+	select {
+	case <-stream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("operation command send did not start")
+	}
+	select {
+	case err := <-result:
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("command error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("operation command remained blocked after its API context expired")
+	}
+
+	session.pendingMu.Lock()
+	_, stillPending := session.pending["command-1"]
+	session.pendingMu.Unlock()
+	if stillPending {
+		t.Fatal("expired command remained in the pending ACK map")
+	}
+	close(stream.sendBlock)
 }

@@ -71,7 +71,7 @@ type TelemetryConfig struct {
 	FlushInterval  time.Duration             `yaml:"flush_interval"`
 	EnqueueTimeout time.Duration             `yaml:"enqueue_timeout"`
 	WriteTimeout   time.Duration             `yaml:"write_timeout"`
-	MaxRetries     int                       `yaml:"max_retries"`
+	MaxRetries     *int                      `yaml:"max_retries"`
 	RetryBackoff   time.Duration             `yaml:"retry_backoff"`
 	RelayID        string                    `yaml:"relay_id"`
 	AgentMappings  map[string]AgentMapping   `yaml:"agent_mappings,omitempty"`
@@ -259,8 +259,9 @@ func Load(path string) (*Config, error) {
 		if config.Telemetry.WriteTimeout <= 0 {
 			config.Telemetry.WriteTimeout = 5 * time.Second
 		}
-		if config.Telemetry.MaxRetries == 0 {
-			config.Telemetry.MaxRetries = 3
+		if config.Telemetry.MaxRetries == nil {
+			defaultMaxRetries := 3
+			config.Telemetry.MaxRetries = &defaultMaxRetries
 		}
 		if config.Telemetry.RetryBackoff <= 0 {
 			config.Telemetry.RetryBackoff = 200 * time.Millisecond

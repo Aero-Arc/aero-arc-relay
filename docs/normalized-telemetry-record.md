@@ -187,6 +187,11 @@ Selection order is:
 The first slice normally selects `agent_capture`. A boot-relative timestamp is
 never interpreted directly as Unix time.
 
+The current agent transport requires a positive `sent_at_unix_ns` on every WAL
+frame because it is also part of the stable `frame_id`. Frames without it are
+rejected permanently before normalization; relay receive time is not substituted
+into the idempotency key.
+
 `relay_time` is always required and records when the relay accepted the source
 frame.
 

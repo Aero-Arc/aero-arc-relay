@@ -79,7 +79,38 @@ type DroneSession struct {
 type telemetryStreamBinding struct {
 	stream     agentv1.AgentGateway_TelemetryStreamServer
 	generation uint64
-	sendMu     sync.Mutex
+	sendMu     contextMutex
+}
+
+// contextMutex serializes stream sends while allowing callers that have not
+// started a send to stop waiting when their request context is cancelled.
+type contextMutex struct {
+	once  sync.Once
+	token chan struct{}
+}
+
+func (m *contextMutex) Lock(ctx context.Context) error {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.token:
+		if err := ctx.Err(); err != nil {
+			m.token <- struct{}{}
+			return err
+		}
+		return nil
+	}
+}
+
+func (m *contextMutex) Unlock() {
+	m.token <- struct{}{}
 }
 
 var (
@@ -306,6 +337,10 @@ func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize normalized telemetry InfluxDB 3 backend: %w", err)
 	}
+	maxRetries := 3
+	if r.config.Telemetry.MaxRetries != nil {
+		maxRetries = *r.config.Telemetry.MaxRetries
+	}
 	writer, err := telemetrywriter.NewWriter(telemetrywriter.Config{
 		QueueCapacity:  r.config.Telemetry.QueueCapacity,
 		Workers:        r.config.Telemetry.Workers,
@@ -313,7 +348,7 @@ func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
 		FlushInterval:  r.config.Telemetry.FlushInterval,
 		EnqueueTimeout: r.config.Telemetry.EnqueueTimeout,
 		WriteTimeout:   r.config.Telemetry.WriteTimeout,
-		MaxRetries:     r.config.Telemetry.MaxRetries,
+		MaxRetries:     maxRetries,
 		RetryBackoff:   r.config.Telemetry.RetryBackoff,
 	}, backend, nil)
 	if err != nil {

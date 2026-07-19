@@ -33,6 +33,8 @@ aircraft assignment view. Attributed points are written to
 
 `relay_id` is required when the `influxdb3` backend is enabled. The relay fails
 startup rather than writing normalized records without deployment identity.
+Omitting `max_retries` defaults backend writes to three retries; setting it to
+`0` explicitly disables retries.
 
 Set `backend: "noop"` only when normalized telemetry is deliberately disabled
 for tests or local routing demonstrations.

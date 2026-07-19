@@ -3,7 +3,6 @@ package telemetrynormalize
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
@@ -59,25 +58,17 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 	if relayTime.IsZero() {
 		return Record{}, fmt.Errorf("relay time is required")
 	}
-	eventTime := relayTime
-	timestampSource := TimestampSourceRelay
-	var agentTime *time.Time
-	if !envelope.TimestampAgent.IsZero() {
-		value := envelope.TimestampAgent.UTC()
-		agentTime = &value
-		eventTime = value
-		timestampSource = TimestampSourceAgent
+	if envelope.TimestampAgent.IsZero() {
+		return Record{}, fmt.Errorf("agent capture time is required")
 	}
+	agentTimeValue := envelope.TimestampAgent.UTC()
+	agentTime := &agentTimeValue
 	dialect := strings.ToLower(strings.TrimSpace(envelope.Dialect))
 	if dialect == "" {
 		dialect = "common"
 	}
 	if strings.TrimSpace(envelope.AgentID) == "" {
 		return Record{}, fmt.Errorf("agent ID is required")
-	}
-	frameCaptureUnixNano := int64(0)
-	if agentTime != nil {
-		frameCaptureUnixNano = agentTime.UnixNano()
 	}
 	return Record{
 		SchemaVersion: SchemaVersion,
@@ -92,16 +83,16 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 			IntentVersion: envelope.IntentVersion,
 		},
 		Source: SourceContext{
-			FrameID:   fmt.Sprintf("%d:%s:%d:%d", len(envelope.AgentID), envelope.AgentID, frameCaptureUnixNano, envelope.WALSequence),
+			FrameID:   fmt.Sprintf("%d:%s:%d:%d", len(envelope.AgentID), envelope.AgentID, agentTime.UnixNano(), envelope.WALSequence),
 			Sequence:  envelope.WALSequence,
 			MessageID: envelope.MsgID,
 			Dialect:   dialect,
 		},
 		Timing: TimingContext{
-			EventTime:        eventTime,
+			EventTime:        agentTimeValue,
 			RelayTime:        relayTime,
 			AgentCaptureTime: agentTime,
-			TimestampSource:  timestampSource,
+			TimestampSource:  TimestampSourceAgent,
 		},
 		MessageName: canonicalName,
 		Fields:      make(Fields),

@@ -106,7 +106,7 @@ func deliverOperationCommandToSession(ctx context.Context, session *DroneSession
 		delete(session.pending, commandID)
 		session.pendingMu.Unlock()
 	}
-	if err := sendToSession(session, message); err != nil {
+	if err := sendToSession(ctx, session, message); err != nil {
 		cleanup()
 		return nil, err
 	}
