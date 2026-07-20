@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const operationContextControlDisabled = "operation-context control is disabled until the relay control plane is authenticated and authorized"
+const operationContextControlDisabled = "operation-context control is experimental and disabled until the relay control plane is authenticated and authorized"
 
 func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (*pb.ListActiveDronesResponse, error) {
 	s.sessionsMu.RLock()
@@ -55,6 +55,9 @@ func (*Relay) ClearOperationContext(context.Context, *pb.ClearOperationContextRe
 	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
 }
 
+// deliverOperationCommandToSession is experimental command-delivery machinery.
+// The public mutation RPCs remain disabled until the control plane is
+// authenticated, authorized, and its command lifecycle is finalized.
 func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage) (*agentv1.OperationContextCommandAck, error) {
 	pending := make(chan *agentv1.OperationContextCommandAck, 1)
 	session.pendingMu.Lock()

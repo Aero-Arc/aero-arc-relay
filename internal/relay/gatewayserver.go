@@ -272,7 +272,19 @@ func sendOnStream(binding *telemetryStreamBinding, message *agentv1.RelayStreamM
 }
 
 func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.OperationContextCommandAck) {
-	if session == nil {
+	if session == nil || ack == nil {
+		return
+	}
+	// A command ACK is authoritative only while the relay has a matching
+	// request pending on this exact session. Unsolicited and late ACKs must not
+	// be allowed to change telemetry attribution.
+	session.pendingMu.Lock()
+	pending := session.pending[ack.CommandId]
+	if pending != nil {
+		delete(session.pending, ack.CommandId)
+	}
+	session.pendingMu.Unlock()
+	if pending == nil {
 		return
 	}
 	if ack.Status == agentv1.OperationContextCommandAck_STATUS_APPLIED ||
@@ -289,17 +301,9 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 		}
 		session.sessionMu.Unlock()
 	}
-	session.pendingMu.Lock()
-	pending := session.pending[ack.CommandId]
-	if pending != nil {
-		delete(session.pending, ack.CommandId)
-	}
-	session.pendingMu.Unlock()
-	if pending != nil {
-		select {
-		case pending <- ack:
-		default:
-		}
+	select {
+	case pending <- ack:
+	default:
 	}
 }
 

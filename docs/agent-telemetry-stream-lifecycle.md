@@ -128,10 +128,12 @@ on one listener with server-authenticated TLS, so enabling mutation RPCs before
 the control plane has its own authenticated and authorized boundary would allow
 an arbitrary reachable client to target another agent.
 
-The internal command-delivery machinery remains implemented and tested for use
-after the control API is moved to a private listener protected by workload
-authentication and authorization. Unlike a telemetry ACK, a control command is
-not a response to a message received on a particular stream. It should target
+The internal command-delivery machinery remains implemented and tested as a
+highly experimental foundation. It is not yet a supported control interface.
+It may be enabled only after the control API is moved to a private listener
+protected by workload authentication and authorization and the operations panel
+has an intentional command workflow. Unlike a telemetry ACK, a control command
+is not a response to a message received on a particular stream. It should target
 whichever stream is currently active.
 
 The delivery path:
@@ -152,11 +154,19 @@ until gRPC completes. This preserves send serialization without allowing a
 wedged agent connection to accumulate blocked control handlers or prevent a
 replacement stream from attaching.
 
-Incoming operation-context ACKs are applied to the session captured by the
-receiving stream handler. They update that session's active flight and intent
-state when applicable, then notify its pending control request. The relay does
-not look the session up again by agent ID because the same agent may have
-registered a replacement session while an old command ACK was in flight.
+Incoming operation-context ACKs are applied only when their command ID matches a
+pending request on the session captured by the receiving stream handler. The
+pending entry is consumed before an applied ACK may update active flight and
+intent state. Unsolicited and late ACKs are ignored. The relay does not look the
+session up again by agent ID because the same agent may have registered a
+replacement session while an old command ACK was in flight.
+
+Before this machinery becomes supported, the protocol must also define command
+idempotency explicitly. Reusing an ID with the same payload should mean retrying
+one logical command; reusing it with a different payload must be rejected; and a
+new logical command must receive a new ID. Concurrent duplicates, completed-ID
+retention, payload fingerprints, session binding, retry limits, and delayed ACKs
+must be covered by integration tests.
 
 This creates an intentional routing distinction:
 

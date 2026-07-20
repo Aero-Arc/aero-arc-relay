@@ -31,7 +31,10 @@ func (s *SinkConsumer) Name() string {
 	return s.name
 }
 
-func (s *SinkConsumer) WriteEnvelope(_ context.Context, envelope telemetry.TelemetryEnvelope) error {
+func (s *SinkConsumer) WriteEnvelope(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
+	if contextSink, ok := s.sink.(sinks.ContextSink); ok {
+		return contextSink.WriteMessageContext(ctx, envelope)
+	}
 	return s.sink.WriteMessage(envelope)
 }
 
