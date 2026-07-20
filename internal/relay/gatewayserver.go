@@ -92,18 +92,22 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.InvalidArgument, "missing metadata")
 	}
 
-	agentID := meta.Get("aero-arc-agent-id")
-	if len(agentID) == 0 {
+	agentIDs := meta.Get("aero-arc-agent-id")
+	if len(agentIDs) == 0 {
 		return status.Errorf(codes.InvalidArgument, "missing aero-arc-agent-id")
 	}
+	agentID := strings.TrimSpace(agentIDs[0])
+	if agentID == "" {
+		return status.Errorf(codes.InvalidArgument, "empty aero-arc-agent-id")
+	}
 
-	streamSession, streamBinding, err := r.updateStream(agentID[0], stream)
+	streamSession, streamBinding, err := r.updateStream(agentID, stream)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
-	slog.Info("Updated stream for agent", "agent_id", agentID[0])
+	slog.Info("Updated stream for agent", "agent_id", agentID)
 
-	defer r.deleteStream(agentID[0], streamSession, streamBinding)
+	defer r.deleteStream(agentID, streamSession, streamBinding)
 
 	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back
 	// independently of receiving frames, but for strict request-response style streaming
@@ -133,9 +137,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 		frame := message.GetTelemetryFrame()
 		if frame == nil {
-			slog.Warn("agent stream message has no supported payload", "agent_id", agentID[0])
+			slog.Warn("agent stream message has no supported payload", "agent_id", agentID)
 			continue
 		}
+		frameAgentID := strings.TrimSpace(frame.AgentId)
 
 		ack := &agentv1.TelemetryAck{
 			Seq:    frame.Seq,
@@ -145,10 +150,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		// replacement and cleanup use the same ownership-to-map lock order.
 		streamSession.ownershipMu.RLock()
 		r.sessionsMu.RLock()
-		session := r.grpcSessions[agentID[0]]
+		session := r.grpcSessions[agentID]
 		ownsSession := session == streamSession && !streamSession.retired
 		r.sessionsMu.RUnlock()
-		if frame.AgentId != agentID[0] {
+		if frameAgentID != agentID {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame agent ID does not match authenticated stream"
 		} else if !ownsSession {
@@ -185,7 +190,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}); err != nil {
 			slog.LogAttrs(
 				ctx, slog.LevelWarn, "Failed to send ACK", slog.Uint64("seq", frame.Seq),
-				slog.String("agent_id", frame.AgentId), slog.String("err", err.Error()),
+				slog.String("agent_id", agentID), slog.String("err", err.Error()),
 			)
 
 			return status.Errorf(codes.Unknown, "failed to send ack: %v", err)

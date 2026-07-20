@@ -183,6 +183,7 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Pre-register session (usually required but updated via stream)
 	agentID := "agent-stream-test"
+	paddedAgentID := "  " + agentID + "  "
 	relay.grpcSessions[agentID] = &DroneSession{
 		agentID:   agentID,
 		SessionID: "session-stream-test",
@@ -192,7 +193,7 @@ func TestTelemetryStream(t *testing.T) {
 	// Setup Mock Stream
 	ctx := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("aero-arc-agent-id", agentID),
+		metadata.Pairs("aero-arc-agent-id", paddedAgentID),
 	)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -212,7 +213,7 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Test Case 1: Send Frame
 	frame := &agentv1.TelemetryFrame{
-		AgentId:      agentID,
+		AgentId:      paddedAgentID,
 		SessionId:    "session-stream-test",
 		MsgName:      "Heartbeat",
 		SentAtUnixNs: time.Now().UnixNano(),
@@ -246,8 +247,8 @@ func TestTelemetryStream(t *testing.T) {
 		t.Errorf("Expected 1 message in sink, got %d", mockSink.GetMessageCount())
 	} else {
 		msg := mockSink.GetMessages()[0]
-		if msg.AgentID != frame.AgentId {
-			t.Errorf("Expected DroneID %s, got %s", frame.AgentId, msg.AgentID)
+		if msg.AgentID != agentID {
+			t.Errorf("Expected canonical AgentID %s, got %s", agentID, msg.AgentID)
 		}
 	}
 
