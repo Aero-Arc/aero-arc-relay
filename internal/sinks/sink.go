@@ -14,6 +14,13 @@ type Sink interface {
 	Close(ctx context.Context) error
 }
 
+// ContextSink is implemented by sinks that can stop accepting a message when
+// the caller's request is cancelled. Sink adapters prefer this method when it
+// is available so backpressure cannot outlive the telemetry stream.
+type ContextSink interface {
+	WriteMessageContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error
+}
+
 // SinkType represents the type of sink
 type SinkType string
 

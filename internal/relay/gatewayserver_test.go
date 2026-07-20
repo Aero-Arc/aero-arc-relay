@@ -810,6 +810,34 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	}
 }
 
+func TestOperationContextCommandACKRequiresPendingCommand(t *testing.T) {
+	session := &DroneSession{
+		FlightID:      "existing-flight",
+		IntentID:      "existing-intent",
+		IntentVersion: 3,
+		pending:       make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "unsolicited-command",
+		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: &agentv1.OperationContext{
+			FlightId: "attacker-flight", IntentId: "attacker-intent", IntentVersion: 99,
+		},
+	})
+
+	session.sessionMu.RLock()
+	defer session.sessionMu.RUnlock()
+	if session.FlightID != "existing-flight" ||
+		session.IntentID != "existing-intent" ||
+		session.IntentVersion != 3 {
+		t.Fatalf(
+			"unsolicited ACK changed context to (%q, %q, %d)",
+			session.FlightID, session.IntentID, session.IntentVersion,
+		)
+	}
+}
+
 func newAgentTelemetryStream(agentID string) (*mockTelemetryStream, context.CancelFunc) {
 	ctx := metadata.NewIncomingContext(
 		context.Background(),

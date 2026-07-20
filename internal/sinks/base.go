@@ -1,6 +1,7 @@
 package sinks
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -104,12 +105,27 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 }
 
 func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryEnvelope) error {
+	return b.EnqueueContext(context.Background(), msg)
+}
+
+// WriteMessageContext allows the sink adapter to propagate stream
+// cancellation through an async sink's backpressure wait. Concrete sinks that
+// embed BaseAsyncSink inherit this implementation.
+func (b *BaseAsyncSink) WriteMessageContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
+	return b.EnqueueContext(ctx, msg)
+}
+
+func (b *BaseAsyncSink) EnqueueContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	switch b.policy {
 	case BackpressurePolicyBlock:
-		b.queue <- msg
-		b.metrics.enqueued.Inc()
-		b.metrics.queueLen.Set(float64(len(b.queue)))
-		return nil
+		select {
+		case b.queue <- msg:
+			b.metrics.enqueued.Inc()
+			b.metrics.queueLen.Set(float64(len(b.queue)))
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	case BackpressurePolicyDrop:
 		fallthrough
 	default:
