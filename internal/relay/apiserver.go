@@ -21,6 +21,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const operationContextControlDisabled = "operation-context control is disabled until the relay control plane is authenticated and authorized"
+
 func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (*pb.ListActiveDronesResponse, error) {
 	s.sessionsMu.RLock()
 	defer s.sessionsMu.RUnlock()
@@ -45,48 +47,12 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 	return &pb.GetDroneStatusResponse{Drone: droneStatus(session)}, nil
 }
 
-func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
-	if req.GetCommand() == nil || req.GetCommand().GetContext() == nil {
-		return nil, status.Error(codes.InvalidArgument, "set operation context command is required")
-	}
-	if strings.TrimSpace(req.GetCommand().GetContext().GetFlightId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "flight ID is required")
-	}
-	ack, err := s.deliverOperationCommand(ctx, req.GetAgentId(), req.GetCommand().GetCommandId(), &agentv1.RelayStreamMessage{
-		Payload: &agentv1.RelayStreamMessage_SetOperationContext{SetOperationContext: req.GetCommand()},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &pb.SetOperationContextResponse{Result: ack}, nil
+func (*Relay) SetOperationContext(context.Context, *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
 }
 
-func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
-	if req.GetCommand() == nil || strings.TrimSpace(req.GetCommand().GetFlightId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "clear operation context command and flight ID are required")
-	}
-	ack, err := s.deliverOperationCommand(ctx, req.GetAgentId(), req.GetCommand().GetCommandId(), &agentv1.RelayStreamMessage{
-		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: req.GetCommand()},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &pb.ClearOperationContextResponse{Result: ack}, nil
-}
-
-func (s *Relay) deliverOperationCommand(ctx context.Context, agentID, commandID string, message *agentv1.RelayStreamMessage) (*agentv1.OperationContextCommandAck, error) {
-	agentID = strings.TrimSpace(agentID)
-	commandID = strings.TrimSpace(commandID)
-	if agentID == "" || commandID == "" {
-		return nil, status.Error(codes.InvalidArgument, "agent ID and command ID are required")
-	}
-	s.sessionsMu.RLock()
-	session, ok := s.grpcSessions[agentID]
-	s.sessionsMu.RUnlock()
-	if !ok {
-		return nil, status.Error(codes.NotFound, "agent is not registered on this relay")
-	}
-	return deliverOperationCommandToSession(ctx, session, commandID, message)
+func (*Relay) ClearOperationContext(context.Context, *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
 }
 
 func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage) (*agentv1.OperationContextCommandAck, error) {

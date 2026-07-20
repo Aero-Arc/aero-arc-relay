@@ -122,9 +122,17 @@ sending.
 
 ## 4. Delivering Control Commands
 
-The relay control API can send operation-context commands to an agent. Unlike a
-telemetry ACK, a control command is not a response to a message received on a
-particular stream. It should target whichever stream is currently active.
+`SetOperationContext` and `ClearOperationContext` currently return gRPC
+`Unimplemented`. The relay exposes the agent gateway and relay control service
+on one listener with server-authenticated TLS, so enabling mutation RPCs before
+the control plane has its own authenticated and authorized boundary would allow
+an arbitrary reachable client to target another agent.
+
+The internal command-delivery machinery remains implemented and tested for use
+after the control API is moved to a private listener protected by workload
+authentication and authorization. Unlike a telemetry ACK, a control command is
+not a response to a message received on a particular stream. It should target
+whichever stream is currently active.
 
 The delivery path:
 
