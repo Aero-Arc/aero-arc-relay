@@ -68,6 +68,10 @@ func StartInfluxDB(t *testing.T) *InfluxDB {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	t.Logf(
+		"Starting InfluxDB test dependency: image=%s (Testcontainers may also log its separate Ryuk cleanup-helper container)",
+		InfluxDBImage,
+	)
 	container, err := testcontainers.Run(ctx, InfluxDBImage,
 		testcontainers.WithExposedPorts("8181/tcp"),
 		testcontainers.WithCmd(
@@ -86,6 +90,7 @@ func StartInfluxDB(t *testing.T) *InfluxDB {
 	if err != nil {
 		t.Fatalf("start %s: %v", InfluxDBImage, err)
 	}
+	containerID := shortContainerID(container.GetContainerID())
 	t.Cleanup(func() {
 		if t.Failed() {
 			logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -99,9 +104,12 @@ func StartInfluxDB(t *testing.T) *InfluxDB {
 		}
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
+		t.Logf("Stopping InfluxDB test dependency: container_id=%s image=%s", containerID, InfluxDBImage)
 		if err := testcontainers.TerminateContainer(container, testcontainers.StopContext(stopCtx)); err != nil {
 			t.Errorf("terminate InfluxDB container: %v", err)
+			return
 		}
+		t.Logf("InfluxDB test dependency stopped: container_id=%s", containerID)
 	})
 
 	host, err := container.Host(ctx)
@@ -135,7 +143,10 @@ func StartInfluxDB(t *testing.T) *InfluxDB {
 			t.Errorf("close InfluxDB query client: %v", err)
 		}
 	})
-	t.Logf("InfluxDB ready: image=%s endpoint=%s database=%s", InfluxDBImage, instance.URL, instance.Database)
+	t.Logf(
+		"InfluxDB test dependency ready: container_id=%s image=%s endpoint=%s database=%s",
+		containerID, InfluxDBImage, instance.URL, instance.Database,
+	)
 	return instance
 }
 
@@ -166,4 +177,11 @@ func createDatabase(t *testing.T, instance *InfluxDB) {
 func uniqueDatabaseName(_ string) string {
 	// InfluxDB 3 limits database names to 64 characters.
 	return fmt.Sprintf("relay-it-%d", time.Now().UnixNano())
+}
+
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
