@@ -40,12 +40,14 @@ func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID str
 	)
 	cfg := &config.Config{
 		Telemetry: config.TelemetryConfig{
-			Enabled:        true,
-			Backend:        "influxdb3",
-			QueueCapacity:  32,
-			Workers:        1,
-			BatchSize:      8,
-			FlushInterval:  100 * time.Millisecond,
+			Enabled:       true,
+			Backend:       "influxdb3",
+			QueueCapacity: 32,
+			Workers:       1,
+			BatchSize:     8,
+			// The integration test fills one batch explicitly, then leaves one
+			// record pending so controlled shutdown must flush it.
+			FlushInterval:  time.Hour,
 			EnqueueTimeout: time.Second,
 			WriteTimeout:   5 * time.Second,
 			RetryBackoff:   50 * time.Millisecond,
