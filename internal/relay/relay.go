@@ -54,6 +54,8 @@ type Relay struct {
 	grpcServer         *grpc.Server
 	grpcSessions       map[string]*DroneSession
 	sessionsMu         sync.RWMutex
+	closeOnce          sync.Once
+	closeErr           error
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -279,16 +281,18 @@ func (r *Relay) Start(ctx context.Context) error {
 // network-server lifecycle so embedders can guarantee that asynchronous
 // telemetry batches are flushed during controlled shutdown.
 func (r *Relay) Close(ctx context.Context) error {
-	if r.router != nil {
-		return r.router.Close(ctx)
-	}
-	var closeErr error
-	for _, sink := range r.sinks {
-		if err := sink.Close(ctx); err != nil {
-			closeErr = errors.Join(closeErr, err)
+	r.closeOnce.Do(func() {
+		if r.router != nil {
+			r.closeErr = r.router.Close(ctx)
+			return
 		}
-	}
-	return closeErr
+		for _, sink := range r.sinks {
+			if err := sink.Close(ctx); err != nil {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
+		}
+	})
+	return r.closeErr
 }
 
 func (r *Relay) ready() bool {

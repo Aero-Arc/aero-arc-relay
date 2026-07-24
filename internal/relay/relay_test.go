@@ -147,6 +147,24 @@ func TestInitializeOutputsClosesConsumersWhenSinkInitializationFails(t *testing.
 	}
 }
 
+func TestRelayCloseIsIdempotentAndRetainsFirstError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	consumer := &closeTrackingConsumer{closeErr: closeErr}
+	router := outputs.NewRouter()
+	router.AddConsumer(consumer, outputs.MessageFilter{Include: []string{"*"}})
+	relay := &Relay{router: router}
+
+	if err := relay.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("first Close() error = %v, want %v", err, closeErr)
+	}
+	if err := relay.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("second Close() error = %v, want retained %v", err, closeErr)
+	}
+	if consumer.closeCalls != 1 {
+		t.Fatalf("consumer Close() calls = %d, want 1", consumer.closeCalls)
+	}
+}
+
 func TestNormalizedTelemetryRequiresRelayID(t *testing.T) {
 	cfg := &config.Config{
 		Telemetry: config.TelemetryConfig{
@@ -405,7 +423,9 @@ type failingSink struct {
 }
 
 type closeTrackingConsumer struct {
-	closed bool
+	closed     bool
+	closeCalls int
+	closeErr   error
 }
 
 func (c *closeTrackingConsumer) Name() string { return "close-tracking" }
@@ -416,7 +436,8 @@ func (c *closeTrackingConsumer) WriteEnvelope(context.Context, telemetry.Telemet
 
 func (c *closeTrackingConsumer) Close(context.Context) error {
 	c.closed = true
-	return nil
+	c.closeCalls++
+	return c.closeErr
 }
 
 func (f *failingSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
