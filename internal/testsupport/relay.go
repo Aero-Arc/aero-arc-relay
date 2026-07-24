@@ -29,10 +29,15 @@ type Relay struct {
 	serveErr chan error
 	stopOnce sync.Once
 	stopErr  error
+	logf     func(string, ...any)
 }
 
 func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID string) *Relay {
 	t.Helper()
+	t.Logf(
+		"Starting Relay in-process (not a container): relay_id=%s agent_id=%s influx_endpoint=%s database=%s",
+		relayID, agentID, influx.URL, influx.Database,
+	)
 	cfg := &config.Config{
 		Telemetry: config.TelemetryConfig{
 			Enabled:        true,
@@ -75,6 +80,7 @@ func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID str
 		server:   server,
 		listener: listener,
 		serveErr: make(chan error, 1),
+		logf:     t.Logf,
 	}
 	go func() {
 		err := server.Serve(listener)
@@ -103,12 +109,16 @@ func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID str
 			t.Errorf("shut down Relay at %s: %v", fixture.Address, err)
 		}
 	})
-	t.Logf("Relay ready: endpoint=%s influx_endpoint=%s database=%s", fixture.Address, influx.URL, influx.Database)
+	t.Logf(
+		"Relay ready in-process (not a container): endpoint=%s relay_id=%s influx_endpoint=%s database=%s",
+		fixture.Address, relayID, influx.URL, influx.Database,
+	)
 	return fixture
 }
 
 func (r *Relay) Shutdown(ctx context.Context) error {
 	r.stopOnce.Do(func() {
+		r.logf("Stopping Relay in-process: endpoint=%s", r.Address)
 		if r.Conn != nil {
 			r.stopErr = errors.Join(r.stopErr, r.Conn.Close())
 		}
@@ -127,6 +137,9 @@ func (r *Relay) Shutdown(ctx context.Context) error {
 			r.stopErr = errors.Join(r.stopErr, fmt.Errorf("serve Relay gRPC: %w", err))
 		}
 		r.stopErr = errors.Join(r.stopErr, r.relay.Close(ctx))
+		if r.stopErr == nil {
+			r.logf("Relay stopped in-process: endpoint=%s telemetry_outputs_flushed=true", r.Address)
+		}
 	})
 	return r.stopErr
 }
