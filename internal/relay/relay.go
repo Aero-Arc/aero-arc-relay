@@ -234,25 +234,15 @@ func (r *Relay) Start(ctx context.Context) error {
 			r.grpcServer.Stop()
 		}
 
-		// Shutdown outputs with timeout
+		// Shutdown outputs with timeout. Closing the router drains the normalized
+		// telemetry queue and flushes pending backend batches.
 		baseCtx := context.Background()
-		if r.router != nil {
-			sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
-			if err := r.router.Close(sinkCtx); err != nil {
-				slog.LogAttrs(context.Background(), slog.LevelWarn,
-					"Error closing outputs", slog.String("error", err.Error()))
-			}
-			cancel() // Release resources
-		} else {
-			for _, sink := range r.sinks {
-				sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
-				if err := sink.Close(sinkCtx); err != nil {
-					slog.LogAttrs(context.Background(), slog.LevelWarn,
-						"Error closing sink", slog.String("error", err.Error()))
-				}
-				cancel() // Release resources
-			}
+		sinkCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+		if err := r.Close(sinkCtx); err != nil {
+			slog.LogAttrs(context.Background(), slog.LevelWarn,
+				"Error closing outputs", slog.String("error", err.Error()))
 		}
+		cancel() // Release resources
 
 		// Shutdown HTTP server
 		httpCtx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
@@ -283,6 +273,22 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Close drains and closes all configured outputs. It is separate from the
+// network-server lifecycle so embedders can guarantee that asynchronous
+// telemetry batches are flushed during controlled shutdown.
+func (r *Relay) Close(ctx context.Context) error {
+	if r.router != nil {
+		return r.router.Close(ctx)
+	}
+	var closeErr error
+	for _, sink := range r.sinks {
+		if err := sink.Close(ctx); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	return closeErr
 }
 
 func (r *Relay) ready() bool {
