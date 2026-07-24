@@ -18,6 +18,7 @@ const (
 	testAircraftID = "aircraft-integration-gpi"
 	testRelayID    = "relay-integration"
 	testWALSeq     = uint64(424242)
+	testBatchSize  = 8
 )
 
 var testCaptureTime = time.Date(2026, time.July, 23, 17, 34, 56, 789123456, time.UTC)
@@ -36,36 +37,51 @@ func TestRelayTelemetry_GlobalPositionIntPersistsToInfluxDB(t *testing.T) {
 		t.Fatal("Relay registration returned an empty session ID")
 	}
 
-	frame := globalPositionIntFrame()
+	frame := globalPositionIntFrame(testWALSeq, testCaptureTime)
 	admissionStarted := time.Now().UTC()
-	ack, err := agent.Send(frame)
-	if err != nil {
-		t.Fatalf("send deterministic GLOBAL_POSITION_INT: %v", err)
-	}
+	sendAndRequireOK(t, agent, frame)
 	admissionFinished := time.Now().UTC()
-	if ack.GetSeq() != testWALSeq {
-		t.Fatalf("ACK sequence = %d, want %d", ack.GetSeq(), testWALSeq)
-	}
-	if ack.GetStatus() != agentv1.TelemetryAck_STATUS_OK {
-		t.Fatalf("Relay rejected telemetry: status=%s error=%q", ack.GetStatus(), ack.GetError())
-	}
 	// STATUS_OK confirms validation, normalization, and admission into the
 	// Relay's in-memory telemetry writer queue. It does not mean InfluxDB has
 	// flushed the batch or that the row is durably queryable.
 
-	frameID := fmt.Sprintf("%d:%s:%d:%d", len(testAgentID), testAgentID, testCaptureTime.UnixNano(), testWALSeq)
-	query := fmt.Sprintf(`
-SELECT *
-FROM aircraft_telemetry
-WHERE frame_id = '%s' AND session_id = '%s'
-`, frameID, agent.SessionID)
+	// Fill the configured production batch so this first set is persisted
+	// without relying on the deliberately long periodic flush interval.
+	for offset := 1; offset < testBatchSize; offset++ {
+		sendAndRequireOK(
+			t,
+			agent,
+			globalPositionIntFrame(testWALSeq+uint64(offset), testCaptureTime.Add(time.Duration(offset))),
+		)
+	}
+
+	primaryFrameID := frameID(testWALSeq, testCaptureTime)
+	query := frameQuery(primaryFrameID, agent.SessionID)
 	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 20*time.Second)
-	row, err := influx.AwaitRow(queryCtx, 100*time.Millisecond, query, "frame_id="+frameID)
+	row, err := influx.AwaitRow(queryCtx, 100*time.Millisecond, query, "frame_id="+primaryFrameID)
 	cancelQuery()
 	if err != nil {
 		t.Fatalf("query normalized telemetry (relay=%s influx=%s): %v", relay.Address, influx.URL, err)
 	}
-	assertGlobalPositionIntRow(t, row, frameID, agent.SessionID, admissionStarted, admissionFinished)
+	assertGlobalPositionIntRow(t, row, primaryFrameID, agent.SessionID, admissionStarted, admissionFinished)
+
+	// This ninth record cannot reach BatchSize, and the periodic flush interval
+	// is one hour. Confirm it is not queryable before shutdown, then require
+	// Relay.Close to drain and flush it.
+	shutdownSequence := testWALSeq + testBatchSize
+	shutdownCaptureTime := testCaptureTime.Add(testBatchSize * time.Nanosecond)
+	sendAndRequireOK(t, agent, globalPositionIntFrame(shutdownSequence, shutdownCaptureTime))
+	shutdownFrameID := frameID(shutdownSequence, shutdownCaptureTime)
+	shutdownQuery := frameQuery(shutdownFrameID, agent.SessionID)
+	pendingCtx, cancelPending := context.WithTimeout(context.Background(), 5*time.Second)
+	pendingRows, err := influx.QueryRows(pendingCtx, shutdownQuery)
+	cancelPending()
+	if err != nil {
+		t.Fatalf("query pending shutdown frame before Relay shutdown: %v", err)
+	}
+	if len(pendingRows) != 0 {
+		t.Fatalf("shutdown frame was already persisted before shutdown: frame_id=%s rows=%#v", shutdownFrameID, pendingRows)
+	}
 
 	if err := agent.Close(); err != nil {
 		t.Fatalf("close fake Agent stream: %v", err)
@@ -77,23 +93,28 @@ WHERE frame_id = '%s' AND session_id = '%s'
 	}
 	cancelShutdown()
 
-	// The normalized telemetry writer is now drained and closed; confirm the
-	// accepted record remains independently queryable after Relay shutdown.
+	// The normalized telemetry writer is now drained and closed. The pending
+	// ninth frame becoming queryable specifically proves shutdown flushing.
 	postShutdownCtx, cancelPostShutdown := context.WithTimeout(context.Background(), 5*time.Second)
-	rows, err := influx.QueryRows(postShutdownCtx, query)
+	rows, err := influx.QueryRows(postShutdownCtx, shutdownQuery)
 	cancelPostShutdown()
 	if err != nil {
-		t.Fatalf("query persisted record after Relay shutdown: %v", err)
+		t.Fatalf("query shutdown-flushed record after Relay shutdown: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("rows after Relay shutdown = %d, want 1; frame_id=%s rows=%#v", len(rows), frameID, rows)
+		t.Fatalf(
+			"shutdown-flushed rows = %d, want 1; frame_id=%s rows=%#v",
+			len(rows), shutdownFrameID, rows,
+		)
 	}
+	assertUint(t, rows[0], "wal_sequence", shutdownSequence)
+	assertInt(t, rows[0], "agent_capture_time_ns", shutdownCaptureTime.UnixNano())
 }
 
-func globalPositionIntFrame() *agentv1.TelemetryFrame {
+func globalPositionIntFrame(sequence uint64, captureTime time.Time) *agentv1.TelemetryFrame {
 	return &agentv1.TelemetryFrame{
-		Seq:          testWALSeq,
-		SentAtUnixNs: testCaptureTime.UnixNano(),
+		Seq:          sequence,
+		SentAtUnixNs: captureTime.UnixNano(),
 		Dialect:      "common",
 		MsgId:        33,
 		MsgName:      "GLOBAL_POSITION_INT",
@@ -109,6 +130,37 @@ func globalPositionIntFrame() *agentv1.TelemetryFrame {
 			"Hdg":         "12345",
 		},
 	}
+}
+
+func sendAndRequireOK(
+	t *testing.T,
+	agent *testsupport.FakeAgent,
+	frame *agentv1.TelemetryFrame,
+) *agentv1.TelemetryAck {
+	t.Helper()
+	ack, err := agent.Send(frame)
+	if err != nil {
+		t.Fatalf("send deterministic GLOBAL_POSITION_INT sequence %d: %v", frame.Seq, err)
+	}
+	if ack.GetSeq() != frame.Seq {
+		t.Fatalf("ACK sequence = %d, want %d", ack.GetSeq(), frame.Seq)
+	}
+	if ack.GetStatus() != agentv1.TelemetryAck_STATUS_OK {
+		t.Fatalf("Relay rejected sequence %d: status=%s error=%q", frame.Seq, ack.GetStatus(), ack.GetError())
+	}
+	return ack
+}
+
+func frameID(sequence uint64, captureTime time.Time) string {
+	return fmt.Sprintf("%d:%s:%d:%d", len(testAgentID), testAgentID, captureTime.UnixNano(), sequence)
+}
+
+func frameQuery(frameID, sessionID string) string {
+	return fmt.Sprintf(`
+SELECT *
+FROM aircraft_telemetry
+WHERE frame_id = '%s' AND session_id = '%s'
+`, frameID, sessionID)
 }
 
 func assertGlobalPositionIntRow(

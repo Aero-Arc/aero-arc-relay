@@ -66,7 +66,9 @@ func StartInfluxDB(t *testing.T) *InfluxDB {
 	t.Helper()
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Include enough time for a cold image pull before the wait strategy gets
+	// its own bounded 90-second readiness window. The suite timeout is 10m.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	t.Logf(
 		"Starting InfluxDB test dependency: image=%s (Testcontainers may also log its separate Ryuk cleanup-helper container)",
