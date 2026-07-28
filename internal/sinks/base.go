@@ -1,6 +1,18 @@
+/*
+Copyright 2025 The Aero Arc Relay Authors.
+
+Licensed under the Mozilla Public License, Version 2.0 (the "License");
+You may obtain a copy of the License at http://mozilla.org.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*/
+
 package sinks
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -104,12 +116,27 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 }
 
 func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryEnvelope) error {
+	return b.EnqueueContext(context.Background(), msg)
+}
+
+// WriteMessageContext allows the sink adapter to propagate stream
+// cancellation through an async sink's backpressure wait. Concrete sinks that
+// embed BaseAsyncSink inherit this implementation.
+func (b *BaseAsyncSink) WriteMessageContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
+	return b.EnqueueContext(ctx, msg)
+}
+
+func (b *BaseAsyncSink) EnqueueContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	switch b.policy {
 	case BackpressurePolicyBlock:
-		b.queue <- msg
-		b.metrics.enqueued.Inc()
-		b.metrics.queueLen.Set(float64(len(b.queue)))
-		return nil
+		select {
+		case b.queue <- msg:
+			b.metrics.enqueued.Inc()
+			b.metrics.queueLen.Set(float64(len(b.queue)))
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	case BackpressurePolicyDrop:
 		fallthrough
 	default:

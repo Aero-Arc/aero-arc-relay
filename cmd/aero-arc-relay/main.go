@@ -1,9 +1,22 @@
+/*
+Copyright 2025 The Aero Arc Relay Authors.
+
+Licensed under the Mozilla Public License, Version 2.0 (the "License");
+You may obtain a copy of the License at http://mozilla.org.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*/
+
+// Package main wires CLI flags to configuration loading, relay startup,
+// and graceful shutdown handling.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,19 +24,59 @@ import (
 
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/relay"
+	"github.com/urfave/cli/v3"
 )
 
-func main() {
-	var configPath string
-	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to configuration file")
-	flag.Parse()
+var relayCommand = cli.Command{
+	Usage:  "run the relay process",
+	Action: RunRelay,
 
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:  "config-path",
+			Usage: "path to the configuration file",
+			Value: "configs/config.yaml",
+		},
+		&cli.IntFlag{
+			Name:  "grpc-port",
+			Usage: "the port used for the relays grpc server",
+			Value: 50051,
+		},
+		&cli.IntFlag{
+			Name:  "buffer-size",
+			Usage: "sink buffer-size",
+			Value: 1000,
+		},
+		&cli.StringFlag{
+			Name:  "tls-cert-path",
+			Usage: "path to tls cert file",
+			Value: fmt.Sprintf("~/%s", relay.DebugTLSCertPath),
+		},
+		&cli.StringFlag{
+			Name:  "tls-key-path",
+			Usage: "path to tls key file",
+			Value: fmt.Sprintf("~/%s", relay.DebugTLSKeyPath),
+		},
+		&cli.BoolFlag{
+			Name:  "debug",
+			Usage: "run the relay in debug mode. Useful for local testing",
+			Value: false,
+		},
+	},
+}
+
+func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	// Load configuration
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(cmd.String("config-path"))
 	if err != nil {
 		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to load configuration", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+
+	cfg.Debug = cmd.Bool("debug")
+	cfg.TLSCertPath = cmd.String("tls-cert-path")
+	cfg.TLSKeyPath = cmd.String("tls-key-path")
+	cfg.GrpcPort = cmd.Int("grpc-port")
 
 	// Create relay instance
 	relayInstance, err := relay.New(cfg)
@@ -33,7 +86,7 @@ func main() {
 	}
 
 	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Handle shutdown signals
@@ -50,5 +103,13 @@ func main() {
 	if err := relayInstance.Start(ctx); err != nil {
 		slog.LogAttrs(context.Background(), slog.LevelError, "Failed to start relay", slog.String("error", err.Error()))
 		os.Exit(1)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := relayCommand.Run(context.Background(), os.Args); err != nil {
+		log.Fatal(err)
 	}
 }

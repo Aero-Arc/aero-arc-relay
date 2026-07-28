@@ -1,336 +1,265 @@
+/*
+Copyright 2025 The Aero Arc Relay Authors.
+
+Licensed under the Mozilla Public License, Version 2.0 (the "License");
+You may obtain a copy of the License at http://mozilla.org.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*/
+
 package relay
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
+	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"github.com/makinje/aero-arc-relay/internal/mock"
+	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/internal/sinks"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-// TestRelayCreation tests the creation of a new relay instance
+func relayWithSinks(testSinks ...sinks.Sink) *Relay {
+	router := outputs.NewRouter()
+	for i, sink := range testSinks {
+		router.AddConsumer(
+			outputs.NewSinkConsumer(fmt.Sprintf("test-%d", i), sink),
+			outputs.MessageFilter{Include: []string{"*"}},
+		)
+	}
+	return &Relay{sinks: testSinks, router: router}
+}
+
+func sinkErrorMetricValue(t *testing.T, sink string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != "aero_relay_sink_errors_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "sink" && label.GetValue() == sink {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func TestRelayCreation(t *testing.T) {
 	cfg := &config.Config{
-		Relay: config.RelayConfig{
-			BufferSize: 1000,
-		},
-		MAVLink: config.MAVLinkConfig{
-			Dialect: common.Dialect,
-			Endpoints: []config.MAVLinkEndpoint{
-				{
-					Name:     "test-drone",
-					AgentID:  "test-drone",
-					Protocol: "udp",
-					Port:     14550,
-				},
-			},
-		},
-		Sinks: config.SinksConfig{},
-		Logging: config.LoggingConfig{
-			Level:  "info",
-			Format: "text",
-		},
+		Sinks:   config.SinksConfig{},
+		Logging: config.LoggingConfig{Level: "info", Format: "text"},
 	}
 
-	// Test with no sinks (should fail)
 	_, err := New(cfg)
 	if err == nil {
 		t.Error("Expected error when no sinks are configured")
 	}
 
-	// Test with mock sink
+	tempDir := t.TempDir()
 	cfg.Sinks.File = &config.FileConfig{
-		Path:             "/tmp/test",
+		Path:             tempDir,
+		Prefix:           "telemetry",
 		Format:           "json",
-		RotationInterval: 24 * time.Hour,
+		RotationInterval: time.Hour,
+		MessageFilterConfig: config.MessageFilterConfig{
+			IncludeMessages: []string{"*"},
+		},
 	}
 
 	relay, err := New(cfg)
 	if err != nil {
-		t.Errorf("Failed to create relay: %v", err)
+		t.Fatalf("Failed to create relay: %v", err)
 	}
-
-	if relay == nil {
-		t.Error("Relay should not be nil")
-	}
-
-	if len(relay.sinks) == 0 {
-		t.Error("Relay should have sinks configured")
+	for _, sink := range relay.sinks {
+		_ = sink.Close(context.Background())
 	}
 }
 
-// TestRelayWithMockSink tests relay functionality with a mock sink
-func TestRelayWithMockSink(t *testing.T) {
-	// Create a test configuration
-	cfg := &config.Config{
-		Relay: config.RelayConfig{
-			BufferSize: 1000,
-		},
-		MAVLink: config.MAVLinkConfig{
-			Dialect: common.Dialect,
-			Endpoints: []config.MAVLinkEndpoint{
-				{
-					Name:     "test-drone",
-					AgentID:  "test-drone",
-					Protocol: "udp",
-					Port:     14550,
-				},
+func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.Config
+	}{
+		{
+			name: "registry",
+			config: &config.Config{
+				Registry: config.RegistryConfig{Enabled: true},
 			},
 		},
-		Sinks: config.SinksConfig{},
-		Logging: config.LoggingConfig{
-			Level:  "info",
-			Format: "text",
+		{
+			name: "telemetry",
+			config: &config.Config{
+				Telemetry: config.TelemetryConfig{Enabled: true, Backend: "noop"},
+			},
 		},
 	}
 
-	// Create relay with mock sink
-	relay := &Relay{
-		config: cfg,
-		sinks:  []sinks.Sink{mock.NewMockSink()},
-	}
-
-	// Test message handling
-	heartbeatMsg := telemetry.BuildHeartbeatEnvelope("test-drone", &common.MessageHeartbeat{
-		CustomMode: 3,
-	})
-
-	relay.handleTelemetryMessage(heartbeatMsg)
-	// Verify message was processed
-	mockSink := relay.sinks[0].(*mock.MockSink)
-	if mockSink.GetMessageCount() != 1 {
-		t.Errorf("Expected 1 message, got %d", mockSink.GetMessageCount())
-	}
-
-	receivedMsg := mockSink.GetMessages()[0]
-	if receivedMsg.GetSource() != "test-drone" {
-		t.Errorf("Expected source 'test-drone', got '%s'", receivedMsg.GetSource())
-	}
-
-	if receivedMsg.GetMessageType() != "Heartbeat" {
-		t.Errorf("Expected message type 'Heartbeat', got '%s'", receivedMsg.GetMessageType())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relay, err := New(tt.config)
+			if err != nil {
+				t.Fatalf("New() with only %s output: %v", tt.name, err)
+			}
+			if !relay.ready() {
+				t.Fatalf("relay with only %s output is not ready", tt.name)
+			}
+			if len(relay.sinks) != 0 {
+				t.Fatalf("relay with only %s output has %d generic sinks", tt.name, len(relay.sinks))
+			}
+		})
 	}
 }
 
-// TestFlightModeConversion tests the flight mode conversion function
-func TestFlightModeConversion(t *testing.T) {
-	relay := &Relay{}
+func TestInitializeOutputsClosesConsumersWhenSinkInitializationFails(t *testing.T) {
+	consumer := &closeTrackingConsumer{}
+	sinkErr := errors.New("sink initialization failed")
+	relay := &Relay{
+		config: &config.Config{
+			Telemetry: config.TelemetryConfig{Enabled: true},
+		},
+	}
 
-	testCases := []struct {
-		mode     uint32
-		expected string
+	err := relay.initializeOutputsWith(
+		func() (outputs.EnvelopeConsumer, error) { return consumer, nil },
+		func() error { return sinkErr },
+	)
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("initializeOutputsWith() error = %v, want %v", err, sinkErr)
+	}
+	if !consumer.closed {
+		t.Fatal("initialized telemetry consumer was not closed")
+	}
+}
+
+func TestRelayCloseIsIdempotentAndRetainsFirstError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	consumer := &closeTrackingConsumer{closeErr: closeErr}
+	router := outputs.NewRouter()
+	router.AddConsumer(consumer, outputs.MessageFilter{Include: []string{"*"}})
+	relay := &Relay{router: router}
+
+	if err := relay.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("first Close() error = %v, want %v", err, closeErr)
+	}
+	if err := relay.Close(context.Background()); !errors.Is(err, closeErr) {
+		t.Fatalf("second Close() error = %v, want retained %v", err, closeErr)
+	}
+	if consumer.closeCalls != 1 {
+		t.Fatalf("consumer Close() calls = %d, want 1", consumer.closeCalls)
+	}
+}
+
+func TestNormalizedTelemetryRequiresRelayID(t *testing.T) {
+	cfg := &config.Config{
+		Telemetry: config.TelemetryConfig{
+			Enabled: true,
+			Backend: "influxdb3",
+			InfluxDB: &config.NormalizedInfluxDBConfig{
+				Host: "http://localhost:8181", Token: "token", Database: "telemetry",
+			},
+		},
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New() accepted normalized telemetry without a relay ID")
+	}
+}
+
+func TestInternalOutputMessageFilters(t *testing.T) {
+	tests := []struct {
+		name     string
+		filter   outputs.MessageFilter
+		included []string
+		excluded string
 	}{
-		{0, "STABILIZE"},
-		{1, "ACRO"},
-		{2, "ALT_HOLD"},
-		{3, "AUTO"},
-		{4, "GUIDED"},
-		{5, "LOITER"},
-		{6, "RTL"},
-		{7, "CIRCLE"},
-		{8, "POSITION"},
-		{9, "LAND"},
-		{10, "OF_LOITER"},
-		{11, "DRIFT"},
-		{13, "SPORT"},
-		{14, "FLIP"},
-		{15, "AUTOTUNE"},
-		{16, "POSHOLD"},
-		{17, "BRAKE"},
-		{18, "THROW"},
-		{19, "AVOID_ADSB"},
-		{20, "GUIDED_NOGPS"},
-		{21, "SMART_RTL"},
-		{22, "FLOWHOLD"},
-		{23, "FOLLOW"},
-		{24, "ZIGZAG"},
-		{25, "SYSTEMID"},
-		{26, "AUTOROTATE"},
-		{27, "AUTO_RTL"},
-		{999, "UNKNOWN"},
+		{
+			name:     "registry",
+			filter:   registryMessageFilter(),
+			included: []string{"Heartbeat", "GlobalPositionInt"},
+			excluded: "Attitude",
+		},
+		{
+			name:     "telemetry",
+			filter:   telemetryMessageFilter(),
+			included: []string{"Heartbeat", "GlobalPositionInt", "BatteryStatus", "SysStatus", "VFR_HUD", "ExtendedSysState", "GpsRawInt", "SystemTime"},
+			excluded: "Attitude",
+		},
 	}
 
-	for _, tc := range testCases {
-		result := relay.getFlightMode(tc.mode)
-		if result != tc.expected {
-			t.Errorf("For mode %d, expected '%s', got '%s'", tc.mode, tc.expected, result)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, message := range tt.included {
+				if !tt.filter.Allows(message) {
+					t.Errorf("internal %s filter rejects required message %q", tt.name, message)
+				}
+			}
+			if tt.filter.Allows(tt.excluded) {
+				t.Errorf("internal %s filter allows unrelated message %q", tt.name, tt.excluded)
+			}
+		})
 	}
 }
 
-// TestMessageHandlers tests individual message handlers
-func TestMessageHandlers(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink()},
+func TestHandleTelemetryMessage(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+
+	msg := telemetry.TelemetryEnvelope{
+		AgentID:        "test-agent",
+		Source:         "test-agent",
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        "Heartbeat",
+		Fields: map[string]any{
+			"type": "AUTO",
+		},
 	}
 
-	// Test heartbeat handler
-	heartbeat := &common.MessageHeartbeat{
-		CustomMode: 3, // AUTO mode
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleTelemetryMessage() error = %v", err)
 	}
-	relay.handleHeartbeat(heartbeat, "test-drone")
 
-	mockSink := relay.sinks[0].(*mock.MockSink)
 	if mockSink.GetMessageCount() != 1 {
-		t.Errorf("Expected 1 message after heartbeat, got %d", mockSink.GetMessageCount())
+		t.Fatalf("Expected 1 message, got %d", mockSink.GetMessageCount())
 	}
 
-	msg := mockSink.GetMessages()[0]
-	if msg.GetMessageType() != "Heartbeat" {
-		t.Errorf("Expected heartbeat message type, got %s", msg.GetMessageType())
+	received := mockSink.GetMessages()[0]
+	if received.AgentID != "test-agent" {
+		t.Errorf("Expected AgentID 'test-agent', got '%s'", received.AgentID)
 	}
-	if _, ok := msg.Fields["type"]; !ok {
-		t.Error("Expected heartbeat envelope to include type field")
-	}
-
-	// Test position handler
-	position := &common.MessageGlobalPositionInt{
-		Lat: 377749000,  // 37.7749 degrees
-		Lon: -122419400, // -122.4194 degrees
-		Alt: 100500,     // 100.5 meters
-	}
-	relay.handleGlobalPosition(position, "test-drone")
-
-	if mockSink.GetMessageCount() != 2 {
-		t.Errorf("Expected 2 messages after position, got %d", mockSink.GetMessageCount())
-	}
-
-	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
-	if msg.MsgName != "GlobalPositionInt" {
-		t.Errorf("Expected GlobalPositionInt message, got %s", msg.MsgName)
-	}
-	if _, ok := msg.Fields["latitude"]; !ok {
-		t.Error("Expected position envelope to include latitude field")
-	}
-
-	// Test attitude handler
-	attitude := &common.MessageAttitude{
-		Roll:  0.1,  // ~5.7 degrees
-		Pitch: -0.2, // ~-11.5 degrees
-		Yaw:   3.14, // ~180 degrees
-	}
-	relay.handleAttitude(attitude, "test-drone")
-
-	if mockSink.GetMessageCount() != 3 {
-		t.Errorf("Expected 3 messages after attitude, got %d", mockSink.GetMessageCount())
-	}
-
-	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
-	if msg.MsgName != "Attitude" {
-		t.Errorf("Expected Attitude message, got %s", msg.MsgName)
-	}
-	if _, ok := msg.Fields["roll"]; !ok {
-		t.Error("Expected attitude envelope to include roll field")
-	}
-
-	// Test VFR HUD handler
-	vfrHud := &common.MessageVfrHud{
-		Groundspeed: 15.2,
-		Alt:         100.5,
-		Heading:     180,
-	}
-	relay.handleVfrHud(vfrHud, "test-drone")
-
-	if mockSink.GetMessageCount() != 4 {
-		t.Errorf("Expected 4 messages after VFR HUD, got %d", mockSink.GetMessageCount())
-	}
-
-	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
-	if msg.MsgName != "VFR_HUD" {
-		t.Errorf("Expected VFR_HUD message, got %s", msg.MsgName)
-	}
-	if _, ok := msg.Fields["ground_speed"]; !ok {
-		t.Error("Expected VFR_HUD envelope to include ground_speed field")
-	}
-
-	// Test system status handler
-	sysStatus := &common.MessageSysStatus{
-		BatteryRemaining: 85,
-		VoltageBattery:   12600, // 12.6V in mV
-	}
-	relay.handleSysStatus(sysStatus, "test-drone")
-
-	if mockSink.GetMessageCount() != 5 {
-		t.Errorf("Expected 5 messages after sys status, got %d", mockSink.GetMessageCount())
-	}
-
-	msg = mockSink.GetMessages()[mockSink.GetMessageCount()-1]
-	if msg.MsgName != "SystemStatus" {
-		t.Errorf("Expected SystemStatus message, got %s", msg.MsgName)
-	}
-	if _, ok := msg.Fields["battery_remaining"]; !ok {
-		t.Error("Expected system status envelope to include battery_remaining field")
+	if received.MsgName != "Heartbeat" {
+		t.Errorf("Expected MsgName 'Heartbeat', got '%s'", received.MsgName)
 	}
 }
 
-// TestMessageTypeSpecificData tests that message handlers create correct message types
-func TestMessageTypeSpecificData(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink()},
+func TestHandleTelemetryMessageMultipleSinks(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink(), mock.NewMockSink())
+
+	msg := telemetry.TelemetryEnvelope{
+		AgentID:        "test-agent",
+		Source:         "test-agent",
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        "Status",
 	}
 
-	// Test heartbeat creates Heartbeat envelope with basic metadata
-	heartbeat := &common.MessageHeartbeat{
-		CustomMode: 3,
-	}
-	relay.handleHeartbeat(heartbeat, "test-drone")
-
-	mockSink := relay.sinks[0].(*mock.MockSink)
-	msg := mockSink.GetMessages()[0]
-
-	if msg.MsgName != "Heartbeat" {
-		t.Fatalf("Expected Heartbeat message, got %s", msg.MsgName)
-	}
-	if msg.Source != "test-drone" {
-		t.Errorf("Expected source 'test-drone', got '%s'", msg.Source)
-	}
-	if _, ok := msg.Fields["type"]; !ok {
-		t.Error("Expected heartbeat envelope to contain type field")
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleTelemetryMessage() error = %v", err)
 	}
 
-	// Test position creates GlobalPositionInt envelope with raw values
-	position := &common.MessageGlobalPositionInt{
-		Lat: 377749000,
-		Lon: -122419400,
-		Alt: 100500,
-	}
-	relay.handleGlobalPosition(position, "test-drone")
-
-	msg = mockSink.GetMessages()[1]
-	if msg.MsgName != "GlobalPositionInt" {
-		t.Fatalf("Expected GlobalPositionInt message, got %s", msg.MsgName)
-	}
-	if msg.Source != "test-drone" {
-		t.Errorf("Expected source 'test-drone', got '%s'", msg.Source)
-	}
-
-	if lat, ok := msg.Fields["latitude"].(int32); !ok || lat != position.Lat {
-		t.Errorf("Expected latitude %d, got %v", position.Lat, msg.Fields["latitude"])
-	}
-	if lon, ok := msg.Fields["longitude"].(int32); !ok || lon != position.Lon {
-		t.Errorf("Expected longitude %d, got %v", position.Lon, msg.Fields["longitude"])
-	}
-	if alt, ok := msg.Fields["altitude"].(int32); !ok || alt != position.Alt {
-		t.Errorf("Expected altitude %d, got %v", position.Alt, msg.Fields["altitude"])
-	}
-}
-
-// TestMultipleSinks tests that messages are sent to all configured sinks
-func TestMultipleSinks(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink(), mock.NewMockSink(), mock.NewMockSink()},
-	}
-
-	heartbeat := &common.MessageHeartbeat{
-		CustomMode: 3,
-	}
-	relay.handleHeartbeat(heartbeat, "test-drone")
-
-	// Check that all sinks received the message
 	for i, sink := range relay.sinks {
 		mockSink := sink.(*mock.MockSink)
 		if mockSink.GetMessageCount() != 1 {
@@ -339,73 +268,124 @@ func TestMultipleSinks(t *testing.T) {
 	}
 }
 
-// TestRelayShutdown tests that relay shuts down gracefully
-func TestRelayShutdown(t *testing.T) {
-	cfg := &config.Config{
-		Relay: config.RelayConfig{
-			BufferSize: 1000,
-		},
-		MAVLink: config.MAVLinkConfig{
-			Dialect:   common.Dialect,
-			Endpoints: []config.MAVLinkEndpoint{},
-		},
-		Sinks: config.SinksConfig{},
-		Logging: config.LoggingConfig{
-			Level:  "info",
-			Format: "text",
+func TestBuildTelemetryFrameEnvelope(t *testing.T) {
+	relay := &Relay{}
+	session := &DroneSession{
+		agentID:       "agent-1",
+		SessionID:     "session-1",
+		FlightID:      "authoritative-flight",
+		IntentID:      "authoritative-intent",
+		IntentVersion: 4,
+	}
+
+	before := time.Now().UTC()
+	agentTime := time.Date(2026, 7, 12, 12, 30, 0, 123, time.UTC)
+	frame := &agentv1.TelemetryFrame{
+		AgentId:            "agent-1",
+		SessionId:          "session-1",
+		FlightId:           "stale-frame-flight",
+		IntentId:           "stale-frame-intent",
+		IntentVersion:      1,
+		Seq:                99,
+		SentAtUnixNs:       agentTime.UnixNano(),
+		DeviceTimestampSec: 42.5,
+		Dialect:            "common",
+		MsgId:              42,
+		MsgName:            "Status",
+		Fields: map[string]string{
+			"mode": "AUTO",
 		},
 	}
 
-	relay := &Relay{
-		config: cfg,
-		sinks:  []sinks.Sink{mock.NewMockSink()},
+	envelope := relay.buildTelemetryFrameEnvelope(session, frame)
+	after := time.Now().UTC()
+
+	if envelope.AgentID != "agent-1" {
+		t.Errorf("Expected AgentID 'agent-1', got '%s'", envelope.AgentID)
 	}
-
-	// Test that sinks are closed on shutdown
-	mockSink := relay.sinks[0].(*mock.MockSink)
-	if mockSink.IsClosed() {
-		t.Error("Sink should not be closed initially")
+	if envelope.MsgID != 42 {
+		t.Errorf("Expected MsgID 42, got %d", envelope.MsgID)
 	}
-
-	relay.Close()
-
-	if !mockSink.IsClosed() {
-		t.Error("Sink should be closed after relay shutdown")
+	if envelope.MsgName != "Status" {
+		t.Errorf("Expected MsgName 'Status', got '%s'", envelope.MsgName)
+	}
+	if envelope.SessionID != "session-1" || envelope.FlightID != "authoritative-flight" {
+		t.Errorf("session/flight metadata = %q/%q", envelope.SessionID, envelope.FlightID)
+	}
+	if envelope.IntentID != "authoritative-intent" || envelope.IntentVersion != 4 {
+		t.Errorf("intent metadata = %q/%d", envelope.IntentID, envelope.IntentVersion)
+	}
+	if envelope.WALSequence != 99 || envelope.Dialect != "common" {
+		t.Errorf("sequence/dialect metadata = %d/%q", envelope.WALSequence, envelope.Dialect)
+	}
+	if !envelope.TimestampAgent.Equal(agentTime) || envelope.TimestampDevice != 42.5 {
+		t.Errorf("agent/device timestamps = %v/%v", envelope.TimestampAgent, envelope.TimestampDevice)
+	}
+	if got := envelope.Fields["mode"]; got != "AUTO" {
+		t.Errorf("Expected field 'mode' to be 'AUTO', got '%v'", got)
+	}
+	if envelope.TimestampRelay.Before(before) || envelope.TimestampRelay.After(after) {
+		t.Errorf("TimestampRelay %v not within expected range", envelope.TimestampRelay)
+	}
+	if len(envelope.Raw) == 0 {
+		t.Error("Expected Raw payload to be set")
 	}
 }
 
-// TestRelayClose tests the Close method
-func (r *Relay) Close() {
-	// Close all sinks
-	for _, sink := range r.sinks {
-		sink.Close(context.Background())
+func TestHandleTelemetryFrame(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+	session := &DroneSession{agentID: "agent-2", SessionID: "session-2"}
+
+	frame := &agentv1.TelemetryFrame{
+		AgentId: "agent-2",
+		MsgId:   7,
+		MsgName: "Heartbeat",
+		Fields: map[string]string{
+			"type": "AUTO",
+		},
+	}
+
+	if err := relay.handleTelemetryFrame(context.Background(), session, frame); err != nil {
+		t.Fatalf("handleTelemetryFrame() error = %v", err)
+	}
+
+	if mockSink.GetMessageCount() != 1 {
+		t.Fatalf("Expected 1 message, got %d", mockSink.GetMessageCount())
+	}
+
+	msg := mockSink.GetMessages()[0]
+	if msg.AgentID != "agent-2" {
+		t.Errorf("Expected AgentID 'agent-2', got '%s'", msg.AgentID)
+	}
+	if msg.MsgName != "Heartbeat" {
+		t.Errorf("Expected MsgName 'Heartbeat', got '%s'", msg.MsgName)
 	}
 }
 
-// TestConcurrentMessageHandling tests that the relay can handle messages concurrently
-func TestConcurrentMessageHandling(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink()},
-	}
+func TestConcurrentTelemetryHandling(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
 
-	// Send multiple messages concurrently
 	numMessages := 100
-	done := make(chan bool, numMessages)
+	var wg sync.WaitGroup
+	wg.Add(numMessages)
 
 	for i := 0; i < numMessages; i++ {
 		go func(id int) {
-			heartbeat := &common.MessageHeartbeat{
-				CustomMode: uint32(id % 10),
+			defer wg.Done()
+			msg := telemetry.TelemetryEnvelope{
+				AgentID:        "test-agent",
+				Source:         "test-agent",
+				TimestampRelay: time.Now().UTC(),
+				MsgName:        fmt.Sprintf("Status-%d", id),
 			}
-			relay.handleHeartbeat(heartbeat, "test-drone")
-			done <- true
+			if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+				t.Errorf("handleTelemetryMessage() error = %v", err)
+			}
 		}(i)
 	}
 
-	// Wait for all messages to be processed
-	for i := 0; i < numMessages; i++ {
-		<-done
-	}
+	wg.Wait()
 
 	mockSink := relay.sinks[0].(*mock.MockSink)
 	if mockSink.GetMessageCount() != numMessages {
@@ -413,24 +393,61 @@ func TestConcurrentMessageHandling(t *testing.T) {
 	}
 }
 
-// TestMessageTimestamp tests that messages have correct timestamps
-func TestMessageTimestamp(t *testing.T) {
-	relay := &Relay{
-		sinks: []sinks.Sink{mock.NewMockSink()},
+func TestRelayErrorHandling(t *testing.T) {
+	failingSink := &failingSink{}
+	relay := relayWithSinks(failingSink, mock.NewMockSink())
+	errorsBefore := sinkErrorMetricValue(t, "test-0")
+
+	msg := telemetry.TelemetryEnvelope{
+		AgentID:        "test-agent",
+		Source:         "test-agent",
+		TimestampRelay: time.Now().UTC(),
+		MsgName:        "Heartbeat",
 	}
 
-	before := time.Now()
-	heartbeat := &common.MessageHeartbeat{
-		CustomMode: 3,
+	if err := relay.handleTelemetryMessage(context.Background(), msg); err != nil {
+		t.Fatalf("generic sink failure changed telemetry admission result: %v", err)
 	}
-	relay.handleHeartbeat(heartbeat, "test-drone")
-	after := time.Now()
 
-	mockSink := relay.sinks[0].(*mock.MockSink)
-	msg := mockSink.GetMessages()[0]
-	timestamp := msg.GetTimestamp()
-
-	if timestamp.Before(before) || timestamp.After(after) {
-		t.Errorf("Message timestamp %v is not within expected range [%v, %v]", timestamp, before, after)
+	mockSink := relay.sinks[1].(*mock.MockSink)
+	if mockSink.GetMessageCount() != 1 {
+		t.Errorf("Expected 1 message in working sink, got %d", mockSink.GetMessageCount())
 	}
+	if got := sinkErrorMetricValue(t, "test-0"); got != errorsBefore+1 {
+		t.Errorf("Expected sink error metric to increase by 1, got %v before and %v after", errorsBefore, got)
+	}
+}
+
+type failingSink struct {
+	closed bool
+}
+
+type closeTrackingConsumer struct {
+	closed     bool
+	closeCalls int
+	closeErr   error
+}
+
+func (c *closeTrackingConsumer) Name() string { return "close-tracking" }
+
+func (c *closeTrackingConsumer) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope) error {
+	return nil
+}
+
+func (c *closeTrackingConsumer) Close(context.Context) error {
+	c.closed = true
+	c.closeCalls++
+	return c.closeErr
+}
+
+func (f *failingSink) WriteMessage(msg telemetry.TelemetryEnvelope) error {
+	if f.closed {
+		return nil
+	}
+	return fmt.Errorf("simulated sink failure")
+}
+
+func (f *failingSink) Close(ctx context.Context) error {
+	f.closed = true
+	return nil
 }

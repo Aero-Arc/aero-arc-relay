@@ -1,76 +1,38 @@
+/*
+Copyright 2025 The Aero Arc Relay Authors.
+
+Licensed under the Mozilla Public License, Version 2.0 (the "License");
+You may obtain a copy of the License at http://mozilla.org.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*/
+
+// Package config loads YAML configuration and defines relay settings for
+// logging, sinks, and runtime options.
 package config
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/bluenviron/gomavlib/v2/pkg/dialect"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/ardupilotmega"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/minimal"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/paparazzi"
-	"github.com/bluenviron/gomavlib/v2/pkg/dialects/standard"
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents the application configuration
 type Config struct {
-	Relay   RelayConfig   `yaml:"relay"`
-	MAVLink MAVLinkConfig `yaml:"mavlink"`
-	Sinks   SinksConfig   `yaml:"sinks"`
-	Logging LoggingConfig `yaml:"logging"`
+	Sinks       SinksConfig     `yaml:"sinks"`
+	Registry    RegistryConfig  `yaml:"registry"`
+	Telemetry   TelemetryConfig `yaml:"telemetry"`
+	Logging     LoggingConfig   `yaml:"logging"`
+	Debug       bool
+	TLSCertPath string
+	TLSKeyPath  string
+	GrpcPort    int
+	BufferSize  int
 }
-
-// RelayConfig contains relay-specific configuration
-type RelayConfig struct {
-	BufferSize int         `yaml:"buffer_size"`
-	GRPCPort   int         `yaml:"grpc_port"`
-	Mode       MAVLinkMode `yaml:"mode"`
-}
-
-// MAVLinkConfig contains MAVLink connection settings
-type MAVLinkConfig struct {
-	DialectName string            `yaml:"dialect"` // common, ardupilot, px4, etc.
-	Dialect     *dialect.Dialect  `yaml:"-"`       // resolved at load time
-	Endpoints   []MAVLinkEndpoint `yaml:"endpoints"`
-}
-
-// MAVLinkEndpoint represents a single MAVLink connection
-type MAVLinkEndpoint struct {
-	Name         string                  `yaml:"name"`
-	AgentID      string                  `yaml:"agent_id,omitempty"`
-	ProtocolName string                  `yaml:"protocol"` // udp, tcp, serial
-	Protocol     MAVLinkEndpointProtocol `yaml:"-"`        // resolved at load time
-	Port         int                     `yaml:"port,omitempty"`
-	BaudRate     int                     `yaml:"baud_rate,omitempty"`
-}
-
-// MAVLinkEndpointProtocol represents a MAVLink endpoint protocol
-type MAVLinkEndpointProtocol string
-
-const (
-	MAVLinkEndpointProtocolUDP    MAVLinkEndpointProtocol = "udp"
-	MAVLinkEndpointProtocolTCP    MAVLinkEndpointProtocol = "tcp"
-	MAVLinkEndpointProtocolSerial MAVLinkEndpointProtocol = "serial"
-)
-
-// MAVLinkMode represents a MAVLink mode
-type MAVLinkMode string
-
-const (
-	MAVLinkMode1To1  MAVLinkMode = "1:1"
-	MAVLinkModeMulti MAVLinkMode = "multi"
-)
-
-var (
-	MAVLinkModeNames = map[MAVLinkMode]string{
-		MAVLinkMode1To1:  "1:1",
-		MAVLinkModeMulti: "multi",
-	}
-)
 
 // SinksConfig contains configuration for all data sinks
 type SinksConfig struct {
@@ -85,110 +47,163 @@ type SinksConfig struct {
 	File          *FileConfig          `yaml:"file,omitempty"`
 }
 
+// MessageFilterConfig controls which MAVLink message names an output receives.
+// Empty or omitted includes match nothing; use "*" to include all messages.
+// Excludes take precedence over includes.
+type MessageFilterConfig struct {
+	IncludeMessages []string `yaml:"include_messages,omitempty"`
+	ExcludeMessages []string `yaml:"exclude_messages,omitempty"`
+}
+
+// RegistryConfig contains control-plane registry reporting configuration.
+type RegistryConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Address string `yaml:"address"`
+}
+
+// TelemetryConfig contains normalized hot telemetry writer configuration.
+type TelemetryConfig struct {
+	Enabled        bool                      `yaml:"enabled"`
+	Backend        string                    `yaml:"backend"`
+	QueueCapacity  int                       `yaml:"queue_capacity"`
+	Workers        int                       `yaml:"workers"`
+	BatchSize      int                       `yaml:"batch_size"`
+	FlushInterval  time.Duration             `yaml:"flush_interval"`
+	EnqueueTimeout time.Duration             `yaml:"enqueue_timeout"`
+	WriteTimeout   time.Duration             `yaml:"write_timeout"`
+	MaxRetries     *int                      `yaml:"max_retries"`
+	RetryBackoff   time.Duration             `yaml:"retry_backoff"`
+	RelayID        string                    `yaml:"relay_id"`
+	AgentMappings  map[string]AgentMapping   `yaml:"agent_mappings,omitempty"`
+	InfluxDB       *NormalizedInfluxDBConfig `yaml:"influxdb,omitempty"`
+}
+
+type AgentMapping struct {
+	OperatorID string `yaml:"operator_id"`
+	AircraftID string `yaml:"aircraft_id"`
+}
+
+// NormalizedInfluxDBConfig configures the official InfluxDB 3 Core telemetry
+// backend. It is intentionally separate from the generic InfluxDB sink.
+type NormalizedInfluxDBConfig struct {
+	Host     string `yaml:"host"`
+	Token    string `yaml:"token"`
+	Database string `yaml:"database"`
+}
+
 // S3Config contains S3 sink configuration
 type S3Config struct {
-	Bucket             string        `yaml:"bucket"`
-	Region             string        `yaml:"region"`
-	AccessKey          string        `yaml:"access_key"`
-	SecretKey          string        `yaml:"secret_key"`
-	Prefix             string        `yaml:"prefix"`
-	FlushInterval      time.Duration `yaml:"flush_interval"`
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Bucket              string        `yaml:"bucket"`
+	Region              string        `yaml:"region"`
+	AccessKey           string        `yaml:"access_key"`
+	SecretKey           string        `yaml:"secret_key"`
+	Prefix              string        `yaml:"prefix"`
+	FlushInterval       time.Duration `yaml:"flush_interval"`
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // GCSConfig contains Google Cloud Storage sink configuration
 type GCSConfig struct {
-	Bucket             string        `yaml:"bucket"`
-	ProjectID          string        `yaml:"project_id"`
-	Credentials        string        `yaml:"credentials"` // Path to service account JSON file
-	Prefix             string        `yaml:"prefix"`
-	FlushInterval      time.Duration `yaml:"flush_interval"` // How often to flush buffered data (e.g., "30s")
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Bucket              string        `yaml:"bucket"`
+	ProjectID           string        `yaml:"project_id"`
+	Credentials         string        `yaml:"credentials"` // Path to service account JSON file
+	Prefix              string        `yaml:"prefix"`
+	FlushInterval       time.Duration `yaml:"flush_interval"` // How often to flush buffered data (e.g., "30s")
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // BigQueryConfig contains BigQuery sink configuration
 type BigQueryConfig struct {
-	ProjectID          string `yaml:"project_id"`
-	Dataset            string `yaml:"dataset"`
-	Table              string `yaml:"table"`
-	Credentials        string `yaml:"credentials"`    // Path to service account JSON file
-	BatchSize          int    `yaml:"batch_size"`     // Number of messages to batch before insert
-	FlushInterval      string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	ProjectID           string `yaml:"project_id"`
+	Dataset             string `yaml:"dataset"`
+	Table               string `yaml:"table"`
+	Credentials         string `yaml:"credentials"`    // Path to service account JSON file
+	BatchSize           int    `yaml:"batch_size"`     // Number of messages to batch before insert
+	FlushInterval       string `yaml:"flush_interval"` // How often to flush (e.g., "30s", "1m")
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // TimestreamConfig contains AWS Timestream sink configuration
 type TimestreamConfig struct {
-	Database           string `yaml:"database"`
-	Table              string `yaml:"table"`
-	Region             string `yaml:"region"`
-	AccessKey          string `yaml:"access_key"`
-	SecretKey          string `yaml:"secret_key"`
-	SessionToken       string `yaml:"session_token,omitempty"` // For temporary credentials
-	BatchSize          int    `yaml:"batch_size"`              // Number of records to batch
-	FlushInterval      string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	Database            string `yaml:"database"`
+	Table               string `yaml:"table"`
+	Region              string `yaml:"region"`
+	AccessKey           string `yaml:"access_key"`
+	SecretKey           string `yaml:"secret_key"`
+	SessionToken        string `yaml:"session_token,omitempty"` // For temporary credentials
+	BatchSize           int    `yaml:"batch_size"`              // Number of records to batch
+	FlushInterval       string `yaml:"flush_interval"`          // How often to flush (e.g., "30s", "1m")
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // InfluxDBConfig contains InfluxDB sink configuration
 type InfluxDBConfig struct {
-	URL                string `yaml:"url"`
-	Database           string `yaml:"database"`
-	Username           string `yaml:"username"`
-	Password           string `yaml:"password"`
-	Token              string `yaml:"token"`        // For InfluxDB 2.x
-	Organization       string `yaml:"organization"` // For InfluxDB 2.x
-	Bucket             string `yaml:"bucket"`       // For InfluxDB 2.x
-	BatchSize          int    `yaml:"batch_size"`
-	FlushInterval      string `yaml:"flush_interval"`
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	URL                 string `yaml:"url"`
+	Database            string `yaml:"database"`
+	Username            string `yaml:"username"`
+	Password            string `yaml:"password"`
+	Token               string `yaml:"token"`        // For InfluxDB 2.x
+	Organization        string `yaml:"organization"` // For InfluxDB 2.x
+	Bucket              string `yaml:"bucket"`       // For InfluxDB 2.x
+	BatchSize           int    `yaml:"batch_size"`
+	FlushInterval       string `yaml:"flush_interval"`
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // PrometheusConfig contains Prometheus sink configuration
 type PrometheusConfig struct {
-	URL                string `yaml:"url"`
-	Job                string `yaml:"job"`
-	Instance           string `yaml:"instance"`
-	BatchSize          int    `yaml:"batch_size"`
-	FlushInterval      string `yaml:"flush_interval"`
-	QueueSize          int    `yaml:"queue_size"`
-	BackpressurePolicy string `yaml:"backpressure_policy"`
+	URL                 string `yaml:"url"`
+	Job                 string `yaml:"job"`
+	Instance            string `yaml:"instance"`
+	BatchSize           int    `yaml:"batch_size"`
+	FlushInterval       string `yaml:"flush_interval"`
+	QueueSize           int    `yaml:"queue_size"`
+	BackpressurePolicy  string `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // ElasticsearchConfig contains Elasticsearch sink configuration
 type ElasticsearchConfig struct {
-	URLs               []string `yaml:"urls"`
-	Index              string   `yaml:"index"`
-	Username           string   `yaml:"username"`
-	Password           string   `yaml:"password"`
-	APIKey             string   `yaml:"api_key"`
-	BatchSize          int      `yaml:"batch_size"`
-	FlushInterval      string   `yaml:"flush_interval"`
-	QueueSize          int      `yaml:"queue_size"`
-	BackpressurePolicy string   `yaml:"backpressure_policy"`
+	URLs                []string `yaml:"urls"`
+	Index               string   `yaml:"index"`
+	Username            string   `yaml:"username"`
+	Password            string   `yaml:"password"`
+	APIKey              string   `yaml:"api_key"`
+	BatchSize           int      `yaml:"batch_size"`
+	FlushInterval       string   `yaml:"flush_interval"`
+	QueueSize           int      `yaml:"queue_size"`
+	BackpressurePolicy  string   `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // KafkaConfig contains Kafka sink configuration
 type KafkaConfig struct {
-	Brokers            []string `yaml:"brokers"`
-	Topic              string   `yaml:"topic"`
-	QueueSize          int      `yaml:"queue_size"`
-	BackpressurePolicy string   `yaml:"backpressure_policy"`
+	Brokers             []string `yaml:"brokers"`
+	Topic               string   `yaml:"topic"`
+	QueueSize           int      `yaml:"queue_size"`
+	BackpressurePolicy  string   `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // FileConfig contains file-based sink configuration
 type FileConfig struct {
-	Path               string        `yaml:"path"`              // Path to the file, without the filename
-	Prefix             string        `yaml:"prefix"`            // Prefix for the filename, will be appended to the path
-	Format             string        `yaml:"format"`            // json, csv, binary
-	RotationInterval   time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
-	QueueSize          int           `yaml:"queue_size"`
-	BackpressurePolicy string        `yaml:"backpressure_policy"`
+	Path                string        `yaml:"path"`              // Path to the file, without the filename
+	Prefix              string        `yaml:"prefix"`            // Prefix for the filename, will be appended to the path
+	Format              string        `yaml:"format"`            // json, csv, binary
+	RotationInterval    time.Duration `yaml:"rotation_interval"` // 24h, 1h, 10m, etc.
+	QueueSize           int           `yaml:"queue_size"`
+	BackpressurePolicy  string        `yaml:"backpressure_policy"`
+	MessageFilterConfig `yaml:",inline"`
 }
 
 // LoggingConfig contains logging configuration
@@ -213,47 +228,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", ErrFailedToParseConfigFile, err)
 	}
 
-	if err := validateRelayMode(&config.Relay); err != nil {
-		return nil, fmt.Errorf("invalid relay mode %q: %w", config.Relay.Mode, err)
-	}
-
-	if config.Relay.Mode == MAVLinkMode1To1 {
-		if len(config.MAVLink.Endpoints) == 0 {
-			return nil, ErrNoEndpoints
-		}
-
-		processedEndpoints := []MAVLinkEndpoint{}
-		for _, endpoint := range config.MAVLink.Endpoints {
-			if err := validateEndpoint(&endpoint); err != nil {
-				slog.Warn("invalid MAVLink endpoint", "name", endpoint.Name, "error", err.Error())
-				continue
-			}
-			processedEndpoints = append(processedEndpoints, endpoint)
-		}
-
-		if len(processedEndpoints) == 0 {
-			return nil, ErrNoValidEndpoints
-		}
-
-		config.MAVLink.Endpoints = processedEndpoints
-	}
-
-	// Set defaults
-	if config.Relay.BufferSize == 0 {
-		config.Relay.BufferSize = 1000
-	}
-	if config.Relay.GRPCPort == 0 {
-		config.Relay.GRPCPort = 50051
-	}
-	if config.MAVLink.DialectName == "" {
-		config.MAVLink.DialectName = "common"
-	}
-
-	err = validateMavLinkDialect(&config.MAVLink)
-	if err != nil {
-		return nil, fmt.Errorf("invalid MAVLink dialect %q: %w", config.MAVLink.DialectName, err)
-	}
-
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
 	}
@@ -263,64 +237,36 @@ func Load(path string) (*Config, error) {
 	if config.Logging.Output == "" {
 		config.Logging.Output = "stdout"
 	}
+	if config.Telemetry.Enabled {
+		if config.Telemetry.Backend == "" {
+			config.Telemetry.Backend = "influxdb3"
+		}
+		if config.Telemetry.QueueCapacity <= 0 {
+			config.Telemetry.QueueCapacity = 10_000
+		}
+		if config.Telemetry.Workers <= 0 {
+			config.Telemetry.Workers = 2
+		}
+		if config.Telemetry.BatchSize <= 0 {
+			config.Telemetry.BatchSize = 500
+		}
+		if config.Telemetry.FlushInterval <= 0 {
+			config.Telemetry.FlushInterval = time.Second
+		}
+		if config.Telemetry.EnqueueTimeout <= 0 {
+			config.Telemetry.EnqueueTimeout = 100 * time.Millisecond
+		}
+		if config.Telemetry.WriteTimeout <= 0 {
+			config.Telemetry.WriteTimeout = 5 * time.Second
+		}
+		if config.Telemetry.MaxRetries == nil {
+			defaultMaxRetries := 3
+			config.Telemetry.MaxRetries = &defaultMaxRetries
+		}
+		if config.Telemetry.RetryBackoff <= 0 {
+			config.Telemetry.RetryBackoff = 200 * time.Millisecond
+		}
+	}
 
 	return &config, nil
-}
-
-// resolveDialect returns the gomavlib dialect for the provided name.
-func validateMavLinkDialect(mavLink *MAVLinkConfig) error {
-	switch strings.ToLower(mavLink.DialectName) {
-	case "common":
-		mavLink.Dialect = common.Dialect
-		return nil
-	case "minimal":
-		mavLink.Dialect = minimal.Dialect
-		return nil
-	case "ardupilot", "ardupilotmega", "apm":
-		mavLink.Dialect = ardupilotmega.Dialect
-		return nil
-	case "paparazzi":
-		mavLink.Dialect = paparazzi.Dialect
-		return nil
-	case "standard":
-		mavLink.Dialect = standard.Dialect
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidDialect, mavLink.DialectName)
-	}
-}
-
-func validateEndpoint(endpoint *MAVLinkEndpoint) error {
-	if err := validateEndPointProtocol(endpoint); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateRelayMode(config *RelayConfig) error {
-	switch config.Mode {
-	case MAVLinkMode1To1:
-		return nil
-	case MAVLinkModeMulti:
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidMode, config.Mode)
-	}
-}
-
-func validateEndPointProtocol(endPoint *MAVLinkEndpoint) error {
-	switch endPoint.ProtocolName {
-	case "udp":
-		endPoint.Protocol = MAVLinkEndpointProtocolUDP
-		return nil
-	case "tcp":
-		endPoint.Protocol = MAVLinkEndpointProtocolTCP
-		return nil
-	case "serial":
-		endPoint.Protocol = MAVLinkEndpointProtocolSerial
-		return nil
-	default:
-		return fmt.Errorf("%w: %s", ErrInvalidProtocol, endPoint.ProtocolName)
-	}
 }

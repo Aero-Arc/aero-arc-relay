@@ -1,14 +1,27 @@
-relay:
-  buffer_size: 1000
+registry:
+  enabled: false
+  address: "localhost:9090"
 
-mavlink:
-  dialect: "common"  # common, ardupilot, px4, etc.
-  endpoints:
-    - name: "drone-1"
-      protocol: "udp"
-      drone_id: "drone-alpha"
-      mode: "1:1"
-      port: 14550
+telemetry:
+  enabled: false
+  backend: "influxdb3"
+  relay_id: "relay-local-1"
+  queue_capacity: 10000
+  workers: 2
+  batch_size: 500
+  flush_interval: "1s"
+  enqueue_timeout: "100ms"
+  write_timeout: "5s"
+  max_retries: 3
+  retry_backoff: "200ms"
+  influxdb:
+    host: "http://localhost:8181"
+    token: "${INFLUXDB3_TOKEN}"
+    database: "aero_arc"
+  agent_mappings:
+    "replace-with-agent-id":
+      operator_id: "replace-with-operator-id"
+      aircraft_id: "replace-with-aircraft-id"
 
 sinks:
   file:
@@ -16,12 +29,16 @@ sinks:
     prefix: "telemetry"
     format: "json"
     rotation_interval: "24h"
+    include_messages:
+      - "*"
   # gcs:
   #   bucket: "aero-arc-telemetry-data-dev"
   #   project_id: "aero-arc-relay"
   #   credentials: "/home/makinje/aero-arc-relay/secrets/service-account.json"  # Path to GCP service account JSON file
   #   prefix: "telemetry"
   #   flush_interval: "30s"
+  #   include_messages:
+  #     - "*"
   # s3:
   #   bucket: "aero-arc-relay-telemetry"
   #   region: "us-east-1"
@@ -29,10 +46,14 @@ sinks:
   #   secret_key: "${AWS_SECRET_ACCESS_KEY}"
   #   prefix: "telemetry"
   #   flush_interval: "1m"
+  #   include_messages:
+  #     - "*"
   # kafka:
   #   brokers:
   #     - "localhost:9092"  # For local Kafka container
   #   topic: "quickstart-events"  # Choose your topic name
+  #   include_messages:
+  #     - "GlobalPositionInt"
 
 logging:
   level: "info"

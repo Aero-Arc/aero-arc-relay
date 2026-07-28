@@ -1,3 +1,14 @@
+/*
+Copyright 2025 The Aero Arc Relay Authors.
+
+Licensed under the Mozilla Public License, Version 2.0 (the "License");
+You may obtain a copy of the License at http://mozilla.org.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+*/
+
 package config
 
 import (
@@ -6,28 +17,31 @@ import (
 	"time"
 )
 
-// TestConfigLoad tests loading configuration from YAML
+// TestConfigLoad tests loading configuration from YAML.
 func TestConfigLoad(t *testing.T) {
-	// Create a temporary config file
 	configContent := `
-relay:
-  buffer_size: 2000
-  mode: "1:1"
+registry:
+  enabled: true
+  address: "localhost:9090"
 
-mavlink:
-  endpoints:
-    - name: "drone-1"
-      agent_id: "drone-1"
-      protocol: "udp"
-      port: 14550
-    - name: "drone-2"
-      agent_id: "drone-2"
-      protocol: "tcp"
-      port: 5760
-    - name: "ground-station"
-      agent_id: "ground-station"
-      protocol: "serial"
-      baud_rate: 57600
+telemetry:
+  enabled: true
+  backend: "influxdb3"
+  relay_id: "relay-test"
+  queue_capacity: 123
+  workers: 3
+  batch_size: 25
+  flush_interval: "2s"
+  enqueue_timeout: "50ms"
+  write_timeout: "4s"
+  influxdb:
+    host: "http://localhost:8181"
+    token: "test-token"
+    database: "aero_arc_test"
+  agent_mappings:
+    "agent-1":
+      operator_id: "operator-1"
+      aircraft_id: "aircraft-1"
 
 sinks:
   s3:
@@ -36,17 +50,20 @@ sinks:
     access_key: "test-key"
     secret_key: "test-secret"
     prefix: "telemetry"
-  
   kafka:
     brokers:
       - "localhost:9092"
       - "localhost:9093"
     topic: "telemetry-data"
-  
+    include_messages:
+      - "GlobalPositionInt"
   file:
     path: "/var/log/telemetry"
+    prefix: "telemetry"
     format: "json"
     rotation_interval: "24h"
+    include_messages:
+      - "*"
 
 logging:
   level: "debug"
@@ -55,7 +72,6 @@ logging:
   file: "/var/log/aero-arc-relay/app.log"
 `
 
-	// Write config to temporary file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
@@ -67,59 +83,35 @@ logging:
 	}
 	tmpFile.Close()
 
-	// Load configuration
 	cfg, err := Load(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Test relay configuration
-	if cfg.Relay.BufferSize != 2000 {
-		t.Errorf("Expected buffer size 2000, got %d", cfg.Relay.BufferSize)
+	if !cfg.Registry.Enabled {
+		t.Error("Registry should be enabled")
 	}
-
-	// Test MAVLink configuration
-	if cfg.MAVLink.Dialect == nil {
-		t.Error("MAVLink dialect should be set")
+	if cfg.Registry.Address != "localhost:9090" {
+		t.Errorf("Expected registry address 'localhost:9090', got '%s'", cfg.Registry.Address)
 	}
-
-	if len(cfg.MAVLink.Endpoints) != 3 {
-		t.Errorf("Expected 3 endpoints, got %d", len(cfg.MAVLink.Endpoints))
+	if !cfg.Telemetry.Enabled {
+		t.Error("Telemetry should be enabled")
 	}
-
-	// Test endpoints
-	expectedEndpoints := []struct {
-		name     string
-		agentID  string
-		protocol MAVLinkEndpointProtocol
-		port     int
-		baudRate int
-	}{
-		{"drone-1", "drone-1", MAVLinkEndpointProtocolUDP, 14550, 0},
-		{"drone-2", "drone-2", MAVLinkEndpointProtocolTCP, 5760, 0},
-		{"ground-station", "ground-station", MAVLinkEndpointProtocolSerial, 0, 57600},
+	if cfg.Telemetry.Backend != "influxdb3" {
+		t.Errorf("Expected telemetry backend 'influxdb3', got '%s'", cfg.Telemetry.Backend)
 	}
-
-	for i, expected := range expectedEndpoints {
-		endpoint := cfg.MAVLink.Endpoints[i]
-		if endpoint.Name != expected.name {
-			t.Errorf("Endpoint %d: Expected name '%s', got '%s'", i, expected.name, endpoint.Name)
-		}
-		if endpoint.AgentID != expected.agentID {
-			t.Errorf("Endpoint %d: Expected agent ID '%s', got '%s'", i, expected.agentID, endpoint.AgentID)
-		}
-		if endpoint.Protocol != expected.protocol {
-			t.Errorf("Endpoint %d: Expected protocol '%s', got '%s'", i, expected.protocol, endpoint.Protocol)
-		}
-		if endpoint.Port != expected.port {
-			t.Errorf("Endpoint %d: Expected port %d, got %d", i, expected.port, endpoint.Port)
-		}
-		if endpoint.BaudRate != expected.baudRate {
-			t.Errorf("Endpoint %d: Expected baud rate %d, got %d", i, expected.baudRate, endpoint.BaudRate)
-		}
+	if cfg.Telemetry.InfluxDB == nil || cfg.Telemetry.InfluxDB.Database != "aero_arc_test" {
+		t.Fatalf("unexpected normalized InfluxDB config: %#v", cfg.Telemetry.InfluxDB)
 	}
-
-	// Test S3 configuration
+	if cfg.Telemetry.QueueCapacity != 123 || cfg.Telemetry.Workers != 3 || cfg.Telemetry.BatchSize != 25 {
+		t.Errorf("unexpected telemetry writer sizing: %#v", cfg.Telemetry)
+	}
+	if cfg.Telemetry.MaxRetries == nil || *cfg.Telemetry.MaxRetries != 3 {
+		t.Errorf("default telemetry max retries = %v, want 3", cfg.Telemetry.MaxRetries)
+	}
+	if cfg.Telemetry.AgentMappings["agent-1"].AircraftID != "aircraft-1" {
+		t.Errorf("unexpected agent mapping: %#v", cfg.Telemetry.AgentMappings)
+	}
 	if cfg.Sinks.S3 == nil {
 		t.Error("S3 sink should be configured")
 	} else {
@@ -134,7 +126,6 @@ logging:
 		}
 	}
 
-	// Test Kafka configuration
 	if cfg.Sinks.Kafka == nil {
 		t.Error("Kafka sink should be configured")
 	} else {
@@ -144,9 +135,11 @@ logging:
 		if cfg.Sinks.Kafka.Topic != "telemetry-data" {
 			t.Errorf("Expected Kafka topic 'telemetry-data', got '%s'", cfg.Sinks.Kafka.Topic)
 		}
+		if len(cfg.Sinks.Kafka.IncludeMessages) != 1 || cfg.Sinks.Kafka.IncludeMessages[0] != "GlobalPositionInt" {
+			t.Errorf("Expected Kafka include_messages [GlobalPositionInt], got %#v", cfg.Sinks.Kafka.IncludeMessages)
+		}
 	}
 
-	// Test file configuration
 	if cfg.Sinks.File == nil {
 		t.Error("File sink should be configured")
 	} else {
@@ -159,9 +152,11 @@ logging:
 		if cfg.Sinks.File.RotationInterval != 24*time.Hour {
 			t.Errorf("Expected file rotation '24h', got '%s'", cfg.Sinks.File.RotationInterval)
 		}
+		if len(cfg.Sinks.File.IncludeMessages) != 1 || cfg.Sinks.File.IncludeMessages[0] != "*" {
+			t.Errorf("Expected file include_messages [*], got %#v", cfg.Sinks.File.IncludeMessages)
+		}
 	}
 
-	// Test logging configuration
 	if cfg.Logging.Level != "debug" {
 		t.Errorf("Expected log level 'debug', got '%s'", cfg.Logging.Level)
 	}
@@ -176,27 +171,43 @@ logging:
 	}
 }
 
-// TestConfigDefaults tests that default values are applied correctly
-func TestConfigDefaults(t *testing.T) {
-	// Create a minimal config file
+func TestConfigPreservesExplicitZeroTelemetryRetries(t *testing.T) {
 	configContent := `
-mavlink:
-  endpoints:
-    - name: "drone-1"
-      agent_id: "drone-1"
-      protocol: "udp"
-      port: 14550
+telemetry:
+  enabled: true
+  backend: noop
+  max_retries: 0
+`
+	tmpFile, err := os.CreateTemp("", "test-config-zero-retries-*.yaml")
+	if err != nil {
+		t.Fatalf("create temporary config: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatalf("write temporary config: %v", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("close temporary config: %v", err)
+	}
 
-relay:
-  mode: "1:1"
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Telemetry.MaxRetries == nil || *cfg.Telemetry.MaxRetries != 0 {
+		t.Fatalf("telemetry max retries = %v, want explicit zero", cfg.Telemetry.MaxRetries)
+	}
+}
 
+// TestConfigDefaults tests that default values are applied correctly.
+func TestConfigDefaults(t *testing.T) {
+	configContent := `
 sinks:
   file:
     path: "/tmp/test"
     format: "json"
 `
 
-	// Write config to temporary file
 	tmpFile, err := os.CreateTemp("", "test-config-minimal-*.yaml")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
@@ -208,15 +219,9 @@ sinks:
 	}
 	tmpFile.Close()
 
-	// Load configuration
 	cfg, err := Load(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Test default values
-	if cfg.Relay.BufferSize != 1000 {
-		t.Errorf("Expected default buffer size 1000, got %d", cfg.Relay.BufferSize)
 	}
 
 	if cfg.Logging.Level != "info" {
@@ -232,43 +237,7 @@ sinks:
 	}
 }
 
-// TestConfigValidation tests configuration validation
-func TestConfigValidation(t *testing.T) {
-	// Test empty endpoints
-	configContent := `
-mavlink:
-  endpoints: []
-
-relay:
-  mode: "1:1"
-
-sinks:
-  file:
-    path: "/tmp/test"
-    format: "json"
-`
-
-	tmpFile, err := os.CreateTemp("", "test-config-empty-*.yaml")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(configContent); err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
-	tmpFile.Close()
-
-	_, err = Load(tmpFile.Name())
-	if err == nil {
-		t.Fatalf("Expected error for empty endpoint list")
-	}
-	if err != ErrNoEndpoints {
-		t.Fatalf("Expected ErrNoEndpoints, got %v", err)
-	}
-}
-
-// TestConfigFileNotFound tests handling of missing config file
+// TestConfigFileNotFound tests handling of missing config file.
 func TestConfigFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/config.yaml")
 	if err == nil {
@@ -276,9 +245,8 @@ func TestConfigFileNotFound(t *testing.T) {
 	}
 }
 
-// TestConfigInvalidYAML tests handling of invalid YAML
+// TestConfigInvalidYAML tests handling of invalid YAML.
 func TestConfigInvalidYAML(t *testing.T) {
-	// Create a file with invalid YAML
 	tmpFile, err := os.CreateTemp("", "test-config-invalid-*.yaml")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
@@ -286,14 +254,10 @@ func TestConfigInvalidYAML(t *testing.T) {
 	defer os.Remove(tmpFile.Name())
 
 	invalidYAML := `
-relay:
-  buffer_size: 1000
-mavlink:
-  endpoints:
-    - name: "drone-1"
-      protocol: "udp"
-      address: "192.168.1.100"
-      port: 14550
+sinks:
+  file:
+    path: "/tmp/test"
+    format: "json"
 invalid: yaml: content: [unclosed
 `
 
@@ -305,76 +269,5 @@ invalid: yaml: content: [unclosed
 	_, err = Load(tmpFile.Name())
 	if err == nil {
 		t.Error("Expected error for invalid YAML")
-	}
-}
-
-// TestConfigEndpointTypes tests different endpoint configurations
-func TestConfigEndpointTypes(t *testing.T) {
-	configContent := `
-mavlink:
-  endpoints:
-    - name: "udp-endpoint"
-      agent_id: "udp-endpoint"
-      protocol: "udp"
-      port: 14550
-    - name: "tcp-endpoint"
-      agent_id: "tcp-endpoint"
-      protocol: "tcp"
-      port: 5760
-    - name: "serial-endpoint"
-      agent_id: "serial-endpoint"
-      protocol: "serial"
-      baud_rate: 57600
-
-relay:
-  mode: "1:1"
-
-sinks:
-  file:
-    path: "/tmp/test"
-    format: "json"
-`
-
-	tmpFile, err := os.CreateTemp("", "test-config-endpoints-*.yaml")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(configContent); err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
-	tmpFile.Close()
-
-	cfg, err := Load(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Test UDP endpoint
-	udpEndpoint := cfg.MAVLink.Endpoints[0]
-	if udpEndpoint.Protocol != MAVLinkEndpointProtocolUDP {
-		t.Errorf("Expected UDP protocol, got %s", udpEndpoint.Protocol)
-	}
-	if udpEndpoint.Port != 14550 {
-		t.Errorf("Expected port 14550, got %d", udpEndpoint.Port)
-	}
-
-	// Test TCP endpoint
-	tcpEndpoint := cfg.MAVLink.Endpoints[1]
-	if tcpEndpoint.Protocol != MAVLinkEndpointProtocolTCP {
-		t.Errorf("Expected TCP protocol, got %s", tcpEndpoint.Protocol)
-	}
-	if tcpEndpoint.Port != 5760 {
-		t.Errorf("Expected port 5760, got %d", tcpEndpoint.Port)
-	}
-
-	// Test serial endpoint
-	serialEndpoint := cfg.MAVLink.Endpoints[2]
-	if serialEndpoint.Protocol != MAVLinkEndpointProtocolSerial {
-		t.Errorf("Expected serial protocol, got %s", serialEndpoint.Protocol)
-	}
-	if serialEndpoint.BaudRate != 57600 {
-		t.Errorf("Expected baud rate 57600, got %d", serialEndpoint.BaudRate)
 	}
 }
