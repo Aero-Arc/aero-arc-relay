@@ -90,6 +90,23 @@ Before opening a pull request:
 Review feedback is part of the contribution process. Please keep discussion
 constructive and update the pull request as needed.
 
+External pull request workflows require maintainer approval before they run.
+Do not include secrets or credentials in code, tests, logs, or workflow files.
+
+## Developer Certificate of Origin
+
+Every commit must include a `Signed-off-by` trailer certifying the
+[Developer Certificate of Origin](https://developercertificate.org/).
+
+Create signed-off commits with:
+
+```sh
+git commit -s
+```
+
+The name and email in the trailer must identify the contributor. Pull requests
+cannot merge until every commit passes the repository's DCO check.
+
 ## Licensing
 
 Aero Arc Relay is licensed under the Mozilla Public License 2.0. By submitting
