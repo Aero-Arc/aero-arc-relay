@@ -98,6 +98,38 @@ type blockingRegisterAgentRegistrar struct {
 	releaseRegister chan struct{}
 }
 
+type blockingReplacementAgentRegistrar struct {
+	mu              sync.Mutex
+	registrations   int
+	registerStarted chan struct{}
+	releaseRegister chan struct{}
+}
+
+func (r *blockingReplacementAgentRegistrar) RegisterAgent(ctx context.Context, _ string) error {
+	r.mu.Lock()
+	r.registrations++
+	call := r.registrations
+	r.mu.Unlock()
+	if call == 1 {
+		return nil
+	}
+	if call == 2 {
+		select {
+		case r.registerStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.releaseRegister:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (*blockingReplacementAgentRegistrar) StopAgent(string) {}
+
 func (r *blockingRegisterAgentRegistrar) RegisterAgent(ctx context.Context, _ string) error {
 	select {
 	case r.registerStarted <- struct{}{}:
@@ -329,6 +361,103 @@ func TestTelemetryStreamFailedReplacementPreservesAcceptedStream(t *testing.T) {
 	}
 	if _, stopped := reporter.counts(); stopped != 1 {
 		t.Fatalf("accepted stream cleanup stopped liveness %d times, want 1", stopped)
+	}
+}
+
+func TestPendingRegistryReplacementDoesNotBlockAcceptedStreamACK(t *testing.T) {
+	reporter := &blockingReplacementAgentRegistrar{
+		registerStarted: make(chan struct{}, 1),
+		releaseRegister: make(chan struct{}),
+	}
+	relay := relayWithRegistryReporter(t, reporter)
+	const agentID = "agent-1"
+	session := &DroneSession{
+		agentID: agentID, SessionID: "session-1", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = session
+
+	original, cancelOriginal := newAgentTelemetryStream(agentID, session.SessionID)
+	defer cancelOriginal()
+	originalErr := make(chan error, 1)
+	go func() { originalErr <- relay.TelemetryStream(original) }()
+	waitForStreamGeneration(t, session, 1)
+
+	replacement, cancelReplacement := newAgentTelemetryStream(agentID, session.SessionID)
+	defer cancelReplacement()
+	replacementErr := make(chan error, 1)
+	go func() { replacementErr <- relay.TelemetryStream(replacement) }()
+	select {
+	case <-reporter.registerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("replacement registry publication did not start")
+	}
+
+	original.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: session.SessionID, Seq: 52,
+		MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+	})
+	select {
+	case message := <-original.sentAckChan:
+		if ack := message.GetTelemetryAck(); ack == nil || ack.Seq != 52 || ack.Status != agentv1.TelemetryAck_STATUS_OK {
+			t.Fatalf("original stream ACK = %#v", ack)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("registry publication blocked the accepted stream ACK")
+	}
+
+	close(reporter.releaseRegister)
+	close(replacement.recvChan)
+	if err := <-replacementErr; err != nil {
+		t.Fatalf("replacement stream close error = %v", err)
+	}
+	close(original.recvChan)
+	if err := <-originalErr; err != nil {
+		t.Fatalf("original stream close error = %v", err)
+	}
+}
+
+func TestSupersededPendingPublicationCannotReplaceAcceptedStream(t *testing.T) {
+	reporter := &blockingRegisterAgentRegistrar{
+		registerStarted: make(chan struct{}, 1),
+		releaseRegister: make(chan struct{}),
+	}
+	relay := relayWithRegistryReporter(t, reporter)
+	const agentID = "agent-1"
+	original := &telemetryStreamBinding{generation: 1}
+	session := &DroneSession{
+		agentID: agentID, SessionID: "session-1", stream: original, streamGeneration: 1,
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions[agentID] = session
+
+	_, first, _, err := relay.updateStream(agentID, session.SessionID, &mockTelemetryStream{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- relay.registerActiveAgent(context.Background(), agentID, session, first, original)
+	}()
+	<-reporter.registerStarted
+
+	_, second, _, err := relay.updateStream(agentID, session.SessionID, &mockTelemetryStream{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(reporter.releaseRegister)
+	if err := <-firstResult; !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("superseded publication error = %v, want ErrSessionNotFound", err)
+	}
+	relay.deleteStream(agentID, session, first)
+
+	if err := relay.registerActiveAgent(context.Background(), agentID, session, second, original); err != nil {
+		t.Fatalf("latest publication: %v", err)
+	}
+	session.sessionMu.RLock()
+	current := session.stream
+	session.sessionMu.RUnlock()
+	if current != second || first.closed == false || original.closed {
+		t.Fatalf("stream state after supersession: current=%p firstClosed=%t originalClosed=%t", current, first.closed, original.closed)
 	}
 }
 

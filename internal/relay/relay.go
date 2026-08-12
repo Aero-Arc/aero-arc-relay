@@ -57,6 +57,7 @@ type Relay struct {
 	closeOnce          sync.Once
 	closeErr           error
 	registryReporter   agentRegistryReporter
+	registryStarter    registryReporterStarter
 	agentAuthenticator func(context.Context, string) error
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
@@ -67,8 +68,13 @@ type agentRegistryReporter interface {
 	StopAgent(string)
 }
 
+type registryReporterStarter interface {
+	Start(context.Context) error
+}
+
 type DroneSession struct {
 	stream           *telemetryStreamBinding
+	pendingStream    *telemetryStreamBinding
 	streamGeneration uint64
 	agentID          string
 	SessionID        string
@@ -85,6 +91,7 @@ type DroneSession struct {
 	pendingMu        sync.Mutex
 	pending          map[string]chan *agentv1.OperationContextCommandAck
 	ownershipMu      sync.RWMutex
+	publicationMu    sync.Mutex
 	retired          bool
 }
 
@@ -173,8 +180,9 @@ func (r *Relay) Start(ctx context.Context) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.GrpcPort))
 	if err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTCPListener", slog.String("error", err.Error()))
-		return ErrCreatingTCPListener
+		return r.failStart(ctx, ErrCreatingTCPListener)
 	}
+	defer func() { _ = lis.Close() }()
 
 	var creds credentials.TransportCredentials
 	var homeDir string
@@ -184,7 +192,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		homeDir, err = os.UserHomeDir()
 		if err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
-			return ErrGettingHomeDir
+			return r.failStart(ctx, ErrGettingHomeDir)
 		}
 
 		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
@@ -194,7 +202,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	if err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTLSCredentials", slog.String("error", err.Error()))
-		return ErrCreatingTLSCredentials
+		return r.failStart(ctx, ErrCreatingTLSCredentials)
 	}
 
 	r.grpcServer = grpc.NewServer(grpc.Creds(creds))
@@ -202,6 +210,12 @@ func (r *Relay) Start(ctx context.Context) error {
 	// Register gRPC servers
 	relayv1.RegisterRelayControlServer(r.grpcServer, r)
 	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
+
+	if r.registryStarter != nil {
+		if err := r.registryStarter.Start(ctx); err != nil {
+			return r.failStart(ctx, fmt.Errorf("publish relay to registry: %w", err))
+		}
+	}
 
 	// Start gRPC server in non blocking goroutine
 	go func() {
@@ -293,6 +307,17 @@ func (r *Relay) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *Relay) failStart(_ context.Context, startErr error) error {
+	// Startup cleanup must outlive a canceled or expired startup context; otherwise
+	// a failed publication could leave its reporter connection or workers alive.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.Close(closeCtx); err != nil {
+		return errors.Join(startErr, fmt.Errorf("clean up failed relay start: %w", err))
+	}
+	return startErr
+}
+
 // Close drains and closes all configured outputs. It is separate from the
 // network-server lifecycle so embedders can guarantee that asynchronous
 // telemetry batches are flushed during controlled shutdown.
@@ -348,6 +373,11 @@ func (r *Relay) initializeOutputsWith(
 			return fmt.Errorf("registry reporter does not implement agent liveness")
 		}
 		r.registryReporter = reporter
+		starter, ok := consumer.(registryReporterStarter)
+		if !ok {
+			return fmt.Errorf("registry reporter does not implement relay lifecycle")
+		}
+		r.registryStarter = starter
 	}
 
 	if r.config.Telemetry.Enabled {

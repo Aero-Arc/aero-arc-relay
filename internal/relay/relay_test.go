@@ -13,8 +13,18 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,6 +180,153 @@ func TestRelayCloseIsIdempotentAndRetainsFirstError(t *testing.T) {
 	if consumer.closeCalls != 1 {
 		t.Fatalf("consumer Close() calls = %d, want 1", consumer.closeCalls)
 	}
+}
+
+func TestRelayStartBindFailureDoesNotPublishAndClosesOutputs(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+	reporter := &closeTrackingConsumer{}
+	relay := relayForStartTest(&config.Config{GrpcPort: port}, reporter)
+
+	err = relay.Start(context.Background())
+	if !errors.Is(err, ErrCreatingTCPListener) {
+		t.Fatalf("Start() error = %v, want ErrCreatingTCPListener", err)
+	}
+	if reporter.startCalls != 0 {
+		t.Fatalf("registry publication calls = %d, want 0", reporter.startCalls)
+	}
+	if reporter.closeCalls != 1 {
+		t.Fatalf("reporter close calls = %d, want 1", reporter.closeCalls)
+	}
+}
+
+func TestRelayStartTLSFailureDoesNotPublishAndClosesListener(t *testing.T) {
+	port := unusedTCPPort(t)
+	reporter := &closeTrackingConsumer{}
+	relay := relayForStartTest(&config.Config{
+		GrpcPort: port, TLSCertPath: filepath.Join(t.TempDir(), "missing.crt"), TLSKeyPath: filepath.Join(t.TempDir(), "missing.key"),
+	}, reporter)
+
+	err := relay.Start(context.Background())
+	if !errors.Is(err, ErrCreatingTLSCredentials) {
+		t.Fatalf("Start() error = %v, want ErrCreatingTLSCredentials", err)
+	}
+	if reporter.startCalls != 0 {
+		t.Fatalf("registry publication calls = %d, want 0", reporter.startCalls)
+	}
+	if reporter.closeCalls != 1 {
+		t.Fatalf("reporter close calls = %d, want 1", reporter.closeCalls)
+	}
+	listener, listenErr := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if listenErr != nil {
+		t.Fatalf("startup failure leaked listener: %v", listenErr)
+	}
+	_ = listener.Close()
+}
+
+func TestRelayStartPublishesOnlyAfterListenerAndTLSAreReady(t *testing.T) {
+	port := unusedTCPPort(t)
+	certPath, keyPath := writeTestCertificate(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	reporter := &closeTrackingConsumer{}
+	reporter.onStart = func() error {
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			_ = listener.Close()
+			return errors.New("relay listener was not bound before registry publication")
+		}
+		cancel()
+		return nil
+	}
+	relay := relayForStartTest(&config.Config{
+		GrpcPort: port, TLSCertPath: certPath, TLSKeyPath: keyPath,
+	}, reporter)
+
+	if err := relay.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if reporter.startCalls != 1 {
+		t.Fatalf("registry publication calls = %d, want 1", reporter.startCalls)
+	}
+	if reporter.closeCalls != 1 {
+		t.Fatalf("reporter close calls = %d, want 1", reporter.closeCalls)
+	}
+}
+
+func TestRelayStartRegistryFailureClosesReporterAndListener(t *testing.T) {
+	port := unusedTCPPort(t)
+	certPath, keyPath := writeTestCertificate(t)
+	reporter := &closeTrackingConsumer{startErr: errors.New("registry unavailable")}
+	relay := relayForStartTest(&config.Config{
+		GrpcPort: port, TLSCertPath: certPath, TLSKeyPath: keyPath,
+	}, reporter)
+
+	err := relay.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "registry unavailable") {
+		t.Fatalf("Start() error = %v, want registry failure", err)
+	}
+	if reporter.startCalls != 1 || reporter.closeCalls != 1 {
+		t.Fatalf("reporter lifecycle starts=%d closes=%d, want 1/1", reporter.startCalls, reporter.closeCalls)
+	}
+	listener, listenErr := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if listenErr != nil {
+		t.Fatalf("registry failure leaked listener: %v", listenErr)
+	}
+	_ = listener.Close()
+}
+
+func relayForStartTest(cfg *config.Config, reporter *closeTrackingConsumer) *Relay {
+	router := outputs.NewRouter()
+	router.AddConsumer(reporter, outputs.MessageFilter{Include: []string{"*"}})
+	return &Relay{
+		config: cfg, router: router, grpcSessions: make(map[string]*DroneSession),
+		registryReporter: reporter, registryStarter: reporter, outputsInitialized: true,
+	}
+}
+
+func unusedTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func writeTestCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "relay.crt")
+	keyPath := filepath.Join(dir, "relay.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
 }
 
 func TestNormalizedTelemetryRequiresRelayID(t *testing.T) {
@@ -433,6 +590,9 @@ type closeTrackingConsumer struct {
 	closed     bool
 	closeCalls int
 	closeErr   error
+	startCalls int
+	startErr   error
+	onStart    func() error
 }
 
 func (c *closeTrackingConsumer) Name() string { return "close-tracking" }
@@ -444,6 +604,16 @@ func (c *closeTrackingConsumer) WriteEnvelope(context.Context, telemetry.Telemet
 func (c *closeTrackingConsumer) RegisterAgent(context.Context, string) error { return nil }
 
 func (c *closeTrackingConsumer) StopAgent(string) {}
+
+func (c *closeTrackingConsumer) Start(context.Context) error {
+	c.startCalls++
+	if c.onStart != nil {
+		if err := c.onStart(); err != nil {
+			return err
+		}
+	}
+	return c.startErr
+}
 
 func (c *closeTrackingConsumer) Close(context.Context) error {
 	c.closed = true

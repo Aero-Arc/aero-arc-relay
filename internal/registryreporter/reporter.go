@@ -61,7 +61,10 @@ type Reporter struct {
 	workerCtx context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	startMu   sync.Mutex
 	closeOnce sync.Once
+	connOnce  sync.Once
+	connErr   error
 
 	mu                sync.Mutex
 	started           bool
@@ -107,12 +110,33 @@ func New(ctx context.Context, config Config) (*Reporter, error) {
 	}
 	reporter := newWithClient(config, registryv1.NewAeroRegistryClient(conn))
 	reporter.conn = conn
-	if err := reporter.registerRelay(ctx); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	reporter.start()
 	return reporter, nil
+}
+
+// Start publishes the relay and starts its liveness workers. Construction is
+// intentionally separate so callers can bind and validate their serving
+// listener before advertising the relay as available.
+func (r *Reporter) Start(ctx context.Context) error {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
+
+	r.mu.Lock()
+	started := r.started
+	r.mu.Unlock()
+	if started {
+		return nil
+	}
+	if err := r.workerCtx.Err(); err != nil {
+		return fmt.Errorf("start closed registry reporter: %w", err)
+	}
+	if err := r.registerRelay(ctx); err != nil {
+		return err
+	}
+	if err := r.workerCtx.Err(); err != nil {
+		return fmt.Errorf("start closed registry reporter: %w", err)
+	}
+	r.start()
+	return nil
 }
 
 func waitForReady(ctx context.Context, conn *grpc.ClientConn) error {
@@ -421,7 +445,9 @@ func isCanceled(err error) bool {
 }
 
 func (r *Reporter) Close(ctx context.Context) error {
+	r.startMu.Lock()
 	r.closeOnce.Do(r.cancel)
+	r.startMu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		r.wg.Wait()
@@ -433,9 +459,11 @@ func (r *Reporter) Close(ctx context.Context) error {
 		return fmt.Errorf("stop registry reporter: %w", ctx.Err())
 	}
 	if r.conn != nil {
-		if err := r.conn.Close(); err != nil {
-			return fmt.Errorf("close registry connection: %w", err)
-		}
+		r.connOnce.Do(func() {
+			if err := r.conn.Close(); err != nil {
+				r.connErr = fmt.Errorf("close registry connection: %w", err)
+			}
+		})
 	}
-	return nil
+	return r.connErr
 }

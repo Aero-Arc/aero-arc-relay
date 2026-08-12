@@ -19,6 +19,7 @@ type fakeRegistryClient struct {
 
 	relayRegistrations int
 	relayHeartbeats    int
+	relayRegisterErr   error
 	agentRegistrations map[string]int
 	agentHeartbeats    map[string]int
 	agentRegisterErr   error
@@ -67,7 +68,9 @@ func (f *fakeRegistryClient) RegisterRelay(context.Context, *registryv1.Register
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.relayRegistrations++
-	return &registryv1.RegisterRelayResponse{}, nil
+	err := f.relayRegisterErr
+	f.relayRegisterErr = nil
+	return &registryv1.RegisterRelayResponse{}, err
 }
 
 func (f *fakeRegistryClient) HeartbeatRelay(context.Context, *registryv1.HeartbeatRelayRequest, ...grpc.CallOption) (*registryv1.HeartbeatRelayResponse, error) {
@@ -117,6 +120,73 @@ func TestReporterTelemetryAdmissionDoesNotCallRegistry(t *testing.T) {
 	}
 	if got := client.agentHeartbeats["agent-1"]; got != 0 {
 		t.Fatalf("telemetry admission made %d registry heartbeat calls, want 0", got)
+	}
+}
+
+func TestReporterStartRegistersThenHeartbeatsRelay(t *testing.T) {
+	client := newFakeRegistryClient()
+	reporter := newWithClient(Config{
+		RelayID: "relay-1", HeartbeatInterval: 5 * time.Millisecond, RequestTimeout: time.Second,
+	}, client)
+	t.Cleanup(func() { _ = reporter.Close(context.Background()) })
+
+	time.Sleep(15 * time.Millisecond)
+	client.mu.Lock()
+	registrationsBeforeStart := client.relayRegistrations
+	heartbeatsBeforeStart := client.relayHeartbeats
+	client.mu.Unlock()
+	if registrationsBeforeStart != 0 || heartbeatsBeforeStart != 0 {
+		t.Fatalf("relay was published before Start: registrations=%d heartbeats=%d", registrationsBeforeStart, heartbeatsBeforeStart)
+	}
+
+	if err := reporter.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.Start(context.Background()); err != nil {
+		t.Fatalf("idempotent Start: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		client.mu.Lock()
+		registrations := client.relayRegistrations
+		heartbeats := client.relayHeartbeats
+		client.mu.Unlock()
+		if registrations == 1 && heartbeats > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("started reporter did not register and heartbeat relay")
+}
+
+func TestReporterStartCanRetryFailedRegistrationWithoutStartingHeartbeat(t *testing.T) {
+	client := newFakeRegistryClient()
+	client.relayRegisterErr = errors.New("registry unavailable")
+	reporter := newWithClient(Config{
+		RelayID: "relay-1", HeartbeatInterval: 5 * time.Millisecond, RequestTimeout: time.Second,
+	}, client)
+	t.Cleanup(func() { _ = reporter.Close(context.Background()) })
+
+	if err := reporter.Start(context.Background()); err == nil {
+		t.Fatal("expected first Start to fail")
+	}
+	time.Sleep(15 * time.Millisecond)
+	client.mu.Lock()
+	heartbeatsAfterFailure := client.relayHeartbeats
+	client.mu.Unlock()
+	if heartbeatsAfterFailure != 0 {
+		t.Fatalf("heartbeats after failed registration = %d, want 0", heartbeatsAfterFailure)
+	}
+
+	if err := reporter.Start(context.Background()); err != nil {
+		t.Fatalf("retry Start: %v", err)
+	}
+	client.mu.Lock()
+	registrations := client.relayRegistrations
+	client.mu.Unlock()
+	if registrations != 2 {
+		t.Fatalf("relay registrations = %d, want 2", registrations)
 	}
 }
 

@@ -84,6 +84,9 @@ func TestReporterPublishesThroughGRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reporter.Close(context.Background()) })
+	if err := reporter.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
 		t.Fatal(err)
 	}
