@@ -1,3 +1,63 @@
+### Registry reporting
+
+The registry is the current-state control plane. When enabled, Relay registers
+its routable address during startup, renews relay liveness periodically, and
+registers agents when their telemetry stream becomes active. An independent
+background heartbeat keeps every active stream live; Registry RPC latency is
+never placed on the telemetry admission/ACK path. Telemetry payloads are not
+stored in the registry. The reporter is an explicit control-plane lifecycle
+service and is not registered with the telemetry output Router.
+
+```yaml
+registry:
+  enabled: true
+  address: "registry.internal:50051"
+  relay_id: "relay-us-central-1"
+  advertise_address: "relay-us-central-1.internal"
+  heartbeat_interval: "10s"
+  request_timeout: "5s"
+  tls:
+    enabled: true
+    ca_file: "/run/secrets/registry-ca.pem"
+    server_name: "registry.internal"
+```
+
+`relay_id` may be omitted only when `telemetry.relay_id` supplies the same
+identity. `advertise_address` must be reachable by trusted control-plane
+clients; the Relay gRPC port comes from the process `--grpc-port` flag. TLS is
+recommended outside isolated local development. If registry reporting cannot
+initialize, Relay startup fails. If an agent cannot be registered, its Relay
+telemetry stream is rejected so dashboards and routing never silently omit an
+accepted connection. The initial registration handshake alone does not make an
+agent appear connected. Registry heartbeat failures do not reject
+already-admitted telemetry and are retried.
+
+Agent registrations and heartbeats both carry the configured `relay_id`.
+Registry accepts a heartbeat only from the Relay that currently owns the Agent
+placement, preventing an older Relay connection from extending a reassigned
+Agent's liveness. Deploy the additive Protos contract first, then all Relays,
+and enable strict Registry validation last. An older Registry ignores the new
+field, but a strict Registry rejects heartbeats from an older Relay that omits
+it. See [deployment.md](deployment.md#agent-heartbeat-owner-rollout) for rollout
+and rollback ordering.
+
+Registry publication also requires the Agent-facing session to be
+authenticated. Configure a distinct high-entropy bearer token for every Agent:
+
+```yaml
+agent_auth:
+  tokens:
+    "agent-id": "${AGENT_ID_TOKEN}"
+```
+
+The Agent sends `authorization: Bearer <token>` metadata on both `Register` and
+`TelemetryStream`. The stream additionally sends the `aero-arc-session-id`
+returned by `Register`; Relay verifies the credential and session binding
+before publishing liveness. Supply tokens through environment-backed secrets,
+never literal values committed to a configuration file. Registry-enabled
+startup rejects an empty credential map. Registry-disabled local/demo flows may
+omit it.
+
 ### Normalized telemetry
 
 The official Aero Arc telemetry path uses InfluxDB 3 Core and is configured
@@ -39,6 +99,13 @@ Omitting `max_retries` defaults backend writes to three retries; setting it to
 
 Set `backend: "noop"` only when normalized telemetry is deliberately disabled
 for tests or local routing demonstrations.
+
+The normalized path already accepts `GLOBAL_POSITION_INT`, `BATTERY_STATUS`,
+`HEARTBEAT`, `SYS_STATUS`, `VFR_HUD`, `EXTENDED_SYS_STATE`, `GPS_RAW_INT`, and
+`SYSTEM_TIME`. Each message is stored as an independent observation with its
+own event time. API consumers must query the latest row per message group and
+must not pretend that position, battery, and vehicle state were sampled
+together.
 
 ### Data Sinks
 

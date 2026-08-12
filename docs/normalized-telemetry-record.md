@@ -1,6 +1,6 @@
 # Normalized Telemetry Record Contract
 
-Status: proposed contract for the first normalized telemetry slice
+Status: implemented contract for the first normalized telemetry slice
 
 ## Purpose
 

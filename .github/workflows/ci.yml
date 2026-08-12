@@ -66,4 +66,4 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -tags=integration -timeout=10m -v ./internal/integration
+      - run: go test -tags=integration -timeout=10m -v ./internal/integration ./internal/registryreporter ./internal/relay

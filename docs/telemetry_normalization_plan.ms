@@ -40,7 +40,7 @@ File, Kafka, S3, and similar sinks receive the generic envelope. This is desirab
 .NH 2
 Internal outputs
 .PP
-The registry reporter and telemetry writer are currently no-op consumers. Their routing boundaries exist, but they do not yet update registry state or persist normalized telemetry.
+The registry reporter publishes Relay and Agent liveness to the control plane, and the telemetry writer persists normalized observations to InfluxDB. Their routing boundaries remain independent so registry failures do not turn accepted telemetry into data-plane retries.
 .NH 2
 InfluxDB
 .PP
@@ -204,7 +204,7 @@ internal/telemetrynormalize/
 internal/telemetrywriter/
     writer.go
     store.go
-    noop.go
+    reporter.go
     memory/
     influx/
 .DE

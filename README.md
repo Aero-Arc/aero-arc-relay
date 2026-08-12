@@ -39,6 +39,8 @@ Whether you're running a single SITL instance or a fleet of autonomous aircraft,
   - Apache Kafka - Streaming platform
   - Local file storage with rotation
 - **Prometheus metrics** at `/metrics` endpoint
+- **Registry liveness reporting** for connected Agents and Relay placement
+- **Normalized InfluxDB 3 telemetry** for API current-state and track queries
 - **Health/ready probes** at `/healthz` and `/readyz` for orchestration
 - **Graceful shutdown** with context cancellation for clean container restarts
 - **Environment variable support** for secure credential management

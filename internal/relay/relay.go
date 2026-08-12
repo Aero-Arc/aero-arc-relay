@@ -56,12 +56,31 @@ type Relay struct {
 	sessionsMu         sync.RWMutex
 	closeOnce          sync.Once
 	closeErr           error
+	registryReporter   agentRegistryReporter
+	registryLifecycle  registryLifecycle
+	agentAuthenticator func(context.Context, string) error
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
 
+type agentRegistryReporter interface {
+	RegisterAgent(context.Context, string) error
+	StopAgent(string)
+}
+
+type registryLifecycle interface {
+	Start(context.Context) error
+	Close(context.Context) error
+}
+
+type registryService interface {
+	agentRegistryReporter
+	registryLifecycle
+}
+
 type DroneSession struct {
 	stream           *telemetryStreamBinding
+	pendingStream    *telemetryStreamBinding
 	streamGeneration uint64
 	agentID          string
 	SessionID        string
@@ -78,12 +97,14 @@ type DroneSession struct {
 	pendingMu        sync.Mutex
 	pending          map[string]chan *agentv1.OperationContextCommandAck
 	ownershipMu      sync.RWMutex
+	publicationMu    sync.Mutex
 	retired          bool
 }
 
 type telemetryStreamBinding struct {
 	stream     agentv1.AgentGateway_TelemetryStreamServer
 	generation uint64
+	closed     bool
 	sendMu     contextMutex
 }
 
@@ -132,10 +153,18 @@ var (
 
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
+	authenticator, err := newAgentTokenAuthenticator(cfg.AgentAuth.Tokens)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Registry.Enabled && authenticator == nil {
+		return nil, fmt.Errorf("agent authentication is required when registry reporting is enabled")
+	}
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		config:             cfg,
+		sinks:              make([]sinks.Sink, 0),
+		grpcSessions:       make(map[string]*DroneSession),
+		agentAuthenticator: authenticator,
 	}
 
 	if err := relay.initializeOutputs(); err != nil {
@@ -157,8 +186,9 @@ func (r *Relay) Start(ctx context.Context) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.config.GrpcPort))
 	if err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTCPListener", slog.String("error", err.Error()))
-		return ErrCreatingTCPListener
+		return r.failStart(ctx, ErrCreatingTCPListener)
 	}
+	defer func() { _ = lis.Close() }()
 
 	var creds credentials.TransportCredentials
 	var homeDir string
@@ -168,7 +198,7 @@ func (r *Relay) Start(ctx context.Context) error {
 		homeDir, err = os.UserHomeDir()
 		if err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, ErrGettingHomeDir.Error(), slog.String("error", err.Error()))
-			return ErrGettingHomeDir
+			return r.failStart(ctx, ErrGettingHomeDir)
 		}
 
 		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
@@ -178,7 +208,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	if err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "ErrCreatingTLSCredentials", slog.String("error", err.Error()))
-		return ErrCreatingTLSCredentials
+		return r.failStart(ctx, ErrCreatingTLSCredentials)
 	}
 
 	r.grpcServer = grpc.NewServer(grpc.Creds(creds))
@@ -186,6 +216,12 @@ func (r *Relay) Start(ctx context.Context) error {
 	// Register gRPC servers
 	relayv1.RegisterRelayControlServer(r.grpcServer, r)
 	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
+
+	if r.registryLifecycle != nil {
+		if err := r.registryLifecycle.Start(ctx); err != nil {
+			return r.failStart(ctx, fmt.Errorf("publish relay to registry: %w", err))
+		}
+	}
 
 	// Start gRPC server in non blocking goroutine
 	go func() {
@@ -277,19 +313,33 @@ func (r *Relay) Start(ctx context.Context) error {
 	return nil
 }
 
+func (r *Relay) failStart(_ context.Context, startErr error) error {
+	// Startup cleanup must outlive a canceled or expired startup context; otherwise
+	// a failed publication could leave its reporter connection or workers alive.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.Close(closeCtx); err != nil {
+		return errors.Join(startErr, fmt.Errorf("clean up failed relay start: %w", err))
+	}
+	return startErr
+}
+
 // Close drains and closes all configured outputs. It is separate from the
 // network-server lifecycle so embedders can guarantee that asynchronous
 // telemetry batches are flushed during controlled shutdown.
 func (r *Relay) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		if r.router != nil {
-			r.closeErr = r.router.Close(ctx)
-			return
-		}
-		for _, sink := range r.sinks {
-			if err := sink.Close(ctx); err != nil {
-				r.closeErr = errors.Join(r.closeErr, err)
+			r.closeErr = errors.Join(r.closeErr, r.router.Close(ctx))
+		} else {
+			for _, sink := range r.sinks {
+				if err := sink.Close(ctx); err != nil {
+					r.closeErr = errors.Join(r.closeErr, err)
+				}
 			}
+		}
+		if r.registryLifecycle != nil {
+			r.closeErr = errors.Join(r.closeErr, r.registryLifecycle.Close(ctx))
 		}
 	})
 	return r.closeErr
@@ -301,10 +351,11 @@ func (r *Relay) ready() bool {
 
 // initializeOutputs sets up internal relay outputs and configured data sinks.
 func (r *Relay) initializeOutputs() error {
-	return r.initializeOutputsWith(r.newTelemetryWriter, r.initializeSinks)
+	return r.initializeOutputsWith(r.newRegistryReporter, r.newTelemetryWriter, r.initializeSinks)
 }
 
 func (r *Relay) initializeOutputsWith(
+	newRegistryReporter func() (registryService, error),
 	newTelemetryWriter func() (outputs.EnvelopeConsumer, error),
 	initializeSinks func() error,
 ) (err error) {
@@ -318,13 +369,20 @@ func (r *Relay) initializeOutputsWith(
 		if closeErr := r.router.Close(closeCtx); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("clean up initialized outputs: %w", closeErr))
 		}
+		if r.registryLifecycle != nil {
+			if closeErr := r.registryLifecycle.Close(closeCtx); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("clean up registry reporter: %w", closeErr))
+			}
+		}
 	}()
 
 	if r.config.Registry.Enabled {
-		r.router.AddConsumer(
-			registryreporter.NewNoopReporter(),
-			registryMessageFilter(),
-		)
+		reporter, err := newRegistryReporter()
+		if err != nil {
+			return err
+		}
+		r.registryReporter = reporter
+		r.registryLifecycle = reporter
 	}
 
 	if r.config.Telemetry.Enabled {
@@ -338,11 +396,30 @@ func (r *Relay) initializeOutputsWith(
 	if err := initializeSinks(); err != nil {
 		return err
 	}
-	if !r.router.HasConsumers() {
+	if r.registryLifecycle == nil && !r.router.HasConsumers() {
 		return fmt.Errorf("no outputs configured")
 	}
 	r.outputsInitialized = true
 	return nil
+}
+
+func (r *Relay) newRegistryReporter() (registryService, error) {
+	registryConfig := r.config.Registry
+	reporter, err := registryreporter.New(context.Background(), registryreporter.Config{
+		Address:           registryConfig.Address,
+		RelayID:           registryConfig.RelayID,
+		AdvertiseAddress:  registryConfig.AdvertiseAddress,
+		RelayGRPCPort:     r.config.GrpcPort,
+		HeartbeatInterval: registryConfig.HeartbeatInterval,
+		RequestTimeout:    registryConfig.RequestTimeout,
+		TLSEnabled:        registryConfig.TLS.Enabled,
+		TLSCAFile:         registryConfig.TLS.CAFile,
+		TLSServerName:     registryConfig.TLS.ServerName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize registry reporter: %w", err)
+	}
+	return reporter, nil
 }
 
 func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
@@ -386,14 +463,6 @@ func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
 		return nil, fmt.Errorf("initialize normalized telemetry writer: %w", err)
 	}
 	return writer, nil
-}
-
-// registryMessageFilter defines the telemetry required by Aero Arc registry reporting.
-func registryMessageFilter() outputs.MessageFilter {
-	return outputs.MessageFilter{Include: []string{
-		"Heartbeat",
-		"GlobalPositionInt",
-	}}
 }
 
 // telemetryMessageFilter defines the normalized hot telemetry maintained by Aero Arc.

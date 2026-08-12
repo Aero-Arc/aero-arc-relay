@@ -23,7 +23,11 @@ func RegisterFakeAgent(ctx context.Context, conn grpc.ClientConnInterface, agent
 	if err != nil {
 		return nil, fmt.Errorf("register fake agent %q: %w", agentID, err)
 	}
-	streamCtx := metadata.AppendToOutgoingContext(ctx, "aero-arc-agent-id", agentID)
+	streamCtx := metadata.AppendToOutgoingContext(
+		ctx,
+		"aero-arc-agent-id", agentID,
+		"aero-arc-session-id", registration.GetSessionId(),
+	)
 	stream, err := client.TelemetryStream(streamCtx)
 	if err != nil {
 		return nil, fmt.Errorf("open telemetry stream for fake agent %q: %w", agentID, err)

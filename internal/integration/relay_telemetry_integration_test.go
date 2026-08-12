@@ -23,7 +23,7 @@ const (
 
 var testCaptureTime = time.Date(2026, time.July, 23, 17, 34, 56, 789123456, time.UTC)
 
-func TestRelayTelemetry_GlobalPositionIntPersistsToInfluxDB(t *testing.T) {
+func TestRelayTelemetry_NormalizesPersistsQueriesAndFlushesInfluxDB(t *testing.T) {
 	influx := testsupport.StartInfluxDB(t)
 	relay := testsupport.StartRelay(t, influx, testAgentID, testAircraftID, testRelayID)
 
@@ -45,9 +45,13 @@ func TestRelayTelemetry_GlobalPositionIntPersistsToInfluxDB(t *testing.T) {
 	// Relay's in-memory telemetry writer queue. It does not mean InfluxDB has
 	// flushed the batch or that the row is durably queryable.
 
-	// Fill the configured production batch so this first set is persisted
-	// without relying on the deliberately long periodic flush interval.
-	for offset := 1; offset < testBatchSize; offset++ {
+	// Include a second independently queried telemetry group, then fill the
+	// configured production batch so both records persist without relying on the
+	// deliberately long periodic flush interval.
+	batteryCaptureTime := testCaptureTime.Add(time.Nanosecond)
+	batterySequence := testWALSeq + 1
+	sendAndRequireOK(t, agent, batteryStatusFrame(batterySequence, batteryCaptureTime))
+	for offset := 2; offset < testBatchSize; offset++ {
 		sendAndRequireOK(
 			t,
 			agent,
@@ -64,6 +68,20 @@ func TestRelayTelemetry_GlobalPositionIntPersistsToInfluxDB(t *testing.T) {
 		t.Fatalf("query normalized telemetry (relay=%s influx=%s): %v", relay.Address, influx.URL, err)
 	}
 	assertGlobalPositionIntRow(t, row, primaryFrameID, agent.SessionID, admissionStarted, admissionFinished)
+
+	batteryFrameID := frameID(batterySequence, batteryCaptureTime)
+	batteryCtx, cancelBattery := context.WithTimeout(context.Background(), 20*time.Second)
+	batteryRow, err := influx.AwaitRow(
+		batteryCtx,
+		100*time.Millisecond,
+		frameQuery(batteryFrameID, agent.SessionID),
+		"frame_id="+batteryFrameID,
+	)
+	cancelBattery()
+	if err != nil {
+		t.Fatalf("query normalized battery telemetry (relay=%s influx=%s): %v", relay.Address, influx.URL, err)
+	}
+	assertBatteryStatusRow(t, batteryRow, batteryFrameID, agent.SessionID, batterySequence, batteryCaptureTime)
 
 	// This ninth record cannot reach BatchSize, and the periodic flush interval
 	// is one hour. Confirm it is not queryable before shutdown, then require
@@ -109,6 +127,19 @@ func TestRelayTelemetry_GlobalPositionIntPersistsToInfluxDB(t *testing.T) {
 	}
 	assertUint(t, rows[0], "wal_sequence", shutdownSequence)
 	assertInt(t, rows[0], "agent_capture_time_ns", shutdownCaptureTime.UnixNano())
+}
+
+func batteryStatusFrame(sequence uint64, captureTime time.Time) *agentv1.TelemetryFrame {
+	return &agentv1.TelemetryFrame{
+		Seq: sequence, SentAtUnixNs: captureTime.UnixNano(), Dialect: "common", MsgId: 147, MsgName: "BATTERY_STATUS",
+		Fields: map[string]string{
+			"Id": "0", "BatteryFunction": "MAV_BATTERY_FUNCTION_ALL", "Type": "MAV_BATTERY_TYPE_LIPO",
+			"Temperature": "2534", "Voltages": "[4200,4190,65535,65535]", "VoltagesExt": "[0,0,0,0]",
+			"CurrentBattery": "823", "CurrentConsumed": "1050", "EnergyConsumed": "360",
+			"BatteryRemaining": "84", "TimeRemaining": "600", "ChargeState": "MAV_BATTERY_CHARGE_STATE_OK",
+			"Mode": "MAV_BATTERY_MODE_AUTO_DISCHARGING", "FaultBitmask": "MAV_BATTERY_FAULT_NONE",
+		},
+	}
 }
 
 func globalPositionIntFrame(sequence uint64, captureTime time.Time) *agentv1.TelemetryFrame {
@@ -208,6 +239,36 @@ func assertGlobalPositionIntRow(
 	if relayTime.Before(admissionStarted.Add(-time.Second)) || relayTime.After(admissionFinished.Add(time.Second)) {
 		t.Errorf("relay timestamp %s outside admission window [%s, %s]", relayTime, admissionStarted, admissionFinished)
 	}
+}
+
+func assertBatteryStatusRow(
+	t *testing.T,
+	row map[string]any,
+	frameID, sessionID string,
+	sequence uint64,
+	captureTime time.Time,
+) {
+	t.Helper()
+	assertString(t, row, "message_name", "battery_status")
+	assertString(t, row, "frame_id", frameID)
+	assertString(t, row, "agent_id", testAgentID)
+	assertString(t, row, "aircraft_id", testAircraftID)
+	assertString(t, row, "relay_id", testRelayID)
+	assertString(t, row, "session_id", sessionID)
+	assertString(t, row, "battery_function", "mav_battery_function_all")
+	assertString(t, row, "battery_type", "mav_battery_type_lipo")
+	assertString(t, row, "battery_charge_state", "mav_battery_charge_state_ok")
+	assertString(t, row, "battery_mode", "mav_battery_mode_auto_discharging")
+	assertFloat(t, row, "battery_temperature_c", 25.34, 1e-9)
+	assertFloat(t, row, "battery_voltage_v", 8.39, 1e-9)
+	assertFloat(t, row, "battery_current_a", 8.23, 1e-9)
+	assertFloat(t, row, "battery_consumed_wh", 10, 1e-9)
+	assertFloat(t, row, "battery_remaining_pct", 84, 1e-9)
+	assertUint(t, row, "battery_id", 0)
+	assertInt(t, row, "battery_consumed_mah", 1050)
+	assertInt(t, row, "battery_time_remaining_s", 600)
+	assertUint(t, row, "wal_sequence", sequence)
+	assertInt(t, row, "agent_capture_time_ns", captureTime.UnixNano())
 }
 
 func assertString(t *testing.T, row map[string]any, field, want string) {

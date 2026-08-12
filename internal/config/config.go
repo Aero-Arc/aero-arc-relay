@@ -16,6 +16,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +26,7 @@ import (
 type Config struct {
 	Sinks       SinksConfig     `yaml:"sinks"`
 	Registry    RegistryConfig  `yaml:"registry"`
+	AgentAuth   AgentAuthConfig `yaml:"agent_auth"`
 	Telemetry   TelemetryConfig `yaml:"telemetry"`
 	Logging     LoggingConfig   `yaml:"logging"`
 	Debug       bool
@@ -32,6 +34,13 @@ type Config struct {
 	TLSKeyPath  string
 	GrpcPort    int
 	BufferSize  int
+}
+
+// AgentAuthConfig contains bootstrap credentials for authenticating an agent
+// before binding its claimed ID to a Relay session. Tokens should be supplied
+// through environment-expanded secret values, not checked into configuration.
+type AgentAuthConfig struct {
+	Tokens map[string]string `yaml:"tokens"`
 }
 
 // SinksConfig contains configuration for all data sinks
@@ -57,8 +66,22 @@ type MessageFilterConfig struct {
 
 // RegistryConfig contains control-plane registry reporting configuration.
 type RegistryConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Address string `yaml:"address"`
+	Enabled           bool              `yaml:"enabled"`
+	Address           string            `yaml:"address"`
+	RelayID           string            `yaml:"relay_id"`
+	AdvertiseAddress  string            `yaml:"advertise_address"`
+	HeartbeatInterval time.Duration     `yaml:"heartbeat_interval"`
+	RequestTimeout    time.Duration     `yaml:"request_timeout"`
+	TLS               RegistryTLSConfig `yaml:"tls"`
+}
+
+// RegistryTLSConfig controls authentication of the registry gRPC server.
+// Client certificates are intentionally not part of the first slice because
+// the registry server currently supports server-authenticated TLS only.
+type RegistryTLSConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	CAFile     string `yaml:"ca_file"`
+	ServerName string `yaml:"server_name"`
 }
 
 // TelemetryConfig contains normalized hot telemetry writer configuration.
@@ -237,6 +260,17 @@ func Load(path string) (*Config, error) {
 	if config.Logging.Output == "" {
 		config.Logging.Output = "stdout"
 	}
+	if config.Registry.Enabled {
+		if config.Registry.RelayID == "" {
+			config.Registry.RelayID = config.Telemetry.RelayID
+		}
+		if config.Registry.HeartbeatInterval <= 0 {
+			config.Registry.HeartbeatInterval = 10 * time.Second
+		}
+		if config.Registry.RequestTimeout <= 0 {
+			config.Registry.RequestTimeout = 5 * time.Second
+		}
+	}
 	if config.Telemetry.Enabled {
 		if config.Telemetry.Backend == "" {
 			config.Telemetry.Backend = "influxdb3"
@@ -267,6 +301,36 @@ func Load(path string) (*Config, error) {
 			config.Telemetry.RetryBackoff = 200 * time.Millisecond
 		}
 	}
+	if err := config.validateRegistry(); err != nil {
+		return nil, err
+	}
 
 	return &config, nil
+}
+
+func (c *Config) validateRegistry() error {
+	if !c.Registry.Enabled {
+		return nil
+	}
+	if c.Registry.Address == "" {
+		return fmt.Errorf("registry address is required when registry reporting is enabled")
+	}
+	if c.Registry.RelayID == "" {
+		return fmt.Errorf("registry relay_id is required when registry reporting is enabled")
+	}
+	if c.Registry.AdvertiseAddress == "" {
+		return fmt.Errorf("registry advertise_address is required when registry reporting is enabled")
+	}
+	if len(c.AgentAuth.Tokens) == 0 {
+		return fmt.Errorf("agent_auth.tokens is required when registry reporting is enabled")
+	}
+	for agentID, token := range c.AgentAuth.Tokens {
+		if agentID == "" || agentID != strings.TrimSpace(agentID) {
+			return fmt.Errorf("agent_auth.tokens contains an empty or untrimmed agent ID")
+		}
+		if token == "" || token != strings.TrimSpace(token) {
+			return fmt.Errorf("agent_auth token for %q is empty or has surrounding whitespace", agentID)
+		}
+	}
+	return nil
 }

@@ -41,11 +41,13 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	if agentID == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent ID is required")
 	}
+	if err := r.authenticateAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
 	sessionID, err := newSessionID()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
-
 	newSession := &DroneSession{
 		agentID:       agentID,
 		SessionID:     sessionID,
@@ -78,6 +80,9 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
+			if r.registryReporter != nil {
+				r.registryReporter.StopAgent(agentID)
+			}
 		}
 		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
@@ -111,12 +116,29 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	if agentID == "" {
 		return status.Errorf(codes.InvalidArgument, "empty aero-arc-agent-id")
 	}
+	if err := r.authenticateAgent(ctx, agentID); err != nil {
+		return err
+	}
+	sessionIDs := meta.Get("aero-arc-session-id")
+	if len(sessionIDs) != 1 || strings.TrimSpace(sessionIDs[0]) == "" {
+		return status.Error(codes.Unauthenticated, "exactly one aero-arc-session-id is required")
+	}
+	sessionID := strings.TrimSpace(sessionIDs[0])
 
-	streamSession, streamBinding, err := r.updateStream(agentID, stream)
+	streamSession, streamBinding, previousStream, err := r.updateStream(agentID, sessionID, stream)
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
+		return status.Error(codes.Unauthenticated, "telemetry stream is not bound to an active session")
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID)
+	if r.registryReporter != nil {
+		if err := r.registerActiveAgent(ctx, agentID, streamSession, streamBinding, previousStream); err != nil {
+			r.deleteStream(agentID, streamSession, streamBinding)
+			if errors.Is(err, ErrSessionNotFound) {
+				return status.Error(codes.Aborted, "telemetry session was replaced before publication")
+			}
+			return status.Errorf(codes.Unavailable, "register active agent with control plane: %v", err)
+		}
+	}
 
 	defer r.deleteStream(agentID, streamSession, streamBinding)
 
