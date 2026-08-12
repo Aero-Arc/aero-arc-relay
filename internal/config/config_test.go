@@ -254,7 +254,11 @@ func TestRegistryConfigRequiresRoutingIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer os.Remove(tmpFile.Name())
+			t.Cleanup(func() {
+				if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+					t.Errorf("remove config fixture: %v", err)
+				}
+			})
 			content := "registry:\n  enabled: true\n  " + strings.ReplaceAll(registry, "\n", "\n  ") + "\nsinks:\n  file:\n    path: /tmp/test\n    format: json\n"
 			if _, err := tmpFile.WriteString(content); err != nil {
 				t.Fatal(err)
@@ -303,7 +307,11 @@ telemetry:
 	if err != nil {
 		t.Fatalf("create temporary config: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove config fixture: %v", err)
+		}
+	})
 	if _, err := tmpFile.WriteString(configContent); err != nil {
 		t.Fatalf("write temporary config: %v", err)
 	}
@@ -333,7 +341,11 @@ sinks:
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove config fixture: %v", err)
+		}
+	})
 
 	if _, err := tmpFile.WriteString(configContent); err != nil {
 		t.Fatalf("Failed to write config: %v", err)
@@ -372,7 +384,11 @@ func TestConfigInvalidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove config fixture: %v", err)
+		}
+	})
 
 	invalidYAML := `
 sinks:

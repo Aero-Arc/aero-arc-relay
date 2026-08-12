@@ -26,6 +26,7 @@ import (
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -85,16 +86,19 @@ func New(ctx context.Context, config Config) (*Reporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, config.RequestTimeout)
-	defer cancel()
-	conn, err := grpc.DialContext(
-		dialCtx,
+	conn, err := grpc.NewClient(
 		config.Address,
 		grpc.WithTransportCredentials(transportCredentials),
-		grpc.WithBlock(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("dial registry: %w", err)
+		return nil, fmt.Errorf("create registry client: %w", err)
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, config.RequestTimeout)
+	defer cancel()
+	conn.Connect()
+	if err := waitForReady(dialCtx, conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("connect to registry: %w", err)
 	}
 	reporter := newWithClient(config, registryv1.NewAeroRegistryClient(conn))
 	reporter.conn = conn
@@ -104,6 +108,22 @@ func New(ctx context.Context, config Config) (*Reporter, error) {
 	}
 	reporter.start()
 	return reporter, nil
+}
+
+func waitForReady(ctx context.Context, conn *grpc.ClientConn) error {
+	for {
+		state := conn.GetState()
+		switch state {
+		case connectivity.Ready:
+			return nil
+		case connectivity.Shutdown:
+			return errors.New("registry connection shut down before becoming ready")
+		default:
+			if !conn.WaitForStateChange(ctx, state) {
+				return ctx.Err()
+			}
+		}
+	}
 }
 
 func newWithClient(config Config, client registryClient) *Reporter {
