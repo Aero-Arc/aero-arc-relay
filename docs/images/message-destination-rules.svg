@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Message destination decision flow</title>
+  <desc id="desc">A decision flow distinguishes a telemetry acknowledgement caused by a received frame from an unsolicited control command. A telemetry acknowledgement follows the captured receiving stream because it answers that inbound message. A control command resolves the current active stream because it targets the current Agent connection.</desc>
+  <style>
+    :root { color-scheme: light dark; }
+    .bg { fill: #f8fafc; }
+    .relay { fill: #e0e7ff; stroke: #6366f1; stroke-width: 2; }
+    .decision { fill: #ffffff; stroke: #64748b; stroke-width: 2.5; }
+    .ackNode { fill: #ecfdf5; stroke: #059669; stroke-width: 2.5; }
+    .cmdNode { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2.5; }
+    .stream { fill: #ffffff; stroke-width: 3; }
+    .receive { stroke: #059669; }
+    .active { stroke: #7c3aed; }
+    .arrow { fill: none; stroke: #64748b; stroke-width: 3; marker-end: url(#arrow); }
+    .ackArrow { fill: none; stroke: #059669; stroke-width: 4; marker-end: url(#green); }
+    .cmdArrow { fill: none; stroke: #7c3aed; stroke-width: 4; marker-end: url(#purple); }
+    .text { fill: #0f172a; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .muted { fill: #475569; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .title { font-size: 29px; font-weight: 760; }
+    .node { font-size: 20px; font-weight: 720; }
+    .body { font-size: 16px; }
+    .branch { font-size: 15px; font-weight: 750; letter-spacing: .5px; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #07111f; }
+      .relay { fill: #202554; stroke: #818cf8; }
+      .decision, .stream { fill: #0f1c2e; }
+      .decision { stroke: #64748b; }
+      .ackNode { fill: #123b35; }
+      .cmdNode { fill: #2d2250; }
+      .text { fill: #f1f5f9; }
+      .muted { fill: #cbd5e1; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#64748b"/></marker>
+    <marker id="green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#059669"/></marker>
+    <marker id="purple" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#7c3aed"/></marker>
+  </defs>
+  <rect class="bg" width="1200" height="620" rx="22"/>
+  <text class="text title" x="48" y="55">Destination follows message intent</text>
+  <text class="muted body" x="48" y="84">The Relay chooses a stream from the event that caused the outbound message.</text>
+
+  <rect class="relay" x="70" y="245" width="205" height="110" rx="22"/>
+  <text class="text node" x="172" y="287" text-anchor="middle">Relay needs to</text>
+  <text class="text node" x="172" y="316" text-anchor="middle">send a message</text>
+  <text class="muted body" x="172" y="340" text-anchor="middle">Select by causality</text>
+
+  <path class="arrow" d="M275 300 H390"/>
+  <path class="decision" d="M500 188 L610 300 L500 412 L390 300 Z"/>
+  <text class="text node" x="500" y="283" text-anchor="middle">What triggered</text>
+  <text class="text node" x="500" y="311" text-anchor="middle">the send?</text>
+  <text class="muted body" x="500" y="338" text-anchor="middle">response or command</text>
+
+  <path class="ackArrow" d="M556 243 C620 165 670 152 745 152"/>
+  <text class="text branch" x="628" y="174">INBOUND FRAME</text>
+  <rect class="ackNode" x="745" y="105" width="390" height="120" rx="20"/>
+  <text class="text node" x="940" y="144" text-anchor="middle">Telemetry ACK</text>
+  <text class="text body" x="940" y="174" text-anchor="middle">Answer the specific inbound message</text>
+  <text class="muted body" x="940" y="201" text-anchor="middle">Keep the captured receiving-stream binding</text>
+  <path class="ackArrow" d="M940 225 V270"/>
+  <rect class="stream receive" x="800" y="270" width="280" height="76" rx="38"/>
+  <text class="text node" x="940" y="317" text-anchor="middle">Receiving stream</text>
+
+  <path class="cmdArrow" d="M556 357 C620 438 670 454 745 454"/>
+  <text class="text branch" x="628" y="444">UNSOLICITED CONTROL</text>
+  <rect class="cmdNode" x="745" y="394" width="390" height="120" rx="20"/>
+  <text class="text node" x="940" y="433" text-anchor="middle">Control command</text>
+  <text class="text body" x="940" y="463" text-anchor="middle">Target the current Agent connection</text>
+  <text class="muted body" x="940" y="490" text-anchor="middle">Resolve ownership at delivery time</text>
+  <path class="cmdArrow" d="M940 514 V549"/>
+  <rect class="stream active" x="800" y="532" width="280" height="64" rx="32"/>
+  <text class="text node" x="940" y="573" text-anchor="middle">Current active stream</text>
+
+  <text class="muted body" x="48" y="565">Replacement preserves in-flight response routing</text>
+  <text class="muted body" x="48" y="590">while intentionally moving new control traffic.</text>
+</svg>

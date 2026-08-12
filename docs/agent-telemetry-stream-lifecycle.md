@@ -7,31 +7,7 @@ rules that keep messages attached to the correct connection during replacement.
 
 ## Lifecycle at a Glance
 
-```text
-Agent                       Relay                         Outputs / Control API
-  |                           |                                   |
-  | Register(agent_id + auth) |                                   |
-  |-------------------------->| authenticate + create session ID  |
-  |<--------------------------|                                   |
-  |                           |                                   |
-  | TelemetryStream metadata  |                                   |
-  |-------------------------->| attach stream generation N        |
-  |                           |                                   |
-  | telemetry frame           |                                   |
-  |-------------------------->| validate and route -------------->|
-  |<--------------------------| ACK on the receiving stream        |
-  |                           |                                   |
-  |                           |<---------- operation command ------|
-  |<--------------------------| send on current active stream      |
-  | command ACK               |                                   |
-  |-------------------------->| complete waiting control request  |
-  |                           |                                   |
-  | replacement stream        |                                   |
-  |-------------------------->| attach generation N+1             |
-  |                           |                                   |
-  | old stream closes         | ignore stale cleanup              |
-  | active stream closes      | remove active session             |
-```
+![Sequence diagram of Agent registration, telemetry routing and ACKs, control commands, stream replacement, and cleanup across Agent, Relay, and Outputs or Control API](images/agent-telemetry-lifecycle-sequence.svg)
 
 ## 1. Registration
 
@@ -177,10 +153,7 @@ must be covered by integration tests.
 
 This creates an intentional routing distinction:
 
-| Message | Destination rule | Reason |
-| --- | --- | --- |
-| Telemetry ACK | Stream that received the frame | It answers a specific inbound message. |
-| Control command | Current active stream | It targets the current agent connection. |
+![Destination rules showing telemetry ACKs returning on the receiving stream while control commands target the current active stream](images/message-destination-rules.svg)
 
 ## 5. Replacing a Stream
 
@@ -233,15 +206,9 @@ another telemetry stream.
 
 ## Synchronization and Ownership
 
-The stream lifecycle uses four locks with separate responsibilities:
+The stream lifecycle uses five locks with separate responsibilities:
 
-| Lock | Protects |
-| --- | --- |
-| `sessionsMu` | The `grpcSessions` map and session identity replacement. |
-| `sessionMu` | Mutable session state, active stream, and stream generation. |
-| `ownershipMu` | Session retirement and the frame-admission ownership lease. |
-| Binding `sendMu` | Sends on one specific RPC stream; each replacement has an independent lock. |
-| `pendingMu` | The pending operation-command ACK map. |
+![Ownership map of sessionsMu, sessionMu, ownershipMu, per-binding sendMu, and pendingMu with the state each lock protects](images/stream-synchronization-ownership.svg)
 
 The important ownership invariants are:
 

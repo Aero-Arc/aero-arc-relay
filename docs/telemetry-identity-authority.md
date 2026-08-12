@@ -39,18 +39,9 @@ For the initial product model:
   components does not change `aircraft_id`.
 - Replacing the physical airframe creates a new aircraft record and UUID.
 
-## Authority table
+## Identity authority and lifecycle
 
-| Identity | Authority | Created when | Lifecycle and telemetry rule |
-| --- | --- | --- | --- |
-| `operator_id` | Aero Arc API durable store | An operator organization is provisioned | Stable tenant identity. The relay obtains it from the authoritative agent assignment and never infers it. |
-| `aircraft_id` | Aero Arc API durable store | An authenticated operator enrolls a physical airframe | Immutable Aero Arc UUID. Registration, tail number, serial number, Remote ID, MAVLink system ID, and agent ID are not substitutes. |
-| `agent_id` | Aero Arc Agent | The agent first initializes its persisted identity | Identifies an installation, not an aircraft. It is sent during registration and on frames and remains stable across WAL retries. |
-| `relay_id` | Relay deployment identity | A relay instance or logical relay is provisioned | Identifies the relay that accepted the frame. It must be configured or durably generated; it is not derived from network location. |
-| `session_id` | Relay | Successful agent registration | Identifies one accepted registration/connection lifecycle. A new registration receives a new opaque ID. It is not the `agent_id`. |
-| `flight_id` | Aero Arc API flight workflow | A flight record is explicitly created | Optional until assigned by the authoritative flight workflow. The normalizer must not infer a flight from arming, takeoff, or MAVLink state. |
-| `intent_id` | Aero Arc API operational-intent workflow | An operational intent is created | Optional telemetry context obtained through the aircraft/flight association. The normalizer must not infer it. |
-| `frame_id` | Telemetry ingestion contract | A frame is written to the agent WAL | For the first slice, the stable idempotency key is `agent_id` plus the durable WAL sequence. It must remain unchanged across resend and reconnect. |
+![Ownership and lifecycle map for operator, aircraft, agent, relay, session, flight, intent, and frame identities, including each authority, creation event, and telemetry rule](images/telemetry-identity-authority.svg)
 
 ## Aircraft enrollment and agent assignment
 

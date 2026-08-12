@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1120" role="img" aria-labelledby="title desc">
+  <title id="title">Agent telemetry stream lifecycle</title>
+  <desc id="desc">Sequence diagram across Agent, Relay, and Outputs or Control API. It covers authenticated registration, session creation, stream attachment, telemetry validation and routing, response-bound acknowledgements, active-stream control commands, command acknowledgements, stream replacement, and generation-safe cleanup.</desc>
+  <style>
+    :root { color-scheme: light dark; }
+    .bg { fill: #f8fafc; }
+    .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+    .head { fill: #e0e7ff; stroke: #6366f1; stroke-width: 2; }
+    .life { stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 7 8; }
+    .flow { fill: none; stroke: #2563eb; stroke-width: 3; marker-end: url(#arrow); }
+    .return { fill: none; stroke: #059669; stroke-width: 3; marker-end: url(#arrowGreen); }
+    .control { fill: none; stroke: #7c3aed; stroke-width: 3; marker-end: url(#arrowPurple); }
+    .cleanup { fill: none; stroke: #d97706; stroke-width: 3; marker-end: url(#arrowAmber); }
+    .phase { fill: #eef2ff; stroke: #a5b4fc; stroke-width: 1.5; }
+    .text { fill: #0f172a; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .muted { fill: #475569; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .title { font-size: 28px; font-weight: 750; }
+    .actor { font-size: 21px; font-weight: 700; }
+    .label { font-size: 17px; font-weight: 650; }
+    .note { font-size: 15px; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #07111f; }
+      .panel { fill: #0f1c2e; stroke: #334155; }
+      .head { fill: #202554; stroke: #818cf8; }
+      .life { stroke: #64748b; }
+      .phase { fill: #131e3a; stroke: #4f5db3; }
+      .text { fill: #f1f5f9; }
+      .muted { fill: #cbd5e1; }
+      .flow { stroke: #60a5fa; }
+      .return { stroke: #34d399; }
+      .control { stroke: #c084fc; }
+      .cleanup { stroke: #fbbf24; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#059669"/></marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7c3aed"/></marker>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#d97706"/></marker>
+  </defs>
+  <rect class="bg" width="1200" height="1120" rx="22"/>
+  <text class="text title" x="50" y="52">Agent telemetry stream lifecycle</text>
+  <text class="muted note" x="50" y="79">Identity binding, response routing, active-stream control, replacement, and cleanup</text>
+
+  <rect class="head" x="55" y="105" width="250" height="64" rx="14"/>
+  <rect class="head" x="475" y="105" width="250" height="64" rx="14"/>
+  <rect class="head" x="895" y="105" width="250" height="64" rx="14"/>
+  <text class="text actor" x="180" y="145" text-anchor="middle">Agent</text>
+  <text class="text actor" x="600" y="145" text-anchor="middle">Relay</text>
+  <text class="text actor" x="1020" y="137" text-anchor="middle">Outputs /</text>
+  <text class="text actor" x="1020" y="158" text-anchor="middle">Control API</text>
+  <line class="life" x1="180" y1="169" x2="180" y2="1075"/>
+  <line class="life" x1="600" y1="169" x2="600" y2="1075"/>
+  <line class="life" x1="1020" y1="169" x2="1020" y2="1075"/>
+
+  <rect class="phase" x="30" y="194" width="1140" height="155" rx="16"/>
+  <text class="muted label" x="50" y="222">1 · REGISTER AND BIND</text>
+  <path class="flow" d="M180 257 H600"/>
+  <text class="text label" x="390" y="248" text-anchor="middle">Register(agent_id + auth)</text>
+  <text class="muted note" x="620" y="277">Authenticate + create opaque session ID</text>
+  <path class="return" d="M600 312 H180"/>
+  <text class="text label" x="390" y="303" text-anchor="middle">agent_id + session_id + max in-flight</text>
+
+  <rect class="phase" x="30" y="367" width="1140" height="255" rx="16"/>
+  <text class="muted label" x="50" y="395">2 · ATTACH, ROUTE, AND ACK</text>
+  <path class="flow" d="M180 430 H600"/>
+  <text class="text label" x="390" y="421" text-anchor="middle">TelemetryStream metadata</text>
+  <text class="muted note" x="620" y="449">Attach stream generation N</text>
+  <path class="flow" d="M180 492 H600"/>
+  <text class="text label" x="390" y="483" text-anchor="middle">Telemetry frame</text>
+  <path class="flow" d="M600 530 H1020"/>
+  <text class="text label" x="810" y="521" text-anchor="middle">Validate + route</text>
+  <path class="return" d="M600 574 H180"/>
+  <text class="text label" x="390" y="565" text-anchor="middle">ACK on the receiving stream</text>
+  <text class="muted note" x="390" y="598" text-anchor="middle">Response stays bound to the stream that supplied the frame</text>
+
+  <rect class="phase" x="30" y="640" width="1140" height="190" rx="16"/>
+  <text class="muted label" x="50" y="668">3 · CONTROL TARGETS THE ACTIVE CONNECTION</text>
+  <path class="control" d="M1020 710 H600"/>
+  <text class="text label" x="810" y="701" text-anchor="middle">Operation command</text>
+  <path class="control" d="M600 748 H180"/>
+  <text class="text label" x="390" y="739" text-anchor="middle">Send on current active stream</text>
+  <path class="return" d="M180 790 H600"/>
+  <text class="text label" x="390" y="781" text-anchor="middle">Command ACK</text>
+  <text class="muted note" x="620" y="808">Complete waiting control request</text>
+
+  <rect class="phase" x="30" y="848" width="1140" height="225" rx="16"/>
+  <text class="muted label" x="50" y="876">4 · REPLACE AND CLEAN UP SAFELY</text>
+  <path class="cleanup" d="M180 910 H600"/>
+  <text class="text label" x="390" y="901" text-anchor="middle">Replacement stream</text>
+  <text class="muted note" x="620" y="930">Attach generation N+1</text>
+  <path class="cleanup" d="M180 962 H600"/>
+  <text class="text label" x="390" y="953" text-anchor="middle">Old stream closes</text>
+  <text class="muted note" x="620" y="975">Ignore stale cleanup</text>
+  <path class="cleanup" d="M180 1025 H600"/>
+  <text class="text label" x="390" y="1016" text-anchor="middle">Active stream closes</text>
+  <text class="muted note" x="620" y="1039">Remove active session</text>
+</svg>
