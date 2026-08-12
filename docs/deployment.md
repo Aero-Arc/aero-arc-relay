@@ -31,3 +31,26 @@ Operation-context mutation RPCs are disabled until the control service is moved
 to a private listener restricted to the trusted API workload and protected by
 mutual TLS or equivalent workload identity plus agent-level authorization. See
 `kubernetes.md` for the intended deployment boundary.
+
+### Agent Heartbeat Owner Rollout
+
+Agent heartbeats now carry the Relay ID that owns the Agent placement. Roll out
+this additive protobuf contract in this order:
+
+1. Merge and publish the Protos revision containing
+   `HeartbeatAgentRequest.relay_id`.
+2. Deploy Relays built against that revision, and verify the entire Relay fleet
+   is sending successful Agent heartbeats.
+3. Deploy the Registry revision that requires `relay_id` and rejects a
+   heartbeat when its Relay does not own the current Agent placement.
+
+This order supports a mixed-version rollout because an older Registry ignores
+the new protobuf field sent by an updated Relay. The reverse order is not
+compatible: a strict Registry rejects the missing `relay_id` sent by an older
+Relay, so those Agent placements eventually expire.
+
+After the strict Registry is deployed, do not roll back Relay alone to a build
+that omits the owner field. Roll back Registry owner enforcement first, or use a
+coordinated rollback, then roll back Relay. Rolling back Registry while Relays
+remain updated is wire-compatible because the older Registry ignores the
+unknown field.

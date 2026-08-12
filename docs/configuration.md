@@ -34,7 +34,11 @@ already-admitted telemetry and are retried.
 Agent registrations and heartbeats both carry the configured `relay_id`.
 Registry accepts a heartbeat only from the Relay that currently owns the Agent
 placement, preventing an older Relay connection from extending a reassigned
-Agent's liveness.
+Agent's liveness. Deploy the additive Protos contract first, then all Relays,
+and enable strict Registry validation last. An older Registry ignores the new
+field, but a strict Registry rejects heartbeats from an older Relay that omits
+it. See [deployment.md](deployment.md#agent-heartbeat-owner-rollout) for rollout
+and rollback ordering.
 
 Registry publication also requires the Agent-facing session to be
 authenticated. Configure a distinct high-entropy bearer token for every Agent:

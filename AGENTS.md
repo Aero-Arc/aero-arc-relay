@@ -31,6 +31,10 @@
 - Every Agent heartbeat includes the configured Relay ID. Registry uses that
   owner identity to reject a stale Relay trying to renew another Relay's
   current Agent placement.
+- Preserve rollout compatibility for heartbeat owner enforcement: publish
+  Protos, deploy all Relays, then deploy strict Registry validation. Before
+  rolling Relay back to a version without the owner field, roll Registry
+  validation back first or perform a coordinated rollback.
 - Authenticate the claimed Agent ID and bind the registration session before
   publishing it. Keep per-Agent credentials in environment-backed secrets.
 - Schedule idle Agent heartbeats independently; one slow Registry RPC must not
