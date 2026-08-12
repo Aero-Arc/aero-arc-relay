@@ -56,8 +56,14 @@ type Relay struct {
 	sessionsMu         sync.RWMutex
 	closeOnce          sync.Once
 	closeErr           error
+	registryReporter   agentRegistryReporter
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
+}
+
+type agentRegistryReporter interface {
+	RegisterAgent(context.Context, string) error
+	StopAgent(string)
 }
 
 type DroneSession struct {
@@ -301,10 +307,11 @@ func (r *Relay) ready() bool {
 
 // initializeOutputs sets up internal relay outputs and configured data sinks.
 func (r *Relay) initializeOutputs() error {
-	return r.initializeOutputsWith(r.newTelemetryWriter, r.initializeSinks)
+	return r.initializeOutputsWith(r.newRegistryReporter, r.newTelemetryWriter, r.initializeSinks)
 }
 
 func (r *Relay) initializeOutputsWith(
+	newRegistryReporter func() (outputs.EnvelopeConsumer, error),
 	newTelemetryWriter func() (outputs.EnvelopeConsumer, error),
 	initializeSinks func() error,
 ) (err error) {
@@ -321,10 +328,16 @@ func (r *Relay) initializeOutputsWith(
 	}()
 
 	if r.config.Registry.Enabled {
-		r.router.AddConsumer(
-			registryreporter.NewNoopReporter(),
-			registryMessageFilter(),
-		)
+		consumer, err := newRegistryReporter()
+		if err != nil {
+			return err
+		}
+		r.router.AddConsumer(consumer, registryMessageFilter())
+		reporter, ok := consumer.(agentRegistryReporter)
+		if !ok {
+			return fmt.Errorf("registry reporter does not implement agent liveness")
+		}
+		r.registryReporter = reporter
 	}
 
 	if r.config.Telemetry.Enabled {
@@ -343,6 +356,25 @@ func (r *Relay) initializeOutputsWith(
 	}
 	r.outputsInitialized = true
 	return nil
+}
+
+func (r *Relay) newRegistryReporter() (outputs.EnvelopeConsumer, error) {
+	registryConfig := r.config.Registry
+	reporter, err := registryreporter.New(context.Background(), registryreporter.Config{
+		Address:           registryConfig.Address,
+		RelayID:           registryConfig.RelayID,
+		AdvertiseAddress:  registryConfig.AdvertiseAddress,
+		RelayGRPCPort:     r.config.GrpcPort,
+		HeartbeatInterval: registryConfig.HeartbeatInterval,
+		RequestTimeout:    registryConfig.RequestTimeout,
+		TLSEnabled:        registryConfig.TLS.Enabled,
+		TLSCAFile:         registryConfig.TLS.CAFile,
+		TLSServerName:     registryConfig.TLS.ServerName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize registry reporter: %w", err)
+	}
+	return reporter, nil
 }
 
 func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {

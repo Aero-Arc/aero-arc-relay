@@ -13,6 +13,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +24,14 @@ func TestConfigLoad(t *testing.T) {
 registry:
   enabled: true
   address: "localhost:9090"
+  relay_id: "relay-test"
+  advertise_address: "relay-test.internal"
+  heartbeat_interval: "7s"
+  request_timeout: "3s"
+  tls:
+    enabled: true
+    ca_file: "/run/secrets/registry-ca.pem"
+    server_name: "registry.internal"
 
 telemetry:
   enabled: true
@@ -93,6 +102,15 @@ logging:
 	}
 	if cfg.Registry.Address != "localhost:9090" {
 		t.Errorf("Expected registry address 'localhost:9090', got '%s'", cfg.Registry.Address)
+	}
+	if cfg.Registry.RelayID != "relay-test" || cfg.Registry.AdvertiseAddress != "relay-test.internal" {
+		t.Errorf("unexpected registry identity: %#v", cfg.Registry)
+	}
+	if cfg.Registry.HeartbeatInterval != 7*time.Second || cfg.Registry.RequestTimeout != 3*time.Second {
+		t.Errorf("unexpected registry timing: %#v", cfg.Registry)
+	}
+	if !cfg.Registry.TLS.Enabled || cfg.Registry.TLS.CAFile == "" || cfg.Registry.TLS.ServerName != "registry.internal" {
+		t.Errorf("unexpected registry TLS: %#v", cfg.Registry.TLS)
 	}
 	if !cfg.Telemetry.Enabled {
 		t.Error("Telemetry should be enabled")
@@ -168,6 +186,68 @@ logging:
 	}
 	if cfg.Logging.File != "/var/log/aero-arc-relay/app.log" {
 		t.Errorf("Expected log file '/var/log/aero-arc-relay/app.log', got '%s'", cfg.Logging.File)
+	}
+}
+
+func TestRegistryConfigDefaultsAndTelemetryRelayIDFallback(t *testing.T) {
+	configContent := `
+registry:
+  enabled: true
+  address: "registry:50051"
+  advertise_address: "relay.internal"
+telemetry:
+  relay_id: "relay-from-telemetry"
+sinks:
+  file:
+    path: "/tmp/test"
+    format: "json"
+`
+	tmpFile, err := os.CreateTemp("", "test-config-registry-defaults-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Registry.RelayID != "relay-from-telemetry" {
+		t.Fatalf("registry relay ID = %q", cfg.Registry.RelayID)
+	}
+	if cfg.Registry.HeartbeatInterval != 10*time.Second || cfg.Registry.RequestTimeout != 5*time.Second {
+		t.Fatalf("registry defaults = %#v", cfg.Registry)
+	}
+}
+
+func TestRegistryConfigRequiresRoutingIdentity(t *testing.T) {
+	for name, registry := range map[string]string{
+		"address":   "relay_id: relay-1\nadvertise_address: relay.internal",
+		"relay ID":  "address: registry:50051\nadvertise_address: relay.internal",
+		"advertise": "address: registry:50051\nrelay_id: relay-1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpFile, err := os.CreateTemp("", "test-config-registry-invalid-*.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(tmpFile.Name())
+			content := "registry:\n  enabled: true\n  " + strings.ReplaceAll(registry, "\n", "\n  ") + "\nsinks:\n  file:\n    path: /tmp/test\n    format: json\n"
+			if _, err := tmpFile.WriteString(content); err != nil {
+				t.Fatal(err)
+			}
+			if err := tmpFile.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(tmpFile.Name()); err == nil {
+				t.Fatal("expected registry validation error")
+			}
+		})
 	}
 }
 

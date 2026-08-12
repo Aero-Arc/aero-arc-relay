@@ -13,6 +13,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -24,8 +25,37 @@ import (
 	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+type recordingAgentRegistrar struct {
+	agentID string
+	err     error
+	stopped []string
+}
+
+type blockingStopAgentRegistrar struct {
+	stopStarted chan struct{}
+	releaseStop chan struct{}
+}
+
+func (*blockingStopAgentRegistrar) RegisterAgent(context.Context, string) error { return nil }
+
+func (r *blockingStopAgentRegistrar) StopAgent(string) {
+	close(r.stopStarted)
+	<-r.releaseStop
+}
+
+func (r *recordingAgentRegistrar) StopAgent(agentID string) {
+	r.stopped = append(r.stopped, agentID)
+}
+
+func (r *recordingAgentRegistrar) RegisterAgent(_ context.Context, agentID string) error {
+	r.agentID = agentID
+	return r.err
+}
 
 func TestRegister(t *testing.T) {
 	// Setup
@@ -66,6 +96,108 @@ func TestRegister(t *testing.T) {
 	}
 	if untrimmedExists {
 		t.Fatal("Session was stored under the untrimmed agent ID")
+	}
+}
+
+func TestRegisterDoesNotPublishAgentBeforeTelemetryStream(t *testing.T) {
+	reporter := &recordingAgentRegistrar{}
+	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if reporter.agentID != "" {
+		t.Fatalf("registered agent = %q before its telemetry stream connected", reporter.agentID)
+	}
+}
+
+func TestRegisterSucceedsWhileRegistryIsUnavailable(t *testing.T) {
+	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
+	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+		t.Fatalf("Register error = %v", err)
+	}
+	if len(relay.grpcSessions) != 1 {
+		t.Fatal("registration handshake did not publish its local session")
+	}
+}
+
+func TestTelemetryStreamPublishesOnlyActiveAgentAndStopsOnDisconnect(t *testing.T) {
+	reporter := &recordingAgentRegistrar{}
+	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	const agentID = "agent-1"
+	relay.grpcSessions[agentID] = &DroneSession{
+		agentID: agentID, SessionID: "session-1", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	stream, cancel := newAgentTelemetryStream(agentID)
+	defer cancel()
+	close(stream.recvChan)
+
+	if err := relay.TelemetryStream(stream); err != nil {
+		t.Fatalf("TelemetryStream error = %v", err)
+	}
+	if reporter.agentID != agentID {
+		t.Fatalf("registered agent = %q, want %q", reporter.agentID, agentID)
+	}
+	if len(reporter.stopped) != 1 || reporter.stopped[0] != agentID {
+		t.Fatalf("stopped agents = %v, want [%s]", reporter.stopped, agentID)
+	}
+}
+
+func TestTelemetryStreamRejectsAgentWhenRegistryPublicationFails(t *testing.T) {
+	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
+	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	const agentID = "agent-1"
+	relay.grpcSessions[agentID] = &DroneSession{
+		agentID: agentID, SessionID: "session-1", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	stream, cancel := newAgentTelemetryStream(agentID)
+	defer cancel()
+
+	err := relay.TelemetryStream(stream)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("TelemetryStream error = %v, want Unavailable", err)
+	}
+	if len(relay.grpcSessions) != 0 {
+		t.Fatal("failed registry publication left an active local session")
+	}
+	if len(reporter.stopped) != 1 || reporter.stopped[0] != agentID {
+		t.Fatalf("stopped agents = %v, want [%s]", reporter.stopped, agentID)
+	}
+}
+
+func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *testing.T) {
+	reporter := &blockingStopAgentRegistrar{stopStarted: make(chan struct{}), releaseStop: make(chan struct{})}
+	const agentID = "agent-1"
+	binding := &telemetryStreamBinding{generation: 1}
+	session := &DroneSession{
+		agentID: agentID, SessionID: "old-session", stream: binding, streamGeneration: 1,
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		grpcSessions: map[string]*DroneSession{agentID: session}, registryReporter: reporter,
+	}
+	cleanupDone := make(chan struct{})
+	go func() {
+		relay.deleteStream(agentID, session, binding)
+		close(cleanupDone)
+	}()
+	<-reporter.stopStarted
+
+	registerDone := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID})
+		registerDone <- err
+	}()
+	select {
+	case err := <-registerDone:
+		t.Fatalf("replacement registration completed before old liveness stopped: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(reporter.releaseStop)
+	<-cleanupDone
+	if err := <-registerDone; err != nil {
+		t.Fatalf("replacement registration failed: %v", err)
 	}
 }
 

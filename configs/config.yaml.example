@@ -1,6 +1,14 @@
 registry:
   enabled: false
-  address: "localhost:9090"
+  address: "localhost:50051"
+  relay_id: "relay-local-1"
+  advertise_address: "relay-local"
+  heartbeat_interval: "10s"
+  request_timeout: "5s"
+  tls:
+    enabled: false
+    ca_file: ""
+    server_name: ""
 
 telemetry:
   enabled: false

@@ -112,7 +112,13 @@ func TestRelayCreationWithOnlyInternalOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			relay, err := New(tt.config)
+			relay := &Relay{config: tt.config}
+			reporter := &closeTrackingConsumer{}
+			err := relay.initializeOutputsWith(
+				func() (outputs.EnvelopeConsumer, error) { return reporter, nil },
+				func() (outputs.EnvelopeConsumer, error) { return reporter, nil },
+				func() error { return nil },
+			)
 			if err != nil {
 				t.Fatalf("New() with only %s output: %v", tt.name, err)
 			}
@@ -136,6 +142,7 @@ func TestInitializeOutputsClosesConsumersWhenSinkInitializationFails(t *testing.
 	}
 
 	err := relay.initializeOutputsWith(
+		func() (outputs.EnvelopeConsumer, error) { return nil, errors.New("unused") },
 		func() (outputs.EnvelopeConsumer, error) { return consumer, nil },
 		func() error { return sinkErr },
 	)
@@ -433,6 +440,10 @@ func (c *closeTrackingConsumer) Name() string { return "close-tracking" }
 func (c *closeTrackingConsumer) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope) error {
 	return nil
 }
+
+func (c *closeTrackingConsumer) RegisterAgent(context.Context, string) error { return nil }
+
+func (c *closeTrackingConsumer) StopAgent(string) {}
 
 func (c *closeTrackingConsumer) Close(context.Context) error {
 	c.closed = true

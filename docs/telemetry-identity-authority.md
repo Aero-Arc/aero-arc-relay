@@ -140,11 +140,14 @@ Implementations must not:
 
 ## Current implementation gaps
 
-The current protobuf contract has fields for `session_id` and `flight_id`, but
-the agent ignores the registration response and does not populate them. The
-relay currently returns a placeholder session ID derived from `agent_id` and
-does not resolve an aircraft assignment. Normalized telemetry work must close
-those gaps without changing the generic forwarding contract.
+The Relay returns a cryptographically random session ID, requires every frame
+to carry it, and reports connected agent and Relay liveness to the registry.
+The current assignment resolver is still the static
+`telemetry.agent_mappings` bootstrap configuration; it does not yet consume an
+API-owned assignment view. Operation-context mutation is also disabled until
+the Relay control plane has workload authentication and authorization, so
+`flight_id` and `intent_id` remain absent unless an authoritative context was
+already established.
 
 The exact assignment delivery mechanism, unassigned-data retention period,
 and authentication/authorization policy remain operational design decisions.

@@ -45,7 +45,6 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
-
 	newSession := &DroneSession{
 		agentID:       agentID,
 		SessionID:     sessionID,
@@ -78,6 +77,9 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
+			if r.registryReporter != nil {
+				r.registryReporter.StopAgent(agentID)
+			}
 		}
 		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
@@ -117,6 +119,12 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		return status.Errorf(codes.Internal, "failed to update stream: %v", err)
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID)
+	if r.registryReporter != nil {
+		if err := r.registryReporter.RegisterAgent(ctx, agentID); err != nil {
+			r.deleteStream(agentID, streamSession, streamBinding)
+			return status.Errorf(codes.Unavailable, "register active agent with control plane: %v", err)
+		}
+	}
 
 	defer r.deleteStream(agentID, streamSession, streamBinding)
 

@@ -39,13 +39,12 @@ func (r *Relay) updateStream(agentID string, stream agentv1.AgentGateway_Telemet
 
 func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expectedStream *telemetryStreamBinding) {
 	expectedSession.ownershipMu.Lock()
-	defer expectedSession.ownershipMu.Unlock()
-
 	r.sessionsMu.Lock()
-	defer r.sessionsMu.Unlock()
 
 	session, ok := r.grpcSessions[agentID]
 	if !ok || session != expectedSession {
+		r.sessionsMu.Unlock()
+		expectedSession.ownershipMu.Unlock()
 		return
 	}
 
@@ -55,5 +54,14 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 	if isCurrentStream {
 		session.retired = true
 		delete(r.grpcSessions, agentID)
+		// Stop liveness before releasing the session-map lock. Otherwise a new
+		// registration could publish and activate a replacement stream between
+		// this deletion and StopAgent, and the old cleanup would stop the new
+		// generation's heartbeats.
+		if r.registryReporter != nil {
+			r.registryReporter.StopAgent(agentID)
+		}
 	}
+	r.sessionsMu.Unlock()
+	expectedSession.ownershipMu.Unlock()
 }

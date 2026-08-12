@@ -1,3 +1,36 @@
+### Registry reporting
+
+The registry is the current-state control plane. When enabled, Relay registers
+its routable address during startup, renews relay liveness periodically, and
+registers agents when their telemetry stream becomes active. A background
+heartbeat keeps idle-but-connected streams live, while accepted telemetry can
+also renew liveness at a bounded cadence. Telemetry payloads are not stored in
+the registry.
+
+```yaml
+registry:
+  enabled: true
+  address: "registry.internal:50051"
+  relay_id: "relay-us-central-1"
+  advertise_address: "relay-us-central-1.internal"
+  heartbeat_interval: "10s"
+  request_timeout: "5s"
+  tls:
+    enabled: true
+    ca_file: "/run/secrets/registry-ca.pem"
+    server_name: "registry.internal"
+```
+
+`relay_id` may be omitted only when `telemetry.relay_id` supplies the same
+identity. `advertise_address` must be reachable by trusted control-plane
+clients; the Relay gRPC port comes from the process `--grpc-port` flag. TLS is
+recommended outside isolated local development. If registry reporting cannot
+initialize, Relay startup fails. If an agent cannot be registered, its Relay
+telemetry stream is rejected so dashboards and routing never silently omit an
+accepted connection. The initial registration handshake alone does not make an
+agent appear connected. Registry heartbeat failures do not reject
+already-admitted telemetry and are retried.
+
 ### Normalized telemetry
 
 The official Aero Arc telemetry path uses InfluxDB 3 Core and is configured
@@ -39,6 +72,13 @@ Omitting `max_retries` defaults backend writes to three retries; setting it to
 
 Set `backend: "noop"` only when normalized telemetry is deliberately disabled
 for tests or local routing demonstrations.
+
+The normalized path already accepts `GLOBAL_POSITION_INT`, `BATTERY_STATUS`,
+`HEARTBEAT`, `SYS_STATUS`, `VFR_HUD`, `EXTENDED_SYS_STATE`, `GPS_RAW_INT`, and
+`SYSTEM_TIME`. Each message is stored as an independent observation with its
+own event time. API consumers must query the latest row per message group and
+must not pretend that position, battery, and vehicle state were sampled
+together.
 
 ### Data Sinks
 

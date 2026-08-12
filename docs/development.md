@@ -43,6 +43,7 @@ go test -race ./...
 
 # Run container-backed integration tests
 go test -tags=integration -timeout=10m ./internal/integration
+go test -tags=integration ./internal/registryreporter
 ```
 
 ### Container-backed telemetry integration test
@@ -81,6 +82,11 @@ The test proves that:
 - the production asynchronous telemetry writer and InfluxDB 3 backend persist
   the record; and
 - the record is SQL-queryable before and after clean Relay shutdown.
+
+`internal/registryreporter` also contains a real-gRPC integration test that
+starts an in-process registry server on an ephemeral port and verifies Relay
+registration, periodic Relay heartbeat, and active-stream agent placement
+publication.
 
 It does not exercise the real Agent process, Agent WAL or backlog recovery,
 serial/UDP/TCP MAVLink ingestion, ArduPilot SITL, Relay restart durability,
