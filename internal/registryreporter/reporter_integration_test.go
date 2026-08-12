@@ -98,6 +98,11 @@ func TestReporterPublishesThroughGRPC(t *testing.T) {
 		recording.mu.Lock()
 		ready := recording.relay != nil && recording.relayBeats > 0 && recording.agentBeats > 0 &&
 			recording.agents["agent-1"] == "relay-1" && allRelayIDs(recording.agentBeatRelays, "relay-1")
+		if ready && (recording.relay.GetRelayId() != "relay-1" ||
+			recording.relay.GetAddress() != "relay.internal" || recording.relay.GetGrpcPort() != 50051) {
+			recording.mu.Unlock()
+			t.Fatalf("registered Relay = %#v, want relay-1 at relay.internal:50051", recording.relay)
+		}
 		recording.mu.Unlock()
 		if ready {
 			break
@@ -108,6 +113,37 @@ func TestReporterPublishesThroughGRPC(t *testing.T) {
 			t.Fatal("timed out waiting for relay and agent registry state")
 		}
 	}
+
+	// Disconnect stops this Agent's liveness worker while the Relay worker keeps
+	// renewing over the same real gRPC connection.
+	reporter.StopAgent("agent-1")
+	time.Sleep(2 * 20 * time.Millisecond)
+	recording.mu.Lock()
+	agentBeatsAfterStop := recording.agentBeats
+	relayBeatsAfterStop := recording.relayBeats
+	recording.mu.Unlock()
+	time.Sleep(4 * 20 * time.Millisecond)
+	recording.mu.Lock()
+	if recording.agentBeats != agentBeatsAfterStop {
+		t.Errorf("Agent heartbeats continued after StopAgent: before=%d after=%d", agentBeatsAfterStop, recording.agentBeats)
+	}
+	if recording.relayBeats <= relayBeatsAfterStop {
+		t.Errorf("Relay heartbeat did not continue after StopAgent: before=%d after=%d", relayBeatsAfterStop, recording.relayBeats)
+	}
+	recording.mu.Unlock()
+
+	if err := reporter.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recording.mu.Lock()
+	relayBeatsAfterClose := recording.relayBeats
+	recording.mu.Unlock()
+	time.Sleep(3 * 20 * time.Millisecond)
+	recording.mu.Lock()
+	if recording.relayBeats != relayBeatsAfterClose {
+		t.Errorf("Relay heartbeats continued after Close: before=%d after=%d", relayBeatsAfterClose, recording.relayBeats)
+	}
+	recording.mu.Unlock()
 }
 
 func allRelayIDs(got []string, want string) bool {
