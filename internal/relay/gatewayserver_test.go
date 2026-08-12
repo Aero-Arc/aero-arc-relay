@@ -63,6 +63,26 @@ type blockingStopAgentRegistrar struct {
 	releaseStop chan struct{}
 }
 
+type blockingRegisterAgentRegistrar struct {
+	registerStarted chan struct{}
+	releaseRegister chan struct{}
+}
+
+func (r *blockingRegisterAgentRegistrar) RegisterAgent(ctx context.Context, _ string) error {
+	select {
+	case r.registerStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.releaseRegister:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (*blockingRegisterAgentRegistrar) StopAgent(string) {}
+
 func (*blockingStopAgentRegistrar) RegisterAgent(context.Context, string) error { return nil }
 
 func (r *blockingStopAgentRegistrar) StopAgent(string) {
@@ -244,6 +264,69 @@ func TestTelemetryStreamRejectsUnboundSessionBeforeRegistryPublication(t *testin
 	}
 	if _, ok := relay.grpcSessions["agent-1"]; !ok {
 		t.Fatal("unbound stream removed the legitimate session")
+	}
+}
+
+func TestRegistryPublicationRejectsReplacedSession(t *testing.T) {
+	reporter := &recordingAgentRegistrar{}
+	binding := &telemetryStreamBinding{generation: 1}
+	oldSession := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session", stream: binding, streamGeneration: 1,
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck), retired: true,
+	}
+	relay := &Relay{
+		grpcSessions: map[string]*DroneSession{
+			"agent-1": {agentID: "agent-1", SessionID: "replacement-session"},
+		},
+		registryReporter: reporter,
+	}
+
+	err := relay.registerActiveAgent(context.Background(), "agent-1", oldSession, binding)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("registerActiveAgent() error = %v, want ErrSessionNotFound", err)
+	}
+	if reporter.agentID != "" {
+		t.Fatalf("replaced session published agent %q", reporter.agentID)
+	}
+}
+
+func TestRegistryPublicationLinearizesBeforeSessionReplacement(t *testing.T) {
+	reporter := &blockingRegisterAgentRegistrar{
+		registerStarted: make(chan struct{}, 1),
+		releaseRegister: make(chan struct{}),
+	}
+	relay := relayWithRegistryReporter(t, reporter)
+	binding := &telemetryStreamBinding{generation: 1}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session", stream: binding, streamGeneration: 1,
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions["agent-1"] = session
+
+	published := make(chan error, 1)
+	go func() {
+		published <- relay.registerActiveAgent(context.Background(), "agent-1", session, binding)
+	}()
+	<-reporter.registerStarted
+	replaced := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(
+			authenticatedAgentContext("agent-1"),
+			&agentv1.RegisterRequest{AgentId: "agent-1"},
+		)
+		replaced <- err
+	}()
+	select {
+	case err := <-replaced:
+		t.Fatalf("replacement completed before publication linearized: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(reporter.releaseRegister)
+	if err := <-published; err != nil {
+		t.Fatalf("registerActiveAgent() error = %v", err)
+	}
+	if err := <-replaced; err != nil {
+		t.Fatalf("replacement Register() error = %v", err)
 	}
 }
 

@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 package relay
 
 import (
+	"context"
+
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 )
 
@@ -35,6 +37,42 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 	session.stream = binding
 
 	return session, binding, nil
+}
+
+func (r *Relay) registerActiveAgent(
+	ctx context.Context,
+	agentID string,
+	expectedSession *DroneSession,
+	expectedStream *telemetryStreamBinding,
+) error {
+	if r.registryReporter == nil {
+		return nil
+	}
+
+	// Registration replacement and active-stream cleanup take the matching
+	// ownership write lease before changing the session map. Keep the read lease
+	// through Registry publication so the liveness record linearizes while this
+	// exact session and stream binding still own the Agent.
+	expectedSession.ownershipMu.RLock()
+	defer expectedSession.ownershipMu.RUnlock()
+
+	r.sessionsMu.RLock()
+	currentSession := r.grpcSessions[agentID]
+	r.sessionsMu.RUnlock()
+	if currentSession != expectedSession || expectedSession.retired {
+		return ErrSessionNotFound
+	}
+
+	expectedSession.sessionMu.RLock()
+	defer expectedSession.sessionMu.RUnlock()
+	if expectedSession.stream != expectedStream ||
+		expectedSession.streamGeneration != expectedStream.generation {
+		return ErrSessionNotFound
+	}
+	if err := r.registryReporter.RegisterAgent(ctx, agentID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expectedStream *telemetryStreamBinding) {

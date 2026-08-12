@@ -131,8 +131,11 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID)
 	if r.registryReporter != nil {
-		if err := r.registryReporter.RegisterAgent(ctx, agentID); err != nil {
+		if err := r.registerActiveAgent(ctx, agentID, streamSession, streamBinding); err != nil {
 			r.deleteStream(agentID, streamSession, streamBinding)
+			if errors.Is(err, ErrSessionNotFound) {
+				return status.Error(codes.Aborted, "telemetry session was replaced before publication")
+			}
 			return status.Errorf(codes.Unavailable, "register active agent with control plane: %v", err)
 		}
 	}
