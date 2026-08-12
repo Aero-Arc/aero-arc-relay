@@ -89,7 +89,11 @@ logging:
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove config fixture: %v", err)
+		}
+	})
 
 	if _, err := tmpFile.WriteString(configContent); err != nil {
 		t.Fatalf("Failed to write config: %v", err)
@@ -216,7 +220,11 @@ sinks:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove config fixture: %v", err)
+		}
+	})
 	if _, err := tmpFile.WriteString(configContent); err != nil {
 		t.Fatal(err)
 	}
