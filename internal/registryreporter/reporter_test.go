@@ -24,6 +24,37 @@ type fakeRegistryClient struct {
 	heartbeatAgentErr  error
 }
 
+type independentlyBlockingRegistryClient struct {
+	*fakeRegistryClient
+	slowStarted chan struct{}
+	releaseSlow chan struct{}
+	fastBeat    chan struct{}
+}
+
+func (c *independentlyBlockingRegistryClient) HeartbeatAgent(
+	ctx context.Context,
+	request *registryv1.HeartbeatAgentRequest,
+	_ ...grpc.CallOption,
+) (*registryv1.HeartbeatAgentResponse, error) {
+	if request.GetAgentId() == "slow-agent" {
+		select {
+		case c.slowStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-c.releaseSlow:
+			return &registryv1.HeartbeatAgentResponse{}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	select {
+	case c.fastBeat <- struct{}{}:
+	default:
+	}
+	return &registryv1.HeartbeatAgentResponse{}, nil
+}
+
 func newFakeRegistryClient() *fakeRegistryClient {
 	return &fakeRegistryClient{
 		agentRegistrations: make(map[string]int),
@@ -170,6 +201,46 @@ func TestReporterHeartbeatsIdleActiveAgent(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("idle active agent was not heartbeated")
+}
+
+func TestReporterSlowAgentDoesNotDelayAnotherAgentHeartbeat(t *testing.T) {
+	client := &independentlyBlockingRegistryClient{
+		fakeRegistryClient: newFakeRegistryClient(),
+		slowStarted:        make(chan struct{}, 1),
+		releaseSlow:        make(chan struct{}),
+		fastBeat:           make(chan struct{}, 1),
+	}
+	reporter := newWithClient(Config{
+		RelayID: "relay-1", HeartbeatInterval: 5 * time.Millisecond, RequestTimeout: 200 * time.Millisecond,
+	}, client)
+	if err := reporter.RegisterAgent(context.Background(), "slow-agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.RegisterAgent(context.Background(), "fast-agent"); err != nil {
+		t.Fatal(err)
+	}
+	reporter.start()
+	t.Cleanup(func() {
+		select {
+		case <-client.releaseSlow:
+		default:
+			close(client.releaseSlow)
+		}
+		if err := reporter.Close(context.Background()); err != nil {
+			t.Errorf("close reporter: %v", err)
+		}
+	})
+
+	select {
+	case <-client.slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow agent heartbeat did not start")
+	}
+	select {
+	case <-client.fastBeat:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("fast agent heartbeat was delayed by the blocked agent")
+	}
 }
 
 func TestReporterStopsHeartbeatingDisconnectedAgent(t *testing.T) {

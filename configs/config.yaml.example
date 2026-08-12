@@ -10,6 +10,10 @@ registry:
     ca_file: ""
     server_name: ""
 
+agent_auth:
+  tokens:
+    "replace-with-agent-id": "${AERO_ARC_AGENT_TOKEN}"
+
 telemetry:
   enabled: false
   backend: "influxdb3"

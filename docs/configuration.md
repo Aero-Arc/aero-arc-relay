@@ -31,6 +31,23 @@ accepted connection. The initial registration handshake alone does not make an
 agent appear connected. Registry heartbeat failures do not reject
 already-admitted telemetry and are retried.
 
+Registry publication also requires the Agent-facing session to be
+authenticated. Configure a distinct high-entropy bearer token for every Agent:
+
+```yaml
+agent_auth:
+  tokens:
+    "agent-id": "${AGENT_ID_TOKEN}"
+```
+
+The Agent sends `authorization: Bearer <token>` metadata on both `Register` and
+`TelemetryStream`. The stream additionally sends the `aero-arc-session-id`
+returned by `Register`; Relay verifies the credential and session binding
+before publishing liveness. Supply tokens through environment-backed secrets,
+never literal values committed to a configuration file. Registry-enabled
+startup rejects an empty credential map. Registry-disabled local/demo flows may
+omit it.
+
 ### Normalized telemetry
 
 The official Aero Arc telemetry path uses InfluxDB 3 Core and is configured

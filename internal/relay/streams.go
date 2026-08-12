@@ -15,12 +15,12 @@ import (
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 )
 
-func (r *Relay) updateStream(agentID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, error) {
+func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, error) {
 	r.sessionsMu.RLock()
 	defer r.sessionsMu.RUnlock()
 
 	session, ok := r.grpcSessions[agentID]
-	if !ok {
+	if !ok || session.SessionID != sessionID || session.retired {
 		return nil, nil, ErrSessionNotFound
 	}
 

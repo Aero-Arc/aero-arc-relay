@@ -140,8 +140,10 @@ Implementations must not:
 
 ## Current implementation gaps
 
-The Relay returns a cryptographically random session ID, requires every frame
-to carry it, and reports connected agent and Relay liveness to the registry.
+The Relay authenticates Registry-visible Agent sessions with per-Agent bearer
+credentials, returns a cryptographically random session ID, requires stream
+setup and every frame to carry it, and reports connected Agent and Relay
+liveness to the registry.
 The current assignment resolver is still the static
 `telemetry.agent_mappings` bootstrap configuration; it does not yet consume an
 API-owned assignment view. Operation-context mutation is also disabled until
@@ -149,6 +151,7 @@ the Relay control plane has workload authentication and authorization, so
 `flight_id` and `intent_id` remain absent unless an authoritative context was
 already established.
 
-The exact assignment delivery mechanism, unassigned-data retention period,
-and authentication/authorization policy remain operational design decisions.
+The exact assignment delivery mechanism, unassigned-data retention period, and
+replacement for the bootstrap token mechanism remain operational design
+decisions.
 They do not block the identity model or normalized record contract.

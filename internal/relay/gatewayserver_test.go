@@ -36,6 +36,28 @@ type recordingAgentRegistrar struct {
 	stopped []string
 }
 
+const testAgentToken = "test-agent-token"
+
+func relayWithRegistryReporter(t *testing.T, reporter agentRegistryReporter) *Relay {
+	t.Helper()
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent-1": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Relay{
+		grpcSessions:       make(map[string]*DroneSession),
+		registryReporter:   reporter,
+		agentAuthenticator: authenticator,
+	}
+}
+
+func authenticatedAgentContext(agentID string) context.Context {
+	return metadata.NewIncomingContext(
+		context.Background(),
+		metadata.Pairs("authorization", bearerPrefix+testAgentToken),
+	)
+}
+
 type blockingStopAgentRegistrar struct {
 	stopStarted chan struct{}
 	releaseStop chan struct{}
@@ -99,10 +121,49 @@ func TestRegister(t *testing.T) {
 	}
 }
 
+func TestRegisterAuthenticatesClaimedAgentBeforeCreatingSession(t *testing.T) {
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent-1": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := &Relay{
+		grpcSessions:       make(map[string]*DroneSession),
+		agentAuthenticator: authenticator,
+	}
+
+	for name, ctx := range map[string]context.Context{
+		"missing": context.Background(),
+		"wrong": metadata.NewIncomingContext(
+			context.Background(), metadata.Pairs("authorization", bearerPrefix+"wrong-token"),
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := relay.Register(ctx, &agentv1.RegisterRequest{AgentId: "agent-1"})
+			if status.Code(err) != codes.Unauthenticated {
+				t.Fatalf("Register() error = %v, want Unauthenticated", err)
+			}
+		})
+	}
+	if len(relay.grpcSessions) != 0 {
+		t.Fatal("unauthenticated registration created a session")
+	}
+
+	response, err := relay.Register(
+		authenticatedAgentContext("agent-1"),
+		&agentv1.RegisterRequest{AgentId: "agent-1"},
+	)
+	if err != nil {
+		t.Fatalf("authenticated Register() error = %v", err)
+	}
+	if response.GetSessionId() == "" {
+		t.Fatal("authenticated registration returned no session ID")
+	}
+}
+
 func TestRegisterDoesNotPublishAgentBeforeTelemetryStream(t *testing.T) {
 	reporter := &recordingAgentRegistrar{}
-	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
-	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+	relay := relayWithRegistryReporter(t, reporter)
+	if _, err := relay.Register(authenticatedAgentContext("agent-1"), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if reporter.agentID != "" {
@@ -112,8 +173,8 @@ func TestRegisterDoesNotPublishAgentBeforeTelemetryStream(t *testing.T) {
 
 func TestRegisterSucceedsWhileRegistryIsUnavailable(t *testing.T) {
 	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
-	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
-	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+	relay := relayWithRegistryReporter(t, reporter)
+	if _, err := relay.Register(authenticatedAgentContext("agent-1"), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
 		t.Fatalf("Register error = %v", err)
 	}
 	if len(relay.grpcSessions) != 1 {
@@ -123,12 +184,12 @@ func TestRegisterSucceedsWhileRegistryIsUnavailable(t *testing.T) {
 
 func TestTelemetryStreamPublishesOnlyActiveAgentAndStopsOnDisconnect(t *testing.T) {
 	reporter := &recordingAgentRegistrar{}
-	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	relay := relayWithRegistryReporter(t, reporter)
 	const agentID = "agent-1"
 	relay.grpcSessions[agentID] = &DroneSession{
 		agentID: agentID, SessionID: "session-1", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
-	stream, cancel := newAgentTelemetryStream(agentID)
+	stream, cancel := newAgentTelemetryStream(agentID, "session-1")
 	defer cancel()
 	close(stream.recvChan)
 
@@ -145,12 +206,12 @@ func TestTelemetryStreamPublishesOnlyActiveAgentAndStopsOnDisconnect(t *testing.
 
 func TestTelemetryStreamRejectsAgentWhenRegistryPublicationFails(t *testing.T) {
 	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
-	relay := &Relay{grpcSessions: make(map[string]*DroneSession), registryReporter: reporter}
+	relay := relayWithRegistryReporter(t, reporter)
 	const agentID = "agent-1"
 	relay.grpcSessions[agentID] = &DroneSession{
 		agentID: agentID, SessionID: "session-1", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
-	stream, cancel := newAgentTelemetryStream(agentID)
+	stream, cancel := newAgentTelemetryStream(agentID, "session-1")
 	defer cancel()
 
 	err := relay.TelemetryStream(stream)
@@ -165,6 +226,27 @@ func TestTelemetryStreamRejectsAgentWhenRegistryPublicationFails(t *testing.T) {
 	}
 }
 
+func TestTelemetryStreamRejectsUnboundSessionBeforeRegistryPublication(t *testing.T) {
+	reporter := &recordingAgentRegistrar{}
+	relay := relayWithRegistryReporter(t, reporter)
+	relay.grpcSessions["agent-1"] = &DroneSession{
+		agentID: "agent-1", SessionID: "current-session", pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	stream, cancel := newAgentTelemetryStream("agent-1", "stolen-session")
+	defer cancel()
+
+	err := relay.TelemetryStream(stream)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("TelemetryStream() error = %v, want Unauthenticated", err)
+	}
+	if reporter.agentID != "" {
+		t.Fatalf("unbound session published agent %q", reporter.agentID)
+	}
+	if _, ok := relay.grpcSessions["agent-1"]; !ok {
+		t.Fatal("unbound stream removed the legitimate session")
+	}
+}
+
 func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *testing.T) {
 	reporter := &blockingStopAgentRegistrar{stopStarted: make(chan struct{}), releaseStop: make(chan struct{})}
 	const agentID = "agent-1"
@@ -173,9 +255,8 @@ func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *test
 		agentID: agentID, SessionID: "old-session", stream: binding, streamGeneration: 1,
 		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
-	relay := &Relay{
-		grpcSessions: map[string]*DroneSession{agentID: session}, registryReporter: reporter,
-	}
+	relay := relayWithRegistryReporter(t, reporter)
+	relay.grpcSessions[agentID] = session
 	cleanupDone := make(chan struct{})
 	go func() {
 		relay.deleteStream(agentID, session, binding)
@@ -185,7 +266,7 @@ func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *test
 
 	registerDone := make(chan error, 1)
 	go func() {
-		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID})
+		_, err := relay.Register(authenticatedAgentContext(agentID), &agentv1.RegisterRequest{AgentId: agentID})
 		registerDone <- err
 	}()
 	select {
@@ -277,7 +358,7 @@ func TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure(t *testing.T) {
 			}
 			relay.grpcSessions[agentID] = session
 
-			stream, cancel := newAgentTelemetryStream(agentID)
+			stream, cancel := newAgentTelemetryStream(agentID, "admission-session")
 			defer cancel()
 			errChannel := make(chan error, 1)
 			go func() {
@@ -336,7 +417,10 @@ func TestTelemetryStream(t *testing.T) {
 	// Setup Mock Stream
 	ctx := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("aero-arc-agent-id", paddedAgentID),
+		metadata.Pairs(
+			"aero-arc-agent-id", paddedAgentID,
+			"aero-arc-session-id", "session-stream-test",
+		),
 	)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -472,7 +556,10 @@ func TestTelemetryStream_OldStreamDoesNotDeleteReplacementSession(t *testing.T) 
 
 	ctx := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("aero-arc-agent-id", agentID),
+		metadata.Pairs(
+			"aero-arc-agent-id", agentID,
+			"aero-arc-session-id", oldSession.SessionID,
+		),
 	)
 	stream := &mockTelemetryStream{
 		ctx:         ctx,
@@ -535,7 +622,7 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	}
 	relay.grpcSessions[agentID] = session
 
-	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	oldStream, cancelOld := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelOld()
 	oldErr := make(chan error, 1)
 	go func() {
@@ -543,7 +630,7 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 	}()
 	waitForStreamGeneration(t, session, 1)
 
-	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelReplacement()
 	replacementErr := make(chan error, 1)
 	go func() {
@@ -613,7 +700,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	}
 	relay.grpcSessions[agentID] = session
 
-	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	oldStream, cancelOld := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelOld()
 	oldStream.sendStarted = make(chan struct{}, 1)
 	oldStream.sendBlock = make(chan struct{})
@@ -632,7 +719,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 		t.Fatal("old stream did not block while sending its ACK")
 	}
 
-	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelReplacement()
 	replacementErr := make(chan error, 1)
 	go func() {
@@ -695,7 +782,7 @@ func TestTelemetryStream_KeepsSessionOwnershipThroughAdmission(t *testing.T) {
 	}
 	relay.grpcSessions[agentID] = session
 
-	stream, cancel := newAgentTelemetryStream(agentID)
+	stream, cancel := newAgentTelemetryStream(agentID, "admission-owner-session")
 	defer cancel()
 	streamErr := make(chan error, 1)
 	go func() {
@@ -789,7 +876,7 @@ func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing
 	}
 	relay.grpcSessions[agentID] = session
 
-	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	oldStream, cancelOld := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelOld()
 	oldErr := make(chan error, 1)
 	go func() {
@@ -797,7 +884,7 @@ func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing
 	}()
 	waitForStreamGeneration(t, session, 1)
 
-	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID)
+	replacementStream, cancelReplacement := newAgentTelemetryStream(agentID, "shared-session")
 	defer cancelReplacement()
 	replacementErr := make(chan error, 1)
 	go func() {
@@ -865,7 +952,7 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	}
 	relay.grpcSessions[agentID] = oldSession
 
-	oldStream, cancelOld := newAgentTelemetryStream(agentID)
+	oldStream, cancelOld := newAgentTelemetryStream(agentID, "old-session")
 	defer cancelOld()
 	oldErr := make(chan error, 1)
 	go func() {
@@ -981,10 +1068,14 @@ func TestOperationContextCommandACKRequiresPendingCommand(t *testing.T) {
 	}
 }
 
-func newAgentTelemetryStream(agentID string) (*mockTelemetryStream, context.CancelFunc) {
+func newAgentTelemetryStream(agentID, sessionID string) (*mockTelemetryStream, context.CancelFunc) {
 	ctx := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("aero-arc-agent-id", agentID),
+		metadata.Pairs(
+			"aero-arc-agent-id", agentID,
+			"aero-arc-session-id", sessionID,
+			"authorization", bearerPrefix+testAgentToken,
+		),
 	)
 	ctx, cancel := context.WithCancel(ctx)
 	return &mockTelemetryStream{
@@ -1093,7 +1184,10 @@ func TestTelemetryStream_UnregisteredAgent(t *testing.T) {
 	// Setup Mock Stream with valid metadata but invalid session (not registered)
 	ctx := metadata.NewIncomingContext(
 		context.Background(),
-		metadata.Pairs("aero-arc-agent-id", agentID),
+		metadata.Pairs(
+			"aero-arc-agent-id", agentID,
+			"aero-arc-session-id", "missing-session",
+		),
 	)
 
 	stream := &mockTelemetryStream{

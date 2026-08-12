@@ -17,9 +17,15 @@ The relay supports graceful shutdown with context cancellation:
 ### gRPC Security Boundary
 
 The current gRPC listener uses server TLS, which encrypts traffic and
-authenticates the relay to clients but does not authenticate clients to the
-relay. The agent gateway and relay control service also share that listener, so
-an IP/port firewall cannot authorize individual control methods.
+authenticates the relay to clients. When Registry reporting is enabled, Agent
+gateway registration and stream attachment additionally require a configured
+per-Agent bearer credential, and the stream is bound to the random registration
+session before liveness is published. Protect those credentials as deployment
+secrets and rotate them per Agent.
+
+The relay control service still has no workload authentication or authorization.
+The agent gateway and relay control service also share one listener, so an
+IP/port firewall cannot authorize individual control methods.
 
 Operation-context mutation RPCs are disabled until the control service is moved
 to a private listener restricted to the trusted API workload and protected by

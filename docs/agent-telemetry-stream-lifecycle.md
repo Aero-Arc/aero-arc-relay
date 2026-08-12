@@ -10,8 +10,8 @@ rules that keep messages attached to the correct connection during replacement.
 ```text
 Agent                       Relay                         Outputs / Control API
   |                           |                                   |
-  | Register(agent_id)        |                                   |
-  |-------------------------->| create DroneSession + session ID  |
+  | Register(agent_id + auth) |                                   |
+  |-------------------------->| authenticate + create session ID  |
   |<--------------------------|                                   |
   |                           |                                   |
   | TelemetryStream metadata  |                                   |
@@ -35,7 +35,10 @@ Agent                       Relay                         Outputs / Control API
 
 ## 1. Registration
 
-An agent first calls `Register` with a non-empty agent ID. The relay:
+An agent first calls `Register` with a non-empty agent ID and its configured
+`authorization: Bearer <token>` request metadata. When Registry reporting is
+enabled, the Relay authenticates the credential against that exact agent ID
+before it creates or replaces any session. The relay then:
 
 1. Generates a new opaque session ID.
 2. Creates a `DroneSession` containing the agent identity, timestamps, stream
@@ -53,13 +56,17 @@ but it no longer owns the active registered session.
 
 ## 2. Attaching a Telemetry Stream
 
-The agent opens the bidirectional `TelemetryStream` RPC and supplies its agent ID
-in the `aero-arc-agent-id` request metadata. The relay rejects calls with missing
-metadata, missing agent ID, or no prior registration.
+The agent opens the bidirectional `TelemetryStream` RPC and supplies its agent
+ID in `aero-arc-agent-id`, the opaque registration session in
+`aero-arc-session-id`, and the same bearer credential in `authorization`
+request metadata. The relay rejects calls with missing metadata, invalid
+credentials, a session that is not currently bound to that agent, or no prior
+registration. This check completes before Registry liveness is published.
 
 For an accepted call, `updateStream`:
 
-1. Resolves the current `DroneSession` for the agent ID.
+1. Resolves the current `DroneSession` for the agent ID and verifies the
+   metadata session ID.
 2. Increments the session's stream generation.
 3. Creates a stream binding containing the RPC stream, generation, and a send
    lock owned by that stream.

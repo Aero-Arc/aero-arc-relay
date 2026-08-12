@@ -63,13 +63,18 @@ type Reporter struct {
 	closeOnce sync.Once
 
 	mu                sync.Mutex
+	started           bool
 	activeAgents      map[string]*agentGeneration
 	registeredAgents  map[string]*agentGeneration
 	agentLastReported map[string]time.Time
 	now               func() time.Time
 }
 
-type agentGeneration struct{ marker byte }
+type agentGeneration struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started bool
+}
 
 func New(ctx context.Context, config Config) (*Reporter, error) {
 	config = config.withDefaults()
@@ -184,15 +189,21 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 		return errors.New("registry registration requires agent ID")
 	}
 	r.mu.Lock()
-	generation := &agentGeneration{}
+	previous := r.activeAgents[agentID]
+	generationCtx, cancel := context.WithCancel(r.workerCtx)
+	generation := &agentGeneration{ctx: generationCtx, cancel: cancel}
 	r.activeAgents[agentID] = generation
 	delete(r.registeredAgents, agentID)
 	delete(r.agentLastReported, agentID)
 	r.mu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
 	if err := r.reportAgent(ctx, agentID, true, generation); err != nil {
 		r.stopAgentGeneration(agentID, generation)
 		return err
 	}
+	r.startAgentHeartbeat(agentID, generation)
 	return nil
 }
 
@@ -201,21 +212,27 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 func (r *Reporter) StopAgent(agentID string) {
 	agentID = strings.TrimSpace(agentID)
 	r.mu.Lock()
+	generation := r.activeAgents[agentID]
 	delete(r.activeAgents, agentID)
 	delete(r.registeredAgents, agentID)
 	delete(r.agentLastReported, agentID)
 	r.mu.Unlock()
+	if generation != nil {
+		generation.cancel()
+	}
 }
 
 func (r *Reporter) stopAgentGeneration(agentID string, generation *agentGeneration) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.activeAgents[agentID] != generation {
+		r.mu.Unlock()
 		return
 	}
 	delete(r.activeAgents, agentID)
 	delete(r.registeredAgents, agentID)
 	delete(r.agentLastReported, agentID)
+	r.mu.Unlock()
+	generation.cancel()
 }
 
 func (r *Reporter) reportAgent(ctx context.Context, agentID string, forceRegister bool, expectedGeneration *agentGeneration) error {
@@ -286,6 +303,17 @@ func (r *Reporter) registerRelay(ctx context.Context) error {
 }
 
 func (r *Reporter) start() {
+	r.mu.Lock()
+	r.started = true
+	agents := make(map[string]*agentGeneration, len(r.activeAgents))
+	for agentID, generation := range r.activeAgents {
+		agents[agentID] = generation
+	}
+	r.mu.Unlock()
+	for agentID, generation := range agents {
+		r.startAgentHeartbeat(agentID, generation)
+	}
+
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -308,13 +336,35 @@ func (r *Reporter) start() {
 						slog.String("error", err.Error()),
 					)
 				}
-				for _, agentID := range r.activeAgentIDs() {
-					if err := r.reportAgent(r.workerCtx, agentID, false, nil); err != nil && !isCanceled(err) {
-						slog.WarnContext(r.workerCtx, "registry agent heartbeat failed; will retry",
-							slog.String("agent_id", agentID),
-							slog.String("error", err.Error()),
-						)
-					}
+			}
+		}
+	}()
+}
+
+func (r *Reporter) startAgentHeartbeat(agentID string, generation *agentGeneration) {
+	r.mu.Lock()
+	if !r.started || generation.started || r.activeAgents[agentID] != generation {
+		r.mu.Unlock()
+		return
+	}
+	generation.started = true
+	r.wg.Add(1)
+	r.mu.Unlock()
+
+	go func() {
+		defer r.wg.Done()
+		ticker := time.NewTicker(r.config.HeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-generation.ctx.Done():
+				return
+			case <-ticker.C:
+				if err := r.reportAgent(generation.ctx, agentID, false, generation); err != nil && !isCanceled(err) {
+					slog.WarnContext(generation.ctx, "registry agent heartbeat failed; will retry",
+						slog.String("agent_id", agentID),
+						slog.String("error", err.Error()),
+					)
 				}
 			}
 		}
@@ -323,16 +373,6 @@ func (r *Reporter) start() {
 
 func isCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled
-}
-
-func (r *Reporter) activeAgentIDs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	agentIDs := make([]string, 0, len(r.activeAgents))
-	for agentID := range r.activeAgents {
-		agentIDs = append(agentIDs, agentID)
-	}
-	return agentIDs
 }
 
 func (r *Reporter) Close(ctx context.Context) error {

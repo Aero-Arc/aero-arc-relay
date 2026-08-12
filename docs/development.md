@@ -42,8 +42,7 @@ go test -cover ./...
 go test -race ./...
 
 # Run container-backed integration tests
-go test -tags=integration -timeout=10m ./internal/integration
-go test -tags=integration ./internal/registryreporter
+go test -tags=integration -timeout=10m ./internal/integration ./internal/registryreporter ./internal/relay
 ```
 
 ### Container-backed telemetry integration test
@@ -87,6 +86,11 @@ The test proves that:
 starts an in-process registry server on an ephemeral port and verifies Relay
 registration, periodic Relay heartbeat, and active-stream agent placement
 publication.
+
+`internal/relay` exercises the generated Agent gRPC client against a real
+in-process gRPC server. It proves unauthenticated registration is rejected and
+that an authenticated registration/session binding publishes liveness only
+while its stream is active.
 
 It does not exercise the real Agent process, Agent WAL or backlog recovery,
 serial/UDP/TCP MAVLink ingestion, ArduPilot SITL, Relay restart durability,

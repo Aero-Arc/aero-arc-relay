@@ -57,6 +57,7 @@ type Relay struct {
 	closeOnce          sync.Once
 	closeErr           error
 	registryReporter   agentRegistryReporter
+	agentAuthenticator func(context.Context, string) error
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -138,10 +139,18 @@ var (
 
 // New creates a new relay instance
 func New(cfg *config.Config) (*Relay, error) {
+	authenticator, err := newAgentTokenAuthenticator(cfg.AgentAuth.Tokens)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Registry.Enabled && authenticator == nil {
+		return nil, fmt.Errorf("agent authentication is required when registry reporting is enabled")
+	}
 	relay := &Relay{
-		config:       cfg,
-		sinks:        make([]sinks.Sink, 0),
-		grpcSessions: make(map[string]*DroneSession),
+		config:             cfg,
+		sinks:              make([]sinks.Sink, 0),
+		grpcSessions:       make(map[string]*DroneSession),
+		agentAuthenticator: authenticator,
 	}
 
 	if err := relay.initializeOutputs(); err != nil {

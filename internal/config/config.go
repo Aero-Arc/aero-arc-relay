@@ -16,6 +16,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +26,7 @@ import (
 type Config struct {
 	Sinks       SinksConfig     `yaml:"sinks"`
 	Registry    RegistryConfig  `yaml:"registry"`
+	AgentAuth   AgentAuthConfig `yaml:"agent_auth"`
 	Telemetry   TelemetryConfig `yaml:"telemetry"`
 	Logging     LoggingConfig   `yaml:"logging"`
 	Debug       bool
@@ -32,6 +34,13 @@ type Config struct {
 	TLSKeyPath  string
 	GrpcPort    int
 	BufferSize  int
+}
+
+// AgentAuthConfig contains bootstrap credentials for authenticating an agent
+// before binding its claimed ID to a Relay session. Tokens should be supplied
+// through environment-expanded secret values, not checked into configuration.
+type AgentAuthConfig struct {
+	Tokens map[string]string `yaml:"tokens"`
 }
 
 // SinksConfig contains configuration for all data sinks
@@ -311,6 +320,17 @@ func (c *Config) validateRegistry() error {
 	}
 	if c.Registry.AdvertiseAddress == "" {
 		return fmt.Errorf("registry advertise_address is required when registry reporting is enabled")
+	}
+	if len(c.AgentAuth.Tokens) == 0 {
+		return fmt.Errorf("agent_auth.tokens is required when registry reporting is enabled")
+	}
+	for agentID, token := range c.AgentAuth.Tokens {
+		if agentID == "" || agentID != strings.TrimSpace(agentID) {
+			return fmt.Errorf("agent_auth.tokens contains an empty or untrimmed agent ID")
+		}
+		if token == "" || token != strings.TrimSpace(token) {
+			return fmt.Errorf("agent_auth token for %q is empty or has surrounding whitespace", agentID)
+		}
 	}
 	return nil
 }

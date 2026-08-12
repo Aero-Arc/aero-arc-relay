@@ -33,6 +33,10 @@ registry:
     ca_file: "/run/secrets/registry-ca.pem"
     server_name: "registry.internal"
 
+agent_auth:
+  tokens:
+    "agent-1": "test-agent-token"
+
 telemetry:
   enabled: true
   backend: "influxdb3"
@@ -111,6 +115,9 @@ logging:
 	}
 	if !cfg.Registry.TLS.Enabled || cfg.Registry.TLS.CAFile == "" || cfg.Registry.TLS.ServerName != "registry.internal" {
 		t.Errorf("unexpected registry TLS: %#v", cfg.Registry.TLS)
+	}
+	if cfg.AgentAuth.Tokens["agent-1"] != "test-agent-token" {
+		t.Errorf("unexpected agent authentication config: %#v", cfg.AgentAuth)
 	}
 	if !cfg.Telemetry.Enabled {
 		t.Error("Telemetry should be enabled")
@@ -195,6 +202,9 @@ registry:
   enabled: true
   address: "registry:50051"
   advertise_address: "relay.internal"
+agent_auth:
+  tokens:
+    "agent-1": "test-agent-token"
 telemetry:
   relay_id: "relay-from-telemetry"
 sinks:
@@ -246,6 +256,29 @@ func TestRegistryConfigRequiresRoutingIdentity(t *testing.T) {
 			}
 			if _, err := Load(tmpFile.Name()); err == nil {
 				t.Fatal("expected registry validation error")
+			}
+		})
+	}
+}
+
+func TestRegistryConfigRequiresValidAgentCredentials(t *testing.T) {
+	base := Config{
+		Registry: RegistryConfig{
+			Enabled: true, Address: "registry:50051", RelayID: "relay-1", AdvertiseAddress: "relay.internal",
+		},
+		AgentAuth: AgentAuthConfig{Tokens: map[string]string{"agent-1": "secret"}},
+	}
+	for name, tokens := range map[string]map[string]string{
+		"missing":      nil,
+		"empty token":  {"agent-1": ""},
+		"padded token": {"agent-1": " secret "},
+		"padded ID":    {" agent-1 ": "secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := base
+			config.AgentAuth.Tokens = tokens
+			if err := config.validateRegistry(); err == nil {
+				t.Fatal("expected invalid Agent credential configuration")
 			}
 		})
 	}

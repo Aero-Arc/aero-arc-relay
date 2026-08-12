@@ -28,6 +28,10 @@
   active telemetry stream is published as connected in the registry.
 - Agent registry publication must succeed before its telemetry stream is
   accepted, and idle active streams receive background heartbeats.
+- Authenticate the claimed Agent ID and bind the registration session before
+  publishing it. Keep per-Agent credentials in environment-backed secrets.
+- Schedule idle Agent heartbeats independently; one slow Registry RPC must not
+  delay renewal for unrelated active streams.
 - Heartbeats are throttled and retry after TTL expiry or registry restart.
 - Registry failures must not make successfully admitted telemetry retry unless
   the official telemetry writer itself failed.
