@@ -2,10 +2,10 @@
 
 The registry is the current-state control plane. When enabled, Relay registers
 its routable address during startup, renews relay liveness periodically, and
-registers agents when their telemetry stream becomes active. A background
-heartbeat keeps idle-but-connected streams live, while accepted telemetry can
-also renew liveness at a bounded cadence. Telemetry payloads are not stored in
-the registry.
+registers agents when their telemetry stream becomes active. An independent
+background heartbeat keeps every active stream live; Registry RPC latency is
+never placed on the telemetry admission/ACK path. Telemetry payloads are not
+stored in the registry.
 
 ```yaml
 registry:

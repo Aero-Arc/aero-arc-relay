@@ -191,15 +191,15 @@ func credentialsFor(config Config) (credentials.TransportCredentials, error) {
 
 func (r *Reporter) Name() string { return ConsumerName }
 
-// WriteEnvelope opportunistically renews liveness for an active agent. The
-// background worker also renews idle streams, and telemetry is never copied
-// into the registry.
-func (r *Reporter) WriteEnvelope(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
+// WriteEnvelope participates in output routing without putting Registry RPC
+// latency on the telemetry ACK path. Per-Agent background workers own all
+// liveness renewal, and telemetry payloads are never copied into Registry.
+func (r *Reporter) WriteEnvelope(_ context.Context, envelope telemetry.TelemetryEnvelope) error {
 	agentID := strings.TrimSpace(envelope.AgentID)
 	if agentID == "" {
 		return errors.New("registry heartbeat requires agent ID")
 	}
-	return r.reportAgent(ctx, agentID, false, nil)
+	return nil
 }
 
 // RegisterAgent makes an agent visible while its telemetry stream is active.

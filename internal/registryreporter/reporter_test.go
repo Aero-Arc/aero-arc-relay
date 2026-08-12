@@ -92,21 +92,17 @@ func (f *fakeRegistryClient) HeartbeatAgent(_ context.Context, request *registry
 	return &registryv1.HeartbeatAgentResponse{}, err
 }
 
-func TestReporterRegistersAndThrottlesAgentHeartbeats(t *testing.T) {
+func TestReporterTelemetryAdmissionDoesNotCallRegistry(t *testing.T) {
 	client := newFakeRegistryClient()
 	reporter := newWithClient(Config{
 		RelayID: "relay-1", HeartbeatInterval: 10 * time.Second, RequestTimeout: time.Second,
 	}, client)
-	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
-	reporter.now = func() time.Time { return now }
-
 	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(11 * time.Second)
 	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +112,8 @@ func TestReporterRegistersAndThrottlesAgentHeartbeats(t *testing.T) {
 	if got := client.agentRegistrations["agent-1"]; got != 1 {
 		t.Fatalf("agent registrations = %d, want 1", got)
 	}
-	if got := client.agentHeartbeats["agent-1"]; got != 1 {
-		t.Fatalf("agent heartbeats = %d, want 1", got)
+	if got := client.agentHeartbeats["agent-1"]; got != 0 {
+		t.Fatalf("telemetry admission made %d registry heartbeat calls, want 0", got)
 	}
 }
 
@@ -136,7 +132,7 @@ func TestReporterReregistersAgentAfterRegistryExpiry(t *testing.T) {
 	client.heartbeatAgentErr = status.Error(codes.NotFound, "expired")
 	client.mu.Unlock()
 	now = now.Add(2 * time.Second)
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
+	if err := reporter.reportAgent(context.Background(), "agent-1", false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,10 +157,10 @@ func TestReporterRetriesImmediatelyAfterFailedHeartbeat(t *testing.T) {
 	client.heartbeatAgentErr = errors.New("registry unavailable")
 	client.mu.Unlock()
 	now = now.Add(2 * time.Minute)
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err == nil {
+	if err := reporter.reportAgent(context.Background(), "agent-1", false, nil); err == nil {
 		t.Fatal("expected heartbeat error")
 	}
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
+	if err := reporter.reportAgent(context.Background(), "agent-1", false, nil); err != nil {
 		t.Fatalf("immediate retry: %v", err)
 	}
 
