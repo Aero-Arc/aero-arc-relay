@@ -280,19 +280,6 @@ func (r *Reporter) StopAgent(agentID string) {
 	}
 }
 
-func (r *Reporter) stopAgentGeneration(agentID string, generation *agentGeneration) {
-	r.mu.Lock()
-	if r.activeAgents[agentID] != generation {
-		r.mu.Unlock()
-		return
-	}
-	delete(r.activeAgents, agentID)
-	delete(r.registeredAgents, agentID)
-	delete(r.agentLastReported, agentID)
-	r.mu.Unlock()
-	generation.cancel()
-}
-
 func (r *Reporter) reportAgent(ctx context.Context, agentID string, forceRegister bool, expectedGeneration *agentGeneration) error {
 	now := r.now().UTC()
 	r.mu.Lock()
