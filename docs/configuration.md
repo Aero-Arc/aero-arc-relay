@@ -31,6 +31,11 @@ accepted connection. The initial registration handshake alone does not make an
 agent appear connected. Registry heartbeat failures do not reject
 already-admitted telemetry and are retried.
 
+Agent registrations and heartbeats both carry the configured `relay_id`.
+Registry accepts a heartbeat only from the Relay that currently owns the Agent
+placement, preventing an older Relay connection from extending a reassigned
+Agent's liveness.
+
 Registry publication also requires the Agent-facing session to be
 authenticated. Configure a distinct high-entropy bearer token for every Agent:
 

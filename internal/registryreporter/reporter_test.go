@@ -38,6 +38,9 @@ func (c *independentlyBlockingRegistryClient) HeartbeatAgent(
 	request *registryv1.HeartbeatAgentRequest,
 	_ ...grpc.CallOption,
 ) (*registryv1.HeartbeatAgentResponse, error) {
+	if request.GetRelayId() != "relay-1" {
+		return nil, status.Errorf(codes.InvalidArgument, "relay ID = %q, want relay-1", request.GetRelayId())
+	}
 	if request.GetAgentId() == "slow-agent" {
 		select {
 		case c.slowStarted <- struct{}{}:
@@ -92,6 +95,9 @@ func (f *fakeRegistryClient) RegisterAgent(_ context.Context, request *registryv
 func (f *fakeRegistryClient) HeartbeatAgent(_ context.Context, request *registryv1.HeartbeatAgentRequest, _ ...grpc.CallOption) (*registryv1.HeartbeatAgentResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if request.GetRelayId() != "relay-1" {
+		return nil, status.Errorf(codes.InvalidArgument, "relay ID = %q, want relay-1", request.GetRelayId())
+	}
 	f.agentHeartbeats[request.GetAgentId()]++
 	err := f.heartbeatAgentErr
 	f.heartbeatAgentErr = nil

@@ -15,12 +15,13 @@ import (
 
 type recordingRegistryServer struct {
 	registryv1.UnimplementedAeroRegistryServer
-	mu           sync.Mutex
-	relay        *registryv1.Relay
-	agents       map[string]string
-	relayBeats   int
-	agentBeats   int
-	notification chan struct{}
+	mu              sync.Mutex
+	relay           *registryv1.Relay
+	agents          map[string]string
+	relayBeats      int
+	agentBeats      int
+	agentBeatRelays []string
+	notification    chan struct{}
 }
 
 func (s *recordingRegistryServer) RegisterRelay(_ context.Context, request *registryv1.RegisterRelayRequest) (*registryv1.RegisterRelayResponse, error) {
@@ -47,9 +48,10 @@ func (s *recordingRegistryServer) RegisterAgent(_ context.Context, request *regi
 	return &registryv1.RegisterAgentResponse{}, nil
 }
 
-func (s *recordingRegistryServer) HeartbeatAgent(context.Context, *registryv1.HeartbeatAgentRequest) (*registryv1.HeartbeatAgentResponse, error) {
+func (s *recordingRegistryServer) HeartbeatAgent(_ context.Context, request *registryv1.HeartbeatAgentRequest) (*registryv1.HeartbeatAgentResponse, error) {
 	s.mu.Lock()
 	s.agentBeats++
+	s.agentBeatRelays = append(s.agentBeatRelays, request.GetRelayId())
 	s.mu.Unlock()
 	s.notify()
 	return &registryv1.HeartbeatAgentResponse{}, nil
@@ -95,7 +97,7 @@ func TestReporterPublishesThroughGRPC(t *testing.T) {
 	for {
 		recording.mu.Lock()
 		ready := recording.relay != nil && recording.relayBeats > 0 && recording.agentBeats > 0 &&
-			recording.agents["agent-1"] == "relay-1"
+			recording.agents["agent-1"] == "relay-1" && allRelayIDs(recording.agentBeatRelays, "relay-1")
 		recording.mu.Unlock()
 		if ready {
 			break
@@ -106,4 +108,13 @@ func TestReporterPublishesThroughGRPC(t *testing.T) {
 			t.Fatal("timed out waiting for relay and agent registry state")
 		}
 	}
+}
+
+func allRelayIDs(got []string, want string) bool {
+	for _, relayID := range got {
+		if relayID != want {
+			return false
+		}
+	}
+	return len(got) > 0
 }

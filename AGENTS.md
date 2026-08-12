@@ -28,6 +28,9 @@
   active telemetry stream is published as connected in the registry.
 - Agent registry publication must succeed before its telemetry stream is
   accepted, and idle active streams receive background heartbeats.
+- Every Agent heartbeat includes the configured Relay ID. Registry uses that
+  owner identity to reject a stale Relay trying to renew another Relay's
+  current Agent placement.
 - Authenticate the claimed Agent ID and bind the registration session before
   publishing it. Keep per-Agent credentials in environment-backed secrets.
 - Schedule idle Agent heartbeats independently; one slow Registry RPC must not

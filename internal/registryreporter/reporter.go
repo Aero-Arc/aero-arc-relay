@@ -329,7 +329,10 @@ func (r *Reporter) reportAgent(ctx context.Context, agentID string, forceRegiste
 	if forceRegister || !registered {
 		err = r.registerAgent(callCtx, agentID)
 	} else {
-		_, err = r.client.HeartbeatAgent(callCtx, &registryv1.HeartbeatAgentRequest{AgentId: agentID})
+		_, err = r.client.HeartbeatAgent(callCtx, &registryv1.HeartbeatAgentRequest{
+			AgentId: agentID,
+			RelayId: r.config.RelayID,
+		})
 		if status.Code(err) == codes.NotFound {
 			err = r.registerAgent(callCtx, agentID)
 		}
