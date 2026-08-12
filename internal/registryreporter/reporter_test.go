@@ -21,6 +21,7 @@ type fakeRegistryClient struct {
 	relayHeartbeats    int
 	agentRegistrations map[string]int
 	agentHeartbeats    map[string]int
+	agentRegisterErr   error
 	heartbeatAgentErr  error
 }
 
@@ -80,7 +81,9 @@ func (f *fakeRegistryClient) RegisterAgent(_ context.Context, request *registryv
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.agentRegistrations[request.GetAgent().GetAgentId()]++
-	return &registryv1.RegisterAgentResponse{}, nil
+	err := f.agentRegisterErr
+	f.agentRegisterErr = nil
+	return &registryv1.RegisterAgentResponse{}, err
 }
 
 func (f *fakeRegistryClient) HeartbeatAgent(_ context.Context, request *registryv1.HeartbeatAgentRequest, _ ...grpc.CallOption) (*registryv1.HeartbeatAgentResponse, error) {
@@ -115,6 +118,52 @@ func TestReporterTelemetryAdmissionDoesNotCallRegistry(t *testing.T) {
 	if got := client.agentHeartbeats["agent-1"]; got != 0 {
 		t.Fatalf("telemetry admission made %d registry heartbeat calls, want 0", got)
 	}
+}
+
+func TestReporterFailedReplacementPreservesPriorHeartbeatGeneration(t *testing.T) {
+	client := newFakeRegistryClient()
+	reporter := newWithClient(Config{
+		RelayID: "relay-1", HeartbeatInterval: 5 * time.Millisecond, RequestTimeout: time.Second,
+	}, client)
+	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
+		t.Fatal(err)
+	}
+	reporter.mu.Lock()
+	prior := reporter.activeAgents["agent-1"]
+	reporter.mu.Unlock()
+
+	client.mu.Lock()
+	client.agentRegisterErr = errors.New("registry unavailable")
+	client.mu.Unlock()
+	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err == nil {
+		t.Fatal("replacement registration unexpectedly succeeded")
+	}
+
+	reporter.mu.Lock()
+	active := reporter.activeAgents["agent-1"]
+	registered := reporter.registeredAgents["agent-1"]
+	reporter.mu.Unlock()
+	if active != prior || registered != prior || prior.ctx.Err() != nil {
+		t.Fatal("failed replacement did not preserve prior heartbeat generation")
+	}
+
+	reporter.start()
+	t.Cleanup(func() {
+		if err := reporter.Close(context.Background()); err != nil {
+			t.Errorf("close reporter: %v", err)
+		}
+	})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		client.mu.Lock()
+		heartbeats := client.agentHeartbeats["agent-1"]
+		client.mu.Unlock()
+		if heartbeats > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("prior generation stopped heartbeating after failed replacement")
 }
 
 func TestReporterReregistersAgentAfterRegistryExpiry(t *testing.T) {

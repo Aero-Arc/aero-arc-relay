@@ -125,13 +125,13 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	}
 	sessionID := strings.TrimSpace(sessionIDs[0])
 
-	streamSession, streamBinding, err := r.updateStream(agentID, sessionID, stream)
+	streamSession, streamBinding, previousStream, err := r.updateStream(agentID, sessionID, stream)
 	if err != nil {
 		return status.Error(codes.Unauthenticated, "telemetry stream is not bound to an active session")
 	}
 	slog.Info("Updated stream for agent", "agent_id", agentID)
 	if r.registryReporter != nil {
-		if err := r.registerActiveAgent(ctx, agentID, streamSession, streamBinding); err != nil {
+		if err := r.registerActiveAgent(ctx, agentID, streamSession, streamBinding, previousStream); err != nil {
 			r.deleteStream(agentID, streamSession, streamBinding)
 			if errors.Is(err, ErrSessionNotFound) {
 				return status.Error(codes.Aborted, "telemetry session was replaced before publication")

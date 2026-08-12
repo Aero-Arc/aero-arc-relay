@@ -17,18 +17,19 @@ import (
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 )
 
-func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, error) {
+func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, *telemetryStreamBinding, error) {
 	r.sessionsMu.RLock()
 	defer r.sessionsMu.RUnlock()
 
 	session, ok := r.grpcSessions[agentID]
 	if !ok || session.SessionID != sessionID || session.retired {
-		return nil, nil, ErrSessionNotFound
+		return nil, nil, nil, ErrSessionNotFound
 	}
 
 	session.sessionMu.Lock()
 	defer session.sessionMu.Unlock()
 
+	previous := session.stream
 	session.streamGeneration++
 	binding := &telemetryStreamBinding{
 		stream:     stream,
@@ -36,7 +37,7 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 	}
 	session.stream = binding
 
-	return session, binding, nil
+	return session, binding, previous, nil
 }
 
 func (r *Relay) registerActiveAgent(
@@ -44,6 +45,7 @@ func (r *Relay) registerActiveAgent(
 	agentID string,
 	expectedSession *DroneSession,
 	expectedStream *telemetryStreamBinding,
+	previousStream *telemetryStreamBinding,
 ) error {
 	if r.registryReporter == nil {
 		return nil
@@ -63,13 +65,17 @@ func (r *Relay) registerActiveAgent(
 		return ErrSessionNotFound
 	}
 
-	expectedSession.sessionMu.RLock()
-	defer expectedSession.sessionMu.RUnlock()
-	if expectedSession.stream != expectedStream ||
-		expectedSession.streamGeneration != expectedStream.generation {
+	expectedSession.sessionMu.Lock()
+	defer expectedSession.sessionMu.Unlock()
+	if expectedSession.stream != expectedStream || expectedStream.closed {
 		return ErrSessionNotFound
 	}
 	if err := r.registryReporter.RegisterAgent(ctx, agentID); err != nil {
+		// Restore only a binding whose cleanup has not already run. A closed
+		// previous stream must never be resurrected after a failed replacement.
+		if previousStream != nil && !previousStream.closed {
+			expectedSession.stream = previousStream
+		}
 		return err
 	}
 	return nil
@@ -86,9 +92,10 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 		return
 	}
 
-	session.sessionMu.RLock()
-	isCurrentStream := session.stream == expectedStream && session.streamGeneration == expectedStream.generation
-	session.sessionMu.RUnlock()
+	session.sessionMu.Lock()
+	expectedStream.closed = true
+	isCurrentStream := session.stream == expectedStream
+	session.sessionMu.Unlock()
 	if isCurrentStream {
 		session.retired = true
 		delete(r.grpcSessions, agentID)

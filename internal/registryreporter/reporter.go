@@ -68,6 +68,7 @@ type Reporter struct {
 	activeAgents      map[string]*agentGeneration
 	registeredAgents  map[string]*agentGeneration
 	agentLastReported map[string]time.Time
+	agentAdmissions   map[string]*agentAdmission
 	now               func() time.Time
 }
 
@@ -75,6 +76,10 @@ type agentGeneration struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	started bool
+}
+
+type agentAdmission struct {
+	cancel context.CancelFunc
 }
 
 func New(ctx context.Context, config Config) (*Reporter, error) {
@@ -137,6 +142,7 @@ func newWithClient(config Config, client registryClient) *Reporter {
 		activeAgents:      make(map[string]*agentGeneration),
 		registeredAgents:  make(map[string]*agentGeneration),
 		agentLastReported: make(map[string]time.Time),
+		agentAdmissions:   make(map[string]*agentAdmission),
 		now:               time.Now,
 	}
 }
@@ -208,20 +214,47 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 	if agentID == "" {
 		return errors.New("registry registration requires agent ID")
 	}
-	r.mu.Lock()
-	previous := r.activeAgents[agentID]
 	generationCtx, cancel := context.WithCancel(r.workerCtx)
 	generation := &agentGeneration{ctx: generationCtx, cancel: cancel}
+	callCtx, cancelCall := context.WithTimeout(r.workerCtx, r.config.RequestTimeout)
+	stopCallerCancellation := context.AfterFunc(ctx, cancelCall)
+	defer stopCallerCancellation()
+	admission := &agentAdmission{cancel: cancelCall}
+
+	r.mu.Lock()
+	previousAdmission := r.agentAdmissions[agentID]
+	r.agentAdmissions[agentID] = admission
+	r.mu.Unlock()
+	if previousAdmission != nil {
+		previousAdmission.cancel()
+	}
+
+	err := r.registerAgent(callCtx, agentID)
+	cancelCall()
+	if err != nil {
+		r.mu.Lock()
+		if r.agentAdmissions[agentID] == admission {
+			delete(r.agentAdmissions, agentID)
+		}
+		r.mu.Unlock()
+		generation.cancel()
+		return fmt.Errorf("register agent %s with registry: %w", agentID, err)
+	}
+
+	r.mu.Lock()
+	if r.agentAdmissions[agentID] != admission {
+		r.mu.Unlock()
+		generation.cancel()
+		return errors.New("agent registration was superseded")
+	}
+	delete(r.agentAdmissions, agentID)
+	previous := r.activeAgents[agentID]
 	r.activeAgents[agentID] = generation
-	delete(r.registeredAgents, agentID)
-	delete(r.agentLastReported, agentID)
+	r.registeredAgents[agentID] = generation
+	r.agentLastReported[agentID] = r.now().UTC()
 	r.mu.Unlock()
 	if previous != nil {
 		previous.cancel()
-	}
-	if err := r.reportAgent(ctx, agentID, true, generation); err != nil {
-		r.stopAgentGeneration(agentID, generation)
-		return err
 	}
 	r.startAgentHeartbeat(agentID, generation)
 	return nil
@@ -232,11 +265,16 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 func (r *Reporter) StopAgent(agentID string) {
 	agentID = strings.TrimSpace(agentID)
 	r.mu.Lock()
+	admission := r.agentAdmissions[agentID]
+	delete(r.agentAdmissions, agentID)
 	generation := r.activeAgents[agentID]
 	delete(r.activeAgents, agentID)
 	delete(r.registeredAgents, agentID)
 	delete(r.agentLastReported, agentID)
 	r.mu.Unlock()
+	if admission != nil {
+		admission.cancel()
+	}
 	if generation != nil {
 		generation.cancel()
 	}

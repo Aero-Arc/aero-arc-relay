@@ -91,6 +91,7 @@ type DroneSession struct {
 type telemetryStreamBinding struct {
 	stream     agentv1.AgentGateway_TelemetryStreamServer
 	generation uint64
+	closed     bool
 	sendMu     contextMutex
 }
 
