@@ -57,7 +57,7 @@ type Relay struct {
 	closeOnce          sync.Once
 	closeErr           error
 	registryReporter   agentRegistryReporter
-	registryStarter    registryReporterStarter
+	registryLifecycle  registryLifecycle
 	agentAuthenticator func(context.Context, string) error
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
@@ -68,8 +68,14 @@ type agentRegistryReporter interface {
 	StopAgent(string)
 }
 
-type registryReporterStarter interface {
+type registryLifecycle interface {
 	Start(context.Context) error
+	Close(context.Context) error
+}
+
+type registryService interface {
+	agentRegistryReporter
+	registryLifecycle
 }
 
 type DroneSession struct {
@@ -211,8 +217,8 @@ func (r *Relay) Start(ctx context.Context) error {
 	relayv1.RegisterRelayControlServer(r.grpcServer, r)
 	agentv1.RegisterAgentGatewayServer(r.grpcServer, r)
 
-	if r.registryStarter != nil {
-		if err := r.registryStarter.Start(ctx); err != nil {
+	if r.registryLifecycle != nil {
+		if err := r.registryLifecycle.Start(ctx); err != nil {
 			return r.failStart(ctx, fmt.Errorf("publish relay to registry: %w", err))
 		}
 	}
@@ -324,13 +330,16 @@ func (r *Relay) failStart(_ context.Context, startErr error) error {
 func (r *Relay) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		if r.router != nil {
-			r.closeErr = r.router.Close(ctx)
-			return
-		}
-		for _, sink := range r.sinks {
-			if err := sink.Close(ctx); err != nil {
-				r.closeErr = errors.Join(r.closeErr, err)
+			r.closeErr = errors.Join(r.closeErr, r.router.Close(ctx))
+		} else {
+			for _, sink := range r.sinks {
+				if err := sink.Close(ctx); err != nil {
+					r.closeErr = errors.Join(r.closeErr, err)
+				}
 			}
+		}
+		if r.registryLifecycle != nil {
+			r.closeErr = errors.Join(r.closeErr, r.registryLifecycle.Close(ctx))
 		}
 	})
 	return r.closeErr
@@ -346,7 +355,7 @@ func (r *Relay) initializeOutputs() error {
 }
 
 func (r *Relay) initializeOutputsWith(
-	newRegistryReporter func() (outputs.EnvelopeConsumer, error),
+	newRegistryReporter func() (registryService, error),
 	newTelemetryWriter func() (outputs.EnvelopeConsumer, error),
 	initializeSinks func() error,
 ) (err error) {
@@ -360,24 +369,20 @@ func (r *Relay) initializeOutputsWith(
 		if closeErr := r.router.Close(closeCtx); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("clean up initialized outputs: %w", closeErr))
 		}
+		if r.registryLifecycle != nil {
+			if closeErr := r.registryLifecycle.Close(closeCtx); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("clean up registry reporter: %w", closeErr))
+			}
+		}
 	}()
 
 	if r.config.Registry.Enabled {
-		consumer, err := newRegistryReporter()
+		reporter, err := newRegistryReporter()
 		if err != nil {
 			return err
 		}
-		r.router.AddConsumer(consumer, registryMessageFilter())
-		reporter, ok := consumer.(agentRegistryReporter)
-		if !ok {
-			return fmt.Errorf("registry reporter does not implement agent liveness")
-		}
 		r.registryReporter = reporter
-		starter, ok := consumer.(registryReporterStarter)
-		if !ok {
-			return fmt.Errorf("registry reporter does not implement relay lifecycle")
-		}
-		r.registryStarter = starter
+		r.registryLifecycle = reporter
 	}
 
 	if r.config.Telemetry.Enabled {
@@ -391,14 +396,14 @@ func (r *Relay) initializeOutputsWith(
 	if err := initializeSinks(); err != nil {
 		return err
 	}
-	if !r.router.HasConsumers() {
+	if r.registryLifecycle == nil && !r.router.HasConsumers() {
 		return fmt.Errorf("no outputs configured")
 	}
 	r.outputsInitialized = true
 	return nil
 }
 
-func (r *Relay) newRegistryReporter() (outputs.EnvelopeConsumer, error) {
+func (r *Relay) newRegistryReporter() (registryService, error) {
 	registryConfig := r.config.Registry
 	reporter, err := registryreporter.New(context.Background(), registryreporter.Config{
 		Address:           registryConfig.Address,
@@ -458,14 +463,6 @@ func (r *Relay) newTelemetryWriter() (outputs.EnvelopeConsumer, error) {
 		return nil, fmt.Errorf("initialize normalized telemetry writer: %w", err)
 	}
 	return writer, nil
-}
-
-// registryMessageFilter defines the telemetry required by Aero Arc registry reporting.
-func registryMessageFilter() outputs.MessageFilter {
-	return outputs.MessageFilter{Include: []string{
-		"Heartbeat",
-		"GlobalPositionInt",
-	}}
 }
 
 // telemetryMessageFilter defines the normalized hot telemetry maintained by Aero Arc.

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	registryv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/registry/v1"
-	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
@@ -31,8 +30,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
-
-const ConsumerName = "registry"
 
 type Config struct {
 	Address           string
@@ -219,19 +216,6 @@ func credentialsFor(config Config) (credentials.TransportCredentials, error) {
 		tlsConfig.RootCAs = roots
 	}
 	return credentials.NewTLS(tlsConfig), nil
-}
-
-func (r *Reporter) Name() string { return ConsumerName }
-
-// WriteEnvelope participates in output routing without putting Registry RPC
-// latency on the telemetry ACK path. Per-Agent background workers own all
-// liveness renewal, and telemetry payloads are never copied into Registry.
-func (r *Reporter) WriteEnvelope(_ context.Context, envelope telemetry.TelemetryEnvelope) error {
-	agentID := strings.TrimSpace(envelope.AgentID)
-	if agentID == "" {
-		return errors.New("registry heartbeat requires agent ID")
-	}
-	return nil
 }
 
 // RegisterAgent makes an agent visible while its telemetry stream is active.

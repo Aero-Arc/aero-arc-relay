@@ -23,6 +23,9 @@
 
 ## Registry reporting
 
+- Treat the Registry reporter as an explicit control-plane lifecycle service,
+  not a telemetry Router consumer. Relay/Agent registration and background
+  heartbeats are driven by startup and stream lifecycle events.
 - Registry-enabled startup must register the Relay before accepting Agents.
 - The Agent registration handshake creates a pending local session; only an
   active telemetry stream is published as connected in the registry.

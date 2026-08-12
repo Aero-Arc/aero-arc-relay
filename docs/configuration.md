@@ -5,7 +5,8 @@ its routable address during startup, renews relay liveness periodically, and
 registers agents when their telemetry stream becomes active. An independent
 background heartbeat keeps every active stream live; Registry RPC latency is
 never placed on the telemetry admission/ACK path. Telemetry payloads are not
-stored in the registry.
+stored in the registry. The reporter is an explicit control-plane lifecycle
+service and is not registered with the telemetry output Router.
 
 ```yaml
 registry:

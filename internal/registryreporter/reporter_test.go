@@ -8,7 +8,6 @@ import (
 	"time"
 
 	registryv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/registry/v1"
-	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -102,31 +101,6 @@ func (f *fakeRegistryClient) HeartbeatAgent(_ context.Context, request *registry
 	err := f.heartbeatAgentErr
 	f.heartbeatAgentErr = nil
 	return &registryv1.HeartbeatAgentResponse{}, err
-}
-
-func TestReporterTelemetryAdmissionDoesNotCallRegistry(t *testing.T) {
-	client := newFakeRegistryClient()
-	reporter := newWithClient(Config{
-		RelayID: "relay-1", HeartbeatInterval: 10 * time.Second, RequestTimeout: time.Second,
-	}, client)
-	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
-		t.Fatal(err)
-	}
-
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if got := client.agentRegistrations["agent-1"]; got != 1 {
-		t.Fatalf("agent registrations = %d, want 1", got)
-	}
-	if got := client.agentHeartbeats["agent-1"]; got != 0 {
-		t.Fatalf("telemetry admission made %d registry heartbeat calls, want 0", got)
-	}
 }
 
 func TestReporterStartRegistersThenHeartbeatsRelay(t *testing.T) {
@@ -413,9 +387,6 @@ func TestReporterStopsHeartbeatingDisconnectedAgent(t *testing.T) {
 		t.Fatalf("active agent bookkeeping after stop = %d, want 0", activeAgents)
 	}
 	now = now.Add(2 * time.Second)
-	if err := reporter.WriteEnvelope(context.Background(), telemetry.TelemetryEnvelope{AgentID: "agent-1"}); err != nil {
-		t.Fatal(err)
-	}
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
