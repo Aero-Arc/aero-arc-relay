@@ -73,6 +73,7 @@ type Reporter struct {
 	agentLastReported map[string]time.Time
 	agentAdmissions   map[string]*agentAdmission
 	now               func() time.Time
+	elapsedSince      func(time.Time) time.Duration
 }
 
 type agentGeneration struct {
@@ -168,6 +169,7 @@ func newWithClient(config Config, client registryClient) *Reporter {
 		agentLastReported: make(map[string]time.Time),
 		agentAdmissions:   make(map[string]*agentAdmission),
 		now:               time.Now,
+		elapsedSince:      time.Since,
 	}
 }
 
@@ -275,7 +277,9 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 	previous := r.activeAgents[agentID]
 	r.activeAgents[agentID] = generation
 	r.registeredAgents[agentID] = generation
-	r.agentLastReported[agentID] = r.now().UTC()
+	// Keep the monotonic component for heartbeat throttling. Converting to UTC
+	// strips it and makes elapsed-time decisions vulnerable to wall-clock jumps.
+	r.agentLastReported[agentID] = r.now()
 	r.mu.Unlock()
 	if previous != nil {
 		previous.cancel()
@@ -305,7 +309,7 @@ func (r *Reporter) StopAgent(agentID string) {
 }
 
 func (r *Reporter) reportAgent(ctx context.Context, agentID string, forceRegister bool, expectedGeneration *agentGeneration) error {
-	now := r.now().UTC()
+	now := r.now()
 	r.mu.Lock()
 	generation, active := r.activeAgents[agentID]
 	if !active || expectedGeneration != nil && generation != expectedGeneration {
@@ -314,7 +318,7 @@ func (r *Reporter) reportAgent(ctx context.Context, agentID string, forceRegiste
 	}
 	registered := r.registeredAgents[agentID] == generation
 	lastReported := r.agentLastReported[agentID]
-	if !forceRegister && registered && now.Sub(lastReported) < r.config.HeartbeatInterval {
+	if !forceRegister && registered && r.elapsedSince(lastReported) < r.config.HeartbeatInterval {
 		r.mu.Unlock()
 		return nil
 	}

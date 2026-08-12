@@ -249,6 +249,7 @@ func TestReporterReregistersAgentAfterRegistryExpiry(t *testing.T) {
 	}, client)
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	reporter.now = func() time.Time { return now }
+	reporter.elapsedSince = func(last time.Time) time.Duration { return now.Sub(last) }
 	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +276,7 @@ func TestReporterRetriesImmediatelyAfterFailedHeartbeat(t *testing.T) {
 	}, client)
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	reporter.now = func() time.Time { return now }
+	reporter.elapsedSince = func(last time.Time) time.Duration { return now.Sub(last) }
 	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +295,34 @@ func TestReporterRetriesImmediatelyAfterFailedHeartbeat(t *testing.T) {
 	defer client.mu.Unlock()
 	if got := client.agentHeartbeats["agent-1"]; got != 2 {
 		t.Fatalf("agent heartbeats = %d, want 2", got)
+	}
+}
+
+func TestReporterBackwardWallClockDoesNotSuppressHeartbeat(t *testing.T) {
+	client := newFakeRegistryClient()
+	reporter := newWithClient(Config{
+		RelayID: "relay-1", HeartbeatInterval: time.Minute, RequestTimeout: time.Second,
+	}, client)
+	wallNow := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	monotonicElapsed := time.Duration(0)
+	reporter.now = func() time.Time { return wallNow }
+	reporter.elapsedSince = func(time.Time) time.Duration { return monotonicElapsed }
+	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model an NTP correction moving wall time backward while the process's
+	// monotonic clock advances beyond the heartbeat interval.
+	wallNow = wallNow.Add(-time.Hour)
+	monotonicElapsed = 2 * time.Minute
+	if err := reporter.reportAgent(context.Background(), "agent-1", false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if got := client.agentHeartbeats["agent-1"]; got != 1 {
+		t.Fatalf("agent heartbeats after backward wall-clock correction = %d, want 1", got)
 	}
 }
 
@@ -371,6 +401,7 @@ func TestReporterStopsHeartbeatingDisconnectedAgent(t *testing.T) {
 	}, client)
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	reporter.now = func() time.Time { return now }
+	reporter.elapsedSince = func(last time.Time) time.Duration { return now.Sub(last) }
 	if err := reporter.RegisterAgent(context.Background(), "agent-1"); err != nil {
 		t.Fatal(err)
 	}
