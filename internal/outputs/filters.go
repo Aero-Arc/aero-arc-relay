@@ -34,6 +34,13 @@ func (f MessageFilter) hasIncludes() bool {
 	return false
 }
 
+// Allows reports whether the filter permits the supplied telemetry envelope.
+//
+// Parameters:
+//   - messageName: is the string value supplied to Allows.
+//
+// Returns:
+//   - bool: reports whether the requested condition was satisfied.
 func (f MessageFilter) Allows(messageName string) bool {
 	if !f.hasIncludes() {
 		return false

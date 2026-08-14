@@ -65,6 +65,14 @@ var relayCommand = cli.Command{
 	},
 }
 
+// RunRelay runs the Relay process with the supplied arguments and returns its terminal startup or runtime error.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - cmd: is the *cli.Command value supplied to RunRelay.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	// Load configuration
 	cfg, err := config.Load(cmd.String("config-path"))

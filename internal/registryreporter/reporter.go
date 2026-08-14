@@ -83,6 +83,18 @@ type agentAdmission struct {
 	cancel context.CancelFunc
 }
 
+// New validates Registry reporting and establishes a ready gRPC connection.
+// It does not advertise the Relay or start heartbeat workers; callers invoke
+// Start only after the Relay listener and TLS configuration are ready.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - config: defines the Registry endpoint, Relay identity, TLS, heartbeat,
+//     and request-timeout policy.
+//
+// Returns:
+//   - reporter: owns the ready client connection and inactive worker context.
+//   - error: reports invalid configuration, TLS setup, dialing, or readiness failure.
 func New(ctx context.Context, config Config) (*Reporter, error) {
 	config = config.withDefaults()
 	if err := config.validate(); err != nil {
@@ -111,9 +123,16 @@ func New(ctx context.Context, config Config) (*Reporter, error) {
 	return reporter, nil
 }
 
-// Start publishes the relay and starts its liveness workers. Construction is
+// Start publishes the Relay and starts its liveness workers. Construction is
 // intentionally separate so callers can bind and validate their serving
-// listener before advertising the relay as available.
+// listener before advertising the Relay as available. Start is idempotent; a
+// failed first registration starts no workers and may be retried.
+//
+// Parameters:
+//   - ctx: bounds the initial Relay registration request.
+//
+// Returns:
+//   - error: reports publication failure or use after Close.
 func (r *Reporter) Start(ctx context.Context) error {
 	r.startMu.Lock()
 	defer r.startMu.Unlock()
@@ -218,7 +237,17 @@ func credentialsFor(config Config) (credentials.TransportCredentials, error) {
 	return credentials.NewTLS(tlsConfig), nil
 }
 
-// RegisterAgent makes an agent visible while its telemetry stream is active.
+// RegisterAgent publishes an Agent placement while its telemetry stream is
+// being admitted. Concurrent admissions are serialized by generation: only the
+// newest successful candidate becomes active, and the previous heartbeat
+// generation remains alive until replacement publication succeeds.
+//
+// Parameters:
+//   - ctx: controls cancellation of this admission attempt.
+//   - agentID: identifies the Agent being placed on this Relay.
+//
+// Returns:
+//   - error: reports invalid identity, Registry failure, or superseded admission.
 func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
@@ -272,8 +301,12 @@ func (r *Reporter) RegisterAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
-// StopAgent stops local heartbeats. Registry TTL expiry removes the remote
-// record even if the relay cannot reach the registry during disconnect.
+// StopAgent cancels pending admission and active heartbeat work for one Agent.
+// Registry TTL expiry removes the remote record even if the Relay cannot reach
+// Registry during disconnect. Repeated calls are safe.
+//
+// Parameters:
+//   - agentID: identifies the Agent session that ended.
 func (r *Reporter) StopAgent(agentID string) {
 	agentID = strings.TrimSpace(agentID)
 	r.mu.Lock()
@@ -435,6 +468,14 @@ func isCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled
 }
 
+// Close stops every heartbeat generation, waits for workers, and closes the
+// owned gRPC connection once. It is safe before Start and across repeated calls.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports shutdown timeout or connection-close failure.
 func (r *Reporter) Close(ctx context.Context) error {
 	r.startMu.Lock()
 	r.closeOnce.Do(r.cancel)

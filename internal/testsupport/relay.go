@@ -32,6 +32,18 @@ type Relay struct {
 	logf     func(string, ...any)
 }
 
+// StartRelay launches a production Relay against the supplied test InfluxDB and
+// returns its dynamically allocated endpoint and shutdown handle.
+//
+// Parameters:
+//   - t: is the *testing.T value supplied to StartRelay.
+//   - influx: is the *InfluxDB value supplied to StartRelay.
+//   - agentID: identifies the target agent.
+//   - aircraftID: identifies the target aircraft.
+//   - relayID: identifies the target relay.
+//
+// Returns:
+//   - result: is the *Relay value produced by StartRelay.
 func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID string) *Relay {
 	t.Helper()
 	t.Logf(
@@ -118,6 +130,13 @@ func StartRelay(t *testing.T, influx *InfluxDB, agentID, aircraftID, relayID str
 	return fixture
 }
 
+// Shutdown stops Relay and releases its owned resources.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Relay) Shutdown(ctx context.Context) error {
 	r.stopOnce.Do(func() {
 		r.logf("Stopping Relay in-process: endpoint=%s", r.Address)

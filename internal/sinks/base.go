@@ -80,6 +80,16 @@ func normalizeBackpressurePolicy(policy string) BackpressurePolicy {
 	}
 }
 
+// NewBaseAsyncSink constructs sinks from the supplied configuration and dependencies.
+//
+// Parameters:
+//   - buffer: is the int value supplied to NewBaseAsyncSink.
+//   - policy: is the string value supplied to NewBaseAsyncSink.
+//   - sinkName: is the string value supplied to NewBaseAsyncSink.
+//   - worker: provides the error value handled by the operation.
+//
+// Returns:
+//   - result: is the *BaseAsyncSink value produced by NewBaseAsyncSink.
 func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(telemetry.TelemetryEnvelope) error) *BaseAsyncSink {
 	if buffer <= 0 {
 		buffer = defaultQueueSize
@@ -115,6 +125,13 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 	return b
 }
 
+// Enqueue queues the supplied item for asynchronous processing by BaseAsyncSink.
+//
+// Parameters:
+//   - msg: is the telemetry.TelemetryEnvelope value supplied to Enqueue.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryEnvelope) error {
 	return b.EnqueueContext(context.Background(), msg)
 }
@@ -126,6 +143,14 @@ func (b *BaseAsyncSink) WriteMessageContext(ctx context.Context, msg telemetry.T
 	return b.EnqueueContext(ctx, msg)
 }
 
+// EnqueueContext queues the supplied item for asynchronous processing by BaseAsyncSink.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - msg: is the telemetry.TelemetryEnvelope value supplied to EnqueueContext.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (b *BaseAsyncSink) EnqueueContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	switch b.policy {
 	case BackpressurePolicyBlock:
@@ -152,6 +177,7 @@ func (b *BaseAsyncSink) EnqueueContext(ctx context.Context, msg telemetry.Teleme
 	}
 }
 
+// Close releases resources owned by BaseAsyncSink and completes any required shutdown work.
 func (b *BaseAsyncSink) Close() {
 	close(b.queue)
 	b.wg.Wait()

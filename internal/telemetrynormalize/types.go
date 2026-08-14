@@ -67,6 +67,10 @@ type Record struct {
 	Fields        Fields
 }
 
+// Validate validates Record for required fields, supported values, and safety constraints.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r Record) Validate() error {
 	if r.SchemaVersion == 0 {
 		return errors.New("schema version is required")

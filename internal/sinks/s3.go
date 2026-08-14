@@ -125,7 +125,11 @@ func (s *S3Sink) handleMessage(msg telemetry.TelemetryEnvelope) error {
 	return nil
 }
 
-// RotateFile rotates the file
+// RotateAndUpload flushes the current file, uploads it to S3, and starts a new
+// local file while holding the sink rotation lock.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (s *S3Sink) RotateAndUpload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

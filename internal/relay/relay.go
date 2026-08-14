@@ -115,6 +115,13 @@ type contextMutex struct {
 	token chan struct{}
 }
 
+// Lock acquires exclusive ownership of the session guard and records the owning goroutine token.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (m *contextMutex) Lock(ctx context.Context) error {
 	m.once.Do(func() {
 		m.token = make(chan struct{}, 1)
@@ -135,6 +142,7 @@ func (m *contextMutex) Lock(ctx context.Context) error {
 	}
 }
 
+// Unlock releases exclusive ownership of the session guard and clears its owner token.
 func (m *contextMutex) Unlock() {
 	m.token <- struct{}{}
 }
@@ -151,7 +159,16 @@ var (
 	}, []string{"sink"})
 )
 
-// New creates a new relay instance
+// New validates Agent authentication requirements and constructs a Relay with
+// its configured telemetry outputs. Network listeners and Registry publication
+// are deferred until Start.
+//
+// Parameters:
+//   - cfg: defines listener, TLS, authentication, output, and Registry settings.
+//
+// Returns:
+//   - relay: owns initialized outputs but is not yet serving.
+//   - error: reports authentication or output initialization failure.
 func New(cfg *config.Config) (*Relay, error) {
 	authenticator, err := newAgentTokenAuthenticator(cfg.AgentAuth.Tokens)
 	if err != nil {
@@ -174,7 +191,16 @@ func New(cfg *config.Config) (*Relay, error) {
 	return relay, nil
 }
 
-// Start begins the relay operation
+// Start binds the gRPC listener, validates server TLS, publishes Registry
+// liveness, and serves Agent sessions until cancellation or a terminal server
+// error. Startup failure performs bounded cleanup and never leaves a published
+// Relay without a listener.
+//
+// Parameters:
+//   - ctx: controls serving lifetime and startup cancellation.
+//
+// Returns:
+//   - error: reports listener, TLS, Registry publication, serving, or cleanup failure.
 func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting aero-arc-relay...")
 

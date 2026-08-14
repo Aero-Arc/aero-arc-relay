@@ -17,6 +17,16 @@ type FakeAgent struct {
 	stream    agentv1.AgentGateway_TelemetryStreamClient
 }
 
+// RegisterFakeAgent registers the supplied testsupport identity or handler.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - conn: is the grpc.ClientConnInterface value supplied to RegisterFakeAgent.
+//   - agentID: identifies the target agent.
+//
+// Returns:
+//   - result: is the *FakeAgent value produced by RegisterFakeAgent.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func RegisterFakeAgent(ctx context.Context, conn grpc.ClientConnInterface, agentID string) (*FakeAgent, error) {
 	client := agentv1.NewAgentGatewayClient(conn)
 	registration, err := client.Register(ctx, &agentv1.RegisterRequest{AgentId: agentID})
@@ -39,6 +49,14 @@ func RegisterFakeAgent(ctx context.Context, conn grpc.ClientConnInterface, agent
 	}, nil
 }
 
+// Send sends the supplied data through FakeAgent.
+//
+// Parameters:
+//   - frame: is the *agentv1.TelemetryFrame value supplied to Send.
+//
+// Returns:
+//   - result: is the *agentv1.TelemetryAck value produced by Send.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (a *FakeAgent) Send(frame *agentv1.TelemetryFrame) (*agentv1.TelemetryAck, error) {
 	frame.AgentId = a.ID
 	frame.SessionId = a.SessionID
@@ -58,6 +76,10 @@ func (a *FakeAgent) Send(frame *agentv1.TelemetryFrame) (*agentv1.TelemetryAck, 
 	return ack, nil
 }
 
+// Close releases resources owned by FakeAgent and completes any required shutdown work.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (a *FakeAgent) Close() error {
 	if err := a.stream.CloseSend(); err != nil {
 		return fmt.Errorf("close fake agent telemetry stream: %w", err)

@@ -56,10 +56,18 @@ type TelemetryMessage interface {
 	ToBinary() ([]byte, error)
 }
 
+// GetSource returns the Agent source identifier carried by the envelope.
+//
+// Returns:
+//   - result: is the string value produced by GetSource.
 func (e TelemetryEnvelope) GetSource() string {
 	return e.Source
 }
 
+// GetTimestamp parses and returns the envelope's capture timestamp.
+//
+// Returns:
+//   - result: is the time.Time value produced by GetTimestamp.
 func (e TelemetryEnvelope) GetTimestamp() time.Time {
 	if !e.TimestampRelay.IsZero() {
 		return e.TimestampRelay
@@ -74,22 +82,48 @@ func (e TelemetryEnvelope) GetTimestamp() time.Time {
 	return time.Time{}
 }
 
+// GetMessageType returns the canonical telemetry message type name.
+//
+// Returns:
+//   - result: is the string value produced by GetMessageType.
 func (e TelemetryEnvelope) GetMessageType() string {
 	return e.MsgName
 }
 
+// ToJSON converts TelemetryEnvelope to the requested representation.
+//
+// Returns:
+//   - result: is the []byte value produced by ToJSON.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (e TelemetryEnvelope) ToJSON() ([]byte, error) {
 	return json.Marshal(e)
 }
 
+// ToEnvelope converts TelemetryEnvelope to the requested representation.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by ToEnvelope.
 func (e TelemetryEnvelope) ToEnvelope() TelemetryEnvelope {
 	return e
 }
 
+// ToBinary converts TelemetryEnvelope to the requested representation.
+//
+// Returns:
+//   - result: is the []byte value produced by ToBinary.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (e TelemetryEnvelope) ToBinary() ([]byte, error) {
 	return e.ToJSON()
 }
 
+// BuildHeartbeatEnvelope builds a telemetry value from the supplied inputs.
+//
+// Parameters:
+//   - source: is the string value supplied to BuildHeartbeatEnvelope.
+//   - msg: is the *common.MessageHeartbeat value supplied to BuildHeartbeatEnvelope.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by BuildHeartbeatEnvelope.
 func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
 		AgentID:         source,
@@ -109,6 +143,14 @@ func BuildHeartbeatEnvelope(source string, msg *common.MessageHeartbeat) Telemet
 	return envelope
 }
 
+// BuildGlobalPositionIntEnvelope builds a telemetry value from the supplied inputs.
+//
+// Parameters:
+//   - source: is the string value supplied to BuildGlobalPositionIntEnvelope.
+//   - msg: is the *common.MessageGlobalPositionInt value supplied to BuildGlobalPositionIntEnvelope.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by BuildGlobalPositionIntEnvelope.
 func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPositionInt) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
 		AgentID:         source,
@@ -135,6 +177,14 @@ func BuildGlobalPositionIntEnvelope(source string, msg *common.MessageGlobalPosi
 	return envelope
 }
 
+// BuildAttitudeEnvelope builds a telemetry value from the supplied inputs.
+//
+// Parameters:
+//   - source: is the string value supplied to BuildAttitudeEnvelope.
+//   - msg: is the *common.MessageAttitude value supplied to BuildAttitudeEnvelope.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by BuildAttitudeEnvelope.
 func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
 		AgentID:         source,
@@ -159,6 +209,14 @@ func BuildAttitudeEnvelope(source string, msg *common.MessageAttitude) Telemetry
 	return envelope
 }
 
+// BuildVfrHudEnvelope builds a telemetry value from the supplied inputs.
+//
+// Parameters:
+//   - source: is the string value supplied to BuildVfrHudEnvelope.
+//   - msg: is the *common.MessageVfrHud value supplied to BuildVfrHudEnvelope.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by BuildVfrHudEnvelope.
 func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
 		AgentID:         source,
@@ -182,6 +240,14 @@ func BuildVfrHudEnvelope(source string, msg *common.MessageVfrHud) TelemetryEnve
 	return envelope
 }
 
+// BuildSysStatusEnvelope builds a telemetry value from the supplied inputs.
+//
+// Parameters:
+//   - source: is the string value supplied to BuildSysStatusEnvelope.
+//   - msg: is the *common.MessageSysStatus value supplied to BuildSysStatusEnvelope.
+//
+// Returns:
+//   - result: is the TelemetryEnvelope value produced by BuildSysStatusEnvelope.
 func BuildSysStatusEnvelope(source string, msg *common.MessageSysStatus) TelemetryEnvelope {
 	envelope := TelemetryEnvelope{
 		AgentID:         source,
