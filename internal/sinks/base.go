@@ -125,32 +125,35 @@ func NewBaseAsyncSink(buffer int, policy string, sinkName string, worker func(te
 	return b
 }
 
-// Enqueue queues the supplied item for asynchronous processing by BaseAsyncSink.
+// Enqueue admits a message to the asynchronous sink queue using a background
+// context. Nil acknowledges queue admission only, not downstream persistence.
 //
 // Parameters:
 //   - msg: is the telemetry.TelemetryEnvelope value supplied to Enqueue.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is ErrQueueFull under drop policy; block policy waits indefinitely.
 func (b *BaseAsyncSink) Enqueue(msg telemetry.TelemetryEnvelope) error {
 	return b.EnqueueContext(context.Background(), msg)
 }
 
 // WriteMessageContext allows the sink adapter to propagate stream
 // cancellation through an async sink's backpressure wait. Concrete sinks that
-// embed BaseAsyncSink inherit this implementation.
+// embed BaseAsyncSink inherit this implementation. Nil acknowledges queue
+// admission only; worker/persistence failures are logged asynchronously.
 func (b *BaseAsyncSink) WriteMessageContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	return b.EnqueueContext(ctx, msg)
 }
 
-// EnqueueContext queues the supplied item for asynchronous processing by BaseAsyncSink.
+// EnqueueContext admits a message to the asynchronous sink queue according to
+// its block-or-drop backpressure policy. Nil acknowledges queue admission only.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - msg: is the telemetry.TelemetryEnvelope value supplied to EnqueueContext.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: is caller cancellation while blocking or ErrQueueFull under drop policy.
 func (b *BaseAsyncSink) EnqueueContext(ctx context.Context, msg telemetry.TelemetryEnvelope) error {
 	switch b.policy {
 	case BackpressurePolicyBlock:

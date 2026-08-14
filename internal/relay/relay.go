@@ -192,15 +192,16 @@ func New(cfg *config.Config) (*Relay, error) {
 }
 
 // Start binds the gRPC listener, validates server TLS, publishes Registry
-// liveness, and serves Agent sessions until cancellation or a terminal server
-// error. Startup failure performs bounded cleanup and never leaves a published
-// Relay without a listener.
+// liveness, and serves Agent sessions until cancellation or a termination
+// signal. A gRPC serving error after successful startup is logged but is not
+// propagated through Start. Startup failure performs bounded cleanup and never
+// leaves a published Relay without a listener.
 //
 // Parameters:
 //   - ctx: controls serving lifetime and startup cancellation.
 //
 // Returns:
-//   - error: reports listener, TLS, Registry publication, serving, or cleanup failure.
+//   - error: reports listener, TLS, Registry publication, or startup cleanup failure.
 func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting aero-arc-relay...")
 

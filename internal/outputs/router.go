@@ -70,14 +70,17 @@ func (r *Router) HasConsumers() bool {
 	return r != nil && len(r.routes) > 0
 }
 
-// Route routes the supplied data to eligible Router consumers.
+// Route invokes every matching consumer concurrently and waits for all of them
+// to return. A consumer that ignores cancellation can therefore block Route;
+// failures are collected in completion order rather than route order.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
 //   - envelope: is the telemetry.TelemetryEnvelope value supplied to Route.
 //
 // Returns:
-//   - result: is the []RouteError value produced by Route.
+//   - errors: contains consumer failures in nondeterministic completion order;
+//     nil means every matching consumer accepted the envelope.
 func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope) []RouteError {
 	//TODO: Figure out what happens or how to get around blocked consumer
 	var wg sync.WaitGroup

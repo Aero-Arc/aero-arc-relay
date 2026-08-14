@@ -44,7 +44,8 @@ func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (
 	return response, nil
 }
 
-// GetDroneStatus returns the current Relay-local session state for one Agent.
+// GetDroneStatus returns Relay-local state for one registered Agent. The
+// snapshot may represent a pending registration before telemetry-stream admission.
 //
 // Parameters:
 //   - ctx: is accepted for RPC lifecycle compatibility; this in-memory read
@@ -53,7 +54,7 @@ func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (
 //
 // Returns:
 //   - response: contains the matching session snapshot.
-//   - error: reports an empty ID or an Agent without an active session.
+//   - error: reports an empty ID or an Agent without a registered session.
 func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest) (*pb.GetDroneStatusResponse, error) {
 	agentID := strings.TrimSpace(req.GetDroneId())
 	if agentID == "" {
