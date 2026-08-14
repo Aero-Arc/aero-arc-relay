@@ -34,8 +34,8 @@ func (n *NoopWriter) Name() string { return ConsumerName }
 // WriteEnvelope writes the supplied data through NoopWriter.
 //
 // Parameters:
-//   - value: is the context.Context value supplied to WriteEnvelope.
-//   - value: is the telemetry.TelemetryEnvelope value supplied to WriteEnvelope.
+//   - ctx: is accepted for interface compatibility; the in-memory operation completes synchronously.
+//   - envelope: contains the telemetry value accepted by the writer.
 //
 // Returns:
 //   - error: reports validation, dependency, cancellation, or persistence failures.
@@ -44,7 +44,7 @@ func (n *NoopWriter) WriteEnvelope(context.Context, telemetry.TelemetryEnvelope)
 // Close releases resources owned by NoopWriter and completes any required shutdown work.
 //
 // Parameters:
-//   - value: is the context.Context value supplied to Close.
+//   - ctx: is accepted for interface compatibility; the in-memory operation completes synchronously.
 //
 // Returns:
 //   - error: reports validation, dependency, cancellation, or persistence failures.

@@ -152,14 +152,18 @@ func NewWriter(config Config, backend Backend, registry *telemetrynormalize.Regi
 //   - result: is the string value produced by Name.
 func (w *Writer) Name() string { return ConsumerName }
 
-// WriteEnvelope writes the supplied data through Writer.
+// WriteEnvelope normalizes a supported envelope and admits it to the bounded
+// asynchronous backend queue. A nil result acknowledges queue admission only,
+// not durable InfluxDB persistence; backend failures are accumulated for Close.
+// Unsupported message names are intentionally ignored and also return nil.
 //
 // Parameters:
 //   - ctx: controls cancellation and deadlines for the operation.
-//   - envelope: is the telemetry.TelemetryEnvelope value supplied to WriteEnvelope.
+//   - envelope: contains one admitted Agent telemetry frame and its attribution.
 //
 // Returns:
-//   - error: reports validation, dependency, cancellation, or persistence failures.
+//   - error: reports normalization failure, a closed writer, caller cancellation,
+//     or expiration of the bounded enqueue timeout.
 func (w *Writer) WriteEnvelope(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
 	normalizer, supported := w.registry.Lookup(envelope.MsgName)
 	if !supported {

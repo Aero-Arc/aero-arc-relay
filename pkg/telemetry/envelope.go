@@ -64,10 +64,13 @@ func (e TelemetryEnvelope) GetSource() string {
 	return e.Source
 }
 
-// GetTimestamp parses and returns the envelope's capture timestamp.
+// GetTimestamp returns Relay receipt time when present, otherwise converts the
+// device timestamp from fractional Unix seconds. It does not consult the Agent
+// timestamp field.
 //
 // Returns:
-//   - result: is the time.Time value produced by GetTimestamp.
+//   - timestamp: is UTC device time when Relay receipt time is absent, or zero
+//     when neither source is available.
 func (e TelemetryEnvelope) GetTimestamp() time.Time {
 	if !e.TimestampRelay.IsZero() {
 		return e.TimestampRelay
@@ -82,10 +85,11 @@ func (e TelemetryEnvelope) GetTimestamp() time.Time {
 	return time.Time{}
 }
 
-// GetMessageType returns the canonical telemetry message type name.
+// GetMessageType returns MsgName exactly as stored in the envelope. Callers that
+// require lower-snake-case grouping must normalize it separately.
 //
 // Returns:
-//   - result: is the string value produced by GetMessageType.
+//   - messageType: may contain a legacy mixed-case MAVLink name.
 func (e TelemetryEnvelope) GetMessageType() string {
 	return e.MsgName
 }

@@ -81,7 +81,7 @@ func (b *Backend) WriteBatch(ctx context.Context, records []telemetrynormalize.R
 // Close releases resources owned by Backend and completes any required shutdown work.
 //
 // Parameters:
-//   - value: is the context.Context value supplied to Close.
+//   - ctx: is accepted for interface compatibility; the in-memory operation completes synchronously.
 //
 // Returns:
 //   - error: reports validation, dependency, cancellation, or persistence failures.
