@@ -36,10 +36,19 @@ type Router struct {
 	routes []route
 }
 
+// NewRouter constructs outputs from the supplied configuration and dependencies.
+//
+// Returns:
+//   - result: is the *Router value produced by NewRouter.
 func NewRouter() *Router {
 	return &Router{routes: make([]route, 0)}
 }
 
+// AddConsumer adds the supplied value to Router.
+//
+// Parameters:
+//   - consumer: is the EnvelopeConsumer value supplied to AddConsumer.
+//   - filter: is the MessageFilter value supplied to AddConsumer.
 func (r *Router) AddConsumer(consumer EnvelopeConsumer, filter MessageFilter) {
 	if consumer == nil {
 		return
@@ -53,10 +62,25 @@ func (r *Router) AddConsumer(consumer EnvelopeConsumer, filter MessageFilter) {
 	r.routes = append(r.routes, route{consumer: consumer, filter: filter})
 }
 
+// HasConsumers reports whether Router has the requested state or capability.
+//
+// Returns:
+//   - bool: reports whether the requested condition was satisfied.
 func (r *Router) HasConsumers() bool {
 	return r != nil && len(r.routes) > 0
 }
 
+// Route invokes every matching consumer concurrently and waits for all of them
+// to return. A consumer that ignores cancellation can therefore block Route;
+// failures are collected in completion order rather than route order.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - envelope: is the telemetry.TelemetryEnvelope value supplied to Route.
+//
+// Returns:
+//   - errors: contains consumer failures in nondeterministic completion order;
+//     nil means every matching consumer accepted the envelope.
 func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope) []RouteError {
 	//TODO: Figure out what happens or how to get around blocked consumer
 	var wg sync.WaitGroup
@@ -93,6 +117,13 @@ func (r *Router) Route(ctx context.Context, envelope telemetry.TelemetryEnvelope
 	return routeErrors
 }
 
+// Close releases resources owned by Router and completes any required shutdown work.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (r *Router) Close(ctx context.Context) error {
 	if r == nil {
 		return nil

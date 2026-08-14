@@ -112,6 +112,16 @@ type Writer struct {
 	errMu      sync.Mutex
 }
 
+// NewWriter constructs telemetrywriter from the supplied configuration and dependencies.
+//
+// Parameters:
+//   - config: provides the configuration values used to initialize or execute the operation.
+//   - backend: is the Backend value supplied to NewWriter.
+//   - registry: is the *telemetrynormalize.Registry value supplied to NewWriter.
+//
+// Returns:
+//   - result: is the *Writer value produced by NewWriter.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func NewWriter(config Config, backend Backend, registry *telemetrynormalize.Registry) (*Writer, error) {
 	if backend == nil {
 		return nil, errors.New("normalized telemetry backend is required")
@@ -136,8 +146,24 @@ func NewWriter(config Config, backend Backend, registry *telemetrynormalize.Regi
 	return w, nil
 }
 
+// Name returns the telemetry writer's stable output name.
+//
+// Returns:
+//   - result: is the string value produced by Name.
 func (w *Writer) Name() string { return ConsumerName }
 
+// WriteEnvelope normalizes a supported envelope and admits it to the bounded
+// asynchronous backend queue. A nil result acknowledges queue admission only,
+// not durable InfluxDB persistence; backend failures are accumulated for Close.
+// Unsupported message names are intentionally ignored and also return nil.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - envelope: contains one admitted Agent telemetry frame and its attribution.
+//
+// Returns:
+//   - error: reports normalization failure, a closed writer, caller cancellation,
+//     or expiration of the bounded enqueue timeout.
 func (w *Writer) WriteEnvelope(ctx context.Context, envelope telemetry.TelemetryEnvelope) error {
 	normalizer, supported := w.registry.Lookup(envelope.MsgName)
 	if !supported {
@@ -238,6 +264,13 @@ func (w *Writer) writeBatch(batch []telemetrynormalize.Record) error {
 	return nil
 }
 
+// Close releases resources owned by Writer and completes any required shutdown work.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//
+// Returns:
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (w *Writer) Close(ctx context.Context) error {
 	w.closeOnce.Do(func() {
 		w.stateMu.Lock()

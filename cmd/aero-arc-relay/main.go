@@ -65,6 +65,16 @@ var relayCommand = cli.Command{
 	},
 }
 
+// RunRelay loads configuration, constructs the Relay, and serves until orderly
+// shutdown. Configuration, construction, and Relay.Start failures are logged
+// and terminate the process with status 1 rather than being returned.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - cmd: contains resolved configuration, listener, TLS, and debug flags.
+//
+// Returns:
+//   - error: is nil after orderly shutdown; fatal startup/runtime paths call os.Exit.
 func RunRelay(ctx context.Context, cmd *cli.Command) error {
 	// Load configuration
 	cfg, err := config.Load(cmd.String("config-path"))

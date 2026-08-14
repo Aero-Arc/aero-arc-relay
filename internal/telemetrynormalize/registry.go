@@ -14,6 +14,14 @@ type Normalizer interface {
 
 type NormalizerFunc func(telemetry.TelemetryEnvelope) (Record, error)
 
+// Normalize normalizes the supplied telemetry through NormalizerFunc.
+//
+// Parameters:
+//   - envelope: is the telemetry.TelemetryEnvelope value supplied to Normalize.
+//
+// Returns:
+//   - result: is the Record value produced by Normalize.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (f NormalizerFunc) Normalize(envelope telemetry.TelemetryEnvelope) (Record, error) {
 	return f(envelope)
 }
@@ -22,6 +30,10 @@ type Registry struct {
 	normalizers map[string]Normalizer
 }
 
+// NewRegistry constructs telemetrynormalize from the supplied configuration and dependencies.
+//
+// Returns:
+//   - result: is the *Registry value produced by NewRegistry.
 func NewRegistry() *Registry {
 	registry := &Registry{normalizers: make(map[string]Normalizer)}
 	registry.Register("global_position_int", NormalizerFunc(normalizeGlobalPositionInt))
@@ -35,6 +47,11 @@ func NewRegistry() *Registry {
 	return registry
 }
 
+// Register registers the supplied Registry identity or handler.
+//
+// Parameters:
+//   - messageName: is the string value supplied to Register.
+//   - normalizer: is the Normalizer value supplied to Register.
 func (r *Registry) Register(messageName string, normalizer Normalizer) {
 	if r == nil || normalizer == nil {
 		return
@@ -45,6 +62,14 @@ func (r *Registry) Register(messageName string, normalizer Normalizer) {
 	}
 }
 
+// Lookup looks up Registry data using the supplied key.
+//
+// Parameters:
+//   - messageName: is the string value supplied to Lookup.
+//
+// Returns:
+//   - result: is the Normalizer value produced by Lookup.
+//   - bool: reports whether the requested condition was satisfied.
 func (r *Registry) Lookup(messageName string) (Normalizer, bool) {
 	if r == nil {
 		return nil, false

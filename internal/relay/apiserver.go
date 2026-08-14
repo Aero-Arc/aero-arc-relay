@@ -23,6 +23,17 @@ import (
 
 const operationContextControlDisabled = "operation-context control is experimental and disabled until the relay control plane is authenticated and authorized"
 
+// ListActiveDrones snapshots the Relay's currently admitted Agent sessions as
+// drone-status records.
+//
+// Parameters:
+//   - ctx: is accepted for RPC lifecycle compatibility; this in-memory read
+//     completes synchronously.
+//   - request: carries no filters in the current Relay API.
+//
+// Returns:
+//   - response: contains one status record per currently admitted session.
+//   - error: is currently always nil.
 func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (*pb.ListActiveDronesResponse, error) {
 	s.sessionsMu.RLock()
 	defer s.sessionsMu.RUnlock()
@@ -33,6 +44,17 @@ func (s *Relay) ListActiveDrones(context.Context, *pb.ListActiveDronesRequest) (
 	return response, nil
 }
 
+// GetDroneStatus returns Relay-local state for one registered Agent. The
+// snapshot may represent a pending registration before telemetry-stream admission.
+//
+// Parameters:
+//   - ctx: is accepted for RPC lifecycle compatibility; this in-memory read
+//     completes synchronously.
+//   - req: identifies the Agent through its drone_id field.
+//
+// Returns:
+//   - response: contains the matching session snapshot.
+//   - error: reports an empty ID or an Agent without a registered session.
 func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest) (*pb.GetDroneStatusResponse, error) {
 	agentID := strings.TrimSpace(req.GetDroneId())
 	if agentID == "" {
@@ -47,10 +69,30 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 	return &pb.GetDroneStatusResponse{Drone: droneStatus(session)}, nil
 }
 
+// SetOperationContext rejects operation-context mutation while the Relay
+// control plane lacks its final authentication and authorization policy.
+//
+// Parameters:
+//   - ctx: is reserved for the future authenticated control-plane lifecycle.
+//   - request: is reserved for the future operation-context command.
+//
+// Returns:
+//   - response: is always nil while the RPC is disabled.
+//   - error: is a gRPC Unimplemented status explaining the security gate.
 func (*Relay) SetOperationContext(context.Context, *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
 	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
 }
 
+// ClearOperationContext rejects operation-context mutation while the Relay
+// control plane lacks its final authentication and authorization policy.
+//
+// Parameters:
+//   - ctx: is reserved for the future authenticated control-plane lifecycle.
+//   - request: is reserved for the future operation-context command.
+//
+// Returns:
+//   - response: is always nil while the RPC is disabled.
+//   - error: is a gRPC Unimplemented status explaining the security gate.
 func (*Relay) ClearOperationContext(context.Context, *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
 	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
 }

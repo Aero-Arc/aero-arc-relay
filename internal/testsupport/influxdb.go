@@ -26,6 +26,15 @@ type InfluxDB struct {
 	Client   *influxdb3.Client
 }
 
+// QueryRows queries InfluxDB with the supplied statement and parameters.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - query: is the string value supplied to QueryRows.
+//
+// Returns:
+//   - result: is the []map[string]any value produced by QueryRows.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (i *InfluxDB) QueryRows(ctx context.Context, query string) ([]map[string]any, error) {
 	iterator, err := i.Client.Query(ctx, query)
 	if err != nil {
@@ -41,6 +50,17 @@ func (i *InfluxDB) QueryRows(ctx context.Context, query string) ([]map[string]an
 	return rows, nil
 }
 
+// AwaitRow polls a real InfluxDB query until a matching row appears or the test times out.
+//
+// Parameters:
+//   - ctx: controls cancellation and deadlines for the operation.
+//   - interval: defines the time bound applied by the operation.
+//   - query: is the string value supplied to AwaitRow.
+//   - identity: identifies the target identity.
+//
+// Returns:
+//   - result: is the map[string]any value produced by AwaitRow.
+//   - error: reports validation, dependency, cancellation, or persistence failures.
 func (i *InfluxDB) AwaitRow(ctx context.Context, interval time.Duration, query, identity string) (map[string]any, error) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -62,6 +82,13 @@ func (i *InfluxDB) AwaitRow(ctx context.Context, interval time.Duration, query, 
 	}
 }
 
+// StartInfluxDB starts and provisions the pinned InfluxDB Core Testcontainer.
+//
+// Parameters:
+//   - t: is the *testing.T value supplied to StartInfluxDB.
+//
+// Returns:
+//   - result: is the *InfluxDB value produced by StartInfluxDB.
 func StartInfluxDB(t *testing.T) *InfluxDB {
 	t.Helper()
 	testcontainers.SkipIfProviderIsNotHealthy(t)

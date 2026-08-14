@@ -53,3 +53,15 @@
 - Run `go test -race ./...` for concurrency changes.
 - Run `go test -tags=integration -timeout=10m ./internal/integration ./internal/registryreporter`
   when Docker and local sockets are available.
+
+## Go documentation
+
+- Every exported handwritten Go function or method must have a lint-valid Go
+  doc comment beginning with its exact identifier.
+- Editor hover text should explain observable behavior, each parameter, return
+  values, and meaningful errors. For session admission, Registry reporting,
+  routing, normalization, batching, and shutdown methods, call out ownership,
+  acknowledgment, ordering, and concurrency semantics where relevant.
+- Use `Parameters:` and `Returns:` sections for non-trivial APIs; concise
+  identifier-led comments are enough for simple getters.
+- Never hand-edit generated protobuf comments.
