@@ -49,15 +49,16 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 	newSession := &DroneSession{
-		agentID:       agentID,
-		SessionID:     sessionID,
-		ConnectedAt:   time.Now(),
-		LastHeartbeat: time.Now(),
-		Position:      nil,
-		Attitude:      nil,
-		VfrHud:        nil,
-		SystemStatus:  nil,
-		pending:       make(map[string]chan *agentv1.OperationContextCommandAck),
+		agentID:         agentID,
+		SessionID:       sessionID,
+		ConnectedAt:     time.Now(),
+		LastHeartbeat:   time.Now(),
+		Position:        nil,
+		Attitude:        nil,
+		VfrHud:          nil,
+		SystemStatus:    nil,
+		pending:         make(map[string]chan *agentv1.OperationContextCommandAck),
+		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -166,6 +167,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
 			streamSession.handleOperationContextCommandAck(commandAck)
+			continue
+		}
+		if commandResult := message.GetAircraftCommandResult(); commandResult != nil {
+			streamSession.handleAircraftCommandResult(commandResult)
 			continue
 		}
 		frame := message.GetTelemetryFrame()
@@ -325,6 +330,25 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 	}
 	select {
 	case pending <- ack:
+	default:
+	}
+}
+
+func (session *DroneSession) handleAircraftCommandResult(result *agentv1.AircraftCommandResult) {
+	if session == nil || result == nil {
+		return
+	}
+	session.pendingMu.Lock()
+	pending := session.pendingAircraft[result.GetCommandId()]
+	if pending != nil {
+		delete(session.pendingAircraft, result.GetCommandId())
+	}
+	session.pendingMu.Unlock()
+	if pending == nil {
+		return
+	}
+	select {
+	case pending <- result:
 	default:
 	}
 }
