@@ -17,6 +17,7 @@ const (
 	testAgentID    = "agent-integration-gpi"
 	testAircraftID = "aircraft-integration-gpi"
 	testRelayID    = "relay-integration"
+	testWALID      = "0195f6a8-86d1-7be7-a104-3a814dc19f9e"
 	testWALSeq     = uint64(424242)
 	testBatchSize  = 8
 )
@@ -125,13 +126,14 @@ func TestRelayTelemetry_NormalizesPersistsQueriesAndFlushesInfluxDB(t *testing.T
 			len(rows), shutdownFrameID, rows,
 		)
 	}
+	assertString(t, rows[0], "wal_id", testWALID)
 	assertUint(t, rows[0], "wal_sequence", shutdownSequence)
 	assertInt(t, rows[0], "agent_capture_time_ns", shutdownCaptureTime.UnixNano())
 }
 
 func batteryStatusFrame(sequence uint64, captureTime time.Time) *agentv1.TelemetryFrame {
 	return &agentv1.TelemetryFrame{
-		Seq: sequence, SentAtUnixNs: captureTime.UnixNano(), Dialect: "common", MsgId: 147, MsgName: "BATTERY_STATUS",
+		WalId: testWALID, Seq: sequence, SentAtUnixNs: captureTime.UnixNano(), Dialect: "common", MsgId: 147, MsgName: "BATTERY_STATUS",
 		Fields: map[string]string{
 			"Id": "0", "BatteryFunction": "MAV_BATTERY_FUNCTION_ALL", "Type": "MAV_BATTERY_TYPE_LIPO",
 			"Temperature": "2534", "Voltages": "[4200,4190,65535,65535]", "VoltagesExt": "[0,0,0,0]",
@@ -144,6 +146,7 @@ func batteryStatusFrame(sequence uint64, captureTime time.Time) *agentv1.Telemet
 
 func globalPositionIntFrame(sequence uint64, captureTime time.Time) *agentv1.TelemetryFrame {
 	return &agentv1.TelemetryFrame{
+		WalId:        testWALID,
 		Seq:          sequence,
 		SentAtUnixNs: captureTime.UnixNano(),
 		Dialect:      "common",
@@ -182,8 +185,8 @@ func sendAndRequireOK(
 	return ack
 }
 
-func frameID(sequence uint64, captureTime time.Time) string {
-	return fmt.Sprintf("%d:%s:%d:%d", len(testAgentID), testAgentID, captureTime.UnixNano(), sequence)
+func frameID(sequence uint64, _ time.Time) string {
+	return fmt.Sprintf("%d:%s:%d:%s:%d", len(testAgentID), testAgentID, len(testWALID), testWALID, sequence)
 }
 
 func frameQuery(frameID, sessionID string) string {
@@ -210,6 +213,7 @@ func assertGlobalPositionIntRow(
 	assertString(t, row, "relay_id", testRelayID)
 	assertString(t, row, "session_id", sessionID)
 	assertString(t, row, "timestamp_source", "agent_capture")
+	assertString(t, row, "wal_id", testWALID)
 	assertString(t, row, "device_time_basis", "system_boot")
 	assertString(t, row, "device_time_unit", "milliseconds")
 
@@ -255,6 +259,7 @@ func assertBatteryStatusRow(
 	assertString(t, row, "aircraft_id", testAircraftID)
 	assertString(t, row, "relay_id", testRelayID)
 	assertString(t, row, "session_id", sessionID)
+	assertString(t, row, "wal_id", testWALID)
 	assertString(t, row, "battery_function", "mav_battery_function_all")
 	assertString(t, row, "battery_type", "mav_battery_type_lipo")
 	assertString(t, row, "battery_charge_state", "mav_battery_charge_state_ok")

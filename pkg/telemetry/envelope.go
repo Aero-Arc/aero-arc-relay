@@ -36,6 +36,7 @@ type TelemetryEnvelope struct {
 	Dialect         string         `json:"dialect,omitempty"`
 	MsgID           uint32         `json:"msg_id"`
 	MsgName         string         `json:"msg_name"`
+	WALID           string         `json:"wal_id,omitempty"`
 	WALSequence     uint64         `json:"wal_sequence,omitempty"`
 	SystemID        uint8          `json:"system_id"`
 	ComponentID     uint8          `json:"component_id"`

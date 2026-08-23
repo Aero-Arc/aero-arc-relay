@@ -366,6 +366,7 @@ func (r *Relay) buildTelemetryFrameEnvelope(session *DroneSession, frame *agentv
 		Dialect:         frame.Dialect,
 		MsgID:           frame.MsgId,
 		MsgName:         frame.MsgName,
+		WALID:           frame.WalId,
 		WALSequence:     frame.Seq,
 		Fields:          fields,
 	}

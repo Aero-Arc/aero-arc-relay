@@ -34,6 +34,7 @@ func recordToPoint(record telemetrynormalize.Record) (*influxdb3.Point, error) {
 		fields["intent_version"] = uint64(record.Identity.IntentVersion)
 	}
 	fields["wal_sequence"] = record.Source.Sequence
+	fields["wal_id"] = record.Source.WALID
 	fields["message_id"] = uint64(record.Source.MessageID)
 	fields["dialect"] = record.Source.Dialect
 	fields["timestamp_source"] = string(record.Timing.TimestampSource)

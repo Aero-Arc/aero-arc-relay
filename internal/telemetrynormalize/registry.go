@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
@@ -95,6 +96,13 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 	if strings.TrimSpace(envelope.AgentID) == "" {
 		return Record{}, fmt.Errorf("agent ID is required")
 	}
+	walID := strings.TrimSpace(envelope.WALID)
+	if walID == "" {
+		return Record{}, fmt.Errorf("WAL generation ID is required")
+	}
+	if _, err := uuid.Parse(walID); err != nil {
+		return Record{}, fmt.Errorf("WAL generation ID is invalid: %w", err)
+	}
 	return Record{
 		SchemaVersion: SchemaVersion,
 		Identity: IdentityContext{
@@ -108,7 +116,8 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 			IntentVersion: envelope.IntentVersion,
 		},
 		Source: SourceContext{
-			FrameID:   fmt.Sprintf("%d:%s:%d:%d", len(envelope.AgentID), envelope.AgentID, agentTime.UnixNano(), envelope.WALSequence),
+			FrameID:   fmt.Sprintf("%d:%s:%d:%s:%d", len(envelope.AgentID), envelope.AgentID, len(walID), walID, envelope.WALSequence),
+			WALID:     walID,
 			Sequence:  envelope.WALSequence,
 			MessageID: envelope.MsgID,
 			Dialect:   dialect,

@@ -335,6 +335,7 @@ func testEnvelope(message string, messageID uint32, fields map[string]any) telem
 		Dialect:        "common",
 		MsgID:          messageID,
 		MsgName:        message,
+		WALID:          "0195f6a8-86d1-7be7-a104-3a814dc19f9e",
 		WALSequence:    42,
 		Fields:         fields,
 	}
@@ -351,5 +352,21 @@ func TestNormalizeRejectsMissingAgentCaptureTime(t *testing.T) {
 	}
 	if _, err := normalizer.Normalize(envelope); err == nil {
 		t.Fatal("Normalize() accepted an envelope without agent capture time")
+	}
+}
+
+func TestNormalizeRejectsInvalidWALGenerationID(t *testing.T) {
+	for _, walID := range []string{"", "not-a-uuid"} {
+		envelope := testEnvelope("GlobalPositionInt", 33, map[string]any{
+			"Lat": "418781000", "Lon": "-876291000", "Alt": "123450",
+		})
+		envelope.WALID = walID
+		normalizer, ok := NewRegistry().Lookup(envelope.MsgName)
+		if !ok {
+			t.Fatal("GlobalPositionInt normalizer is not registered")
+		}
+		if _, err := normalizer.Normalize(envelope); err == nil {
+			t.Fatalf("Normalize() accepted WAL generation ID %q", walID)
+		}
 	}
 }

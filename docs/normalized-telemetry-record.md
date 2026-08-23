@@ -124,17 +124,19 @@ invented placeholders.
 unambiguous encoding of:
 
 ```text
-agent_id + agent capture Unix nanoseconds + durable agent WAL sequence
+agent_id + WAL generation ID + durable agent WAL sequence
 ```
 
 The concrete encoding must be stable, documented, and collision-safe. A
 length-delimited or escaped encoding is required; raw concatenation is not.
-Resending the same WAL entry produces the same `frame_id`.
-
-The capture timestamp is persisted in the frame before WAL insertion and is
-stable across retry. Combining it with the WAL sequence prevents ordinary WAL
-recreation from reusing an idempotency key. A future explicit frame UUID may
+Resending the same WAL entry produces the same `frame_id`. The WAL generation
+ID is a UUID stored in the Agent's WAL database: it survives process restarts
+and changes when the database is recreated. It therefore prevents a reset WAL
+sequence from reusing an idempotency key. A future explicit frame UUID may
 replace this derived encoding in a new transport contract.
+
+`wal_id` is the Agent WAL generation identity. It is required and must not be
+derived from a process, Relay session, SQLite row ID, or MAVLink packet.
 
 `sequence` is the agent WAL sequence carried by the frame. It is required and
 must not be replaced with the MAVLink packet sequence.
@@ -188,9 +190,9 @@ The first slice normally selects `agent_capture`. A boot-relative timestamp is
 never interpreted directly as Unix time.
 
 The current agent transport requires a positive `sent_at_unix_ns` on every WAL
-frame because it is also part of the stable `frame_id`. Frames without it are
-rejected permanently before normalization; relay receive time is not substituted
-into the idempotency key.
+frame so event-time evaluation and replay retain the durable capture instant.
+Frames without it are rejected permanently before normalization; relay receive
+time is not substituted for missing capture evidence.
 
 `relay_time` is always required and records when the relay accepted the source
 frame.
@@ -285,7 +287,7 @@ Every normalized record must satisfy all of the following:
 1. It represents exactly one input telemetry frame and one canonical MAVLink
    message.
 2. `schema_version`, `agent_id`, `relay_id`, `session_id`, `frame_id`,
-   `sequence`, `message_id`, `message_name`, `dialect`, `event_time`,
+   `wal_id`, `sequence`, `message_id`, `message_name`, `dialect`, `event_time`,
    `relay_time`, and `timestamp_source` are present and valid.
 3. `frame_id` remains stable across retry and reconnect and does not collide
    after WAL recreation.
@@ -317,10 +319,10 @@ For InfluxDB, measurement, tag set, and timestamp form the point identity. All
 records therefore use the stable `aircraft_telemetry` measurement, and only
 frame-invariant values (`frame_id`, `agent_id`, `message_name`, and
 `schema_version`) are tags. This keeps retries idempotent while ensuring frames
-with the same capture timestamp and different WAL sequences remain distinct.
+with the same capture timestamp and different WAL cursors remain distinct.
 Retry-variable relay, session, assignment, flight, and intent metadata remain
-queryable fields. `wal_sequence` also remains a field for inspection and
-diagnostics.
+queryable fields. `wal_id` and `wal_sequence` remain fields for replay ordering,
+inspection, and diagnostics.
 
 ## API relationship
 
