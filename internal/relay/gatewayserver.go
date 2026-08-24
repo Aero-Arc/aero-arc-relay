@@ -47,7 +47,9 @@ import (
 //   - response: contains the authenticated Agent ID, newly generated session
 //     ID, and advertised telemetry in-flight limit.
 //   - error: reports a missing Agent ID, failed authentication, or failure to
-//     generate a cryptographically random session ID.
+//     generate a cryptographically random session ID. Cancellation while
+//     waiting to replace an owned session preserves that live session and
+//     returns the corresponding context status.
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
 	agentID := strings.TrimSpace(req.AgentId)
 	slog.Info(
@@ -90,6 +92,12 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		if previous != nil {
 			previous.ownershipMu.Lock()
 		}
+		if err := ctx.Err(); err != nil {
+			if previous != nil {
+				previous.ownershipMu.Unlock()
+			}
+			return nil, status.FromContextError(err).Err()
+		}
 
 		r.sessionsMu.Lock()
 		if r.grpcSessions[agentID] != previous {
@@ -98,6 +106,16 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 				previous.ownershipMu.Unlock()
 			}
 			continue
+		}
+		// This is the replacement linearization point. Recheck cancellation
+		// while the map is stable so a caller that gave up while waiting for the
+		// ownership lease cannot retire the session it still knows how to use.
+		if err := ctx.Err(); err != nil {
+			r.sessionsMu.Unlock()
+			if previous != nil {
+				previous.ownershipMu.Unlock()
+			}
+			return nil, status.FromContextError(err).Err()
 		}
 		if previous != nil {
 			previous.retired = true

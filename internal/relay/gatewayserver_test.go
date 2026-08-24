@@ -257,6 +257,47 @@ func TestRegisterDoesNotPublishAgentBeforeTelemetryStream(t *testing.T) {
 	}
 }
 
+func TestCanceledRegisterPreservesSessionHeldByInFlightWork(t *testing.T) {
+	const agentID = "agent-1"
+	previous := &DroneSession{agentID: agentID, SessionID: "session-1"}
+	reporter := &recordingAgentRegistrar{}
+	relay := relayWithRegistryReporter(t, reporter)
+	relay.grpcSessions[agentID] = previous
+	previous.ownershipMu.RLock()
+	ctx, cancel := context.WithCancel(authenticatedAgentContext(agentID))
+	registrationDone := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(ctx, &agentv1.RegisterRequest{AgentId: agentID})
+		registrationDone <- err
+	}()
+	select {
+	case err := <-registrationDone:
+		previous.ownershipMu.RUnlock()
+		t.Fatalf("Register() completed while session ownership was held: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	previous.ownershipMu.RUnlock()
+	select {
+	case err := <-registrationDone:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("Register() error = %v, want Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled Register() did not return after ownership was released")
+	}
+	relay.sessionsMu.RLock()
+	current := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if current != previous || previous.retired {
+		t.Fatal("canceled registration replaced or retired the live session")
+	}
+	if len(reporter.stopped) != 0 {
+		t.Fatalf("canceled registration stopped Registry liveness: %v", reporter.stopped)
+	}
+}
+
 func TestRegisterSucceedsWhileRegistryIsUnavailable(t *testing.T) {
 	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
 	relay := relayWithRegistryReporter(t, reporter)
