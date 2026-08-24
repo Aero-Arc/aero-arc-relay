@@ -51,6 +51,8 @@ github.com/actgardner/gogen-avro/v10 v10.2.1/go.mod h1:QUhjeHPchheYmMDni/Nx7VB0R
 github.com/actgardner/gogen-avro/v9 v9.1.0/go.mod h1:nyTj6wPqDJoxM3qdnjcLv+EnMDSDFqE0qDpva2QRmKc=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260823010059-9c3641b684b5 h1:+dfJoWW2FXDq8Pi1ydVKFS4mJEXv5LueEl02jFH/T8M=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260823010059-9c3641b684b5/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
+github.com/aero-arc/aero-arc-protos v0.0.0-20260824205409-4a2f13cc719f h1:FMaKzCx+K02+vOE8duBns1tZUT5RgS/Ow1/XA+ASbHM=
+github.com/aero-arc/aero-arc-protos v0.0.0-20260824205409-4a2f13cc719f/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
