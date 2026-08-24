@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -84,6 +85,43 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 	conflict.Type = agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_DISARM
 	if _, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{AgentId: "agent-1", Command: conflict}); status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("conflicting command-ID reuse error = %v, want AlreadyExists", err)
+	}
+}
+
+func TestBeginAircraftCommandRetainsExactRetryAtCapacity(t *testing.T) {
+	command := &agentv1.AircraftCommand{
+		CommandId: "oldest-command", AircraftId: "aircraft-1",
+		Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+	}
+	fingerprint := testMessageFingerprint(t, command)
+	completedAt := time.Now().Add(-operationCommandRetention / 2)
+	done := make(chan struct{})
+	close(done)
+	want := &aircraftCommandState{
+		fingerprint: fingerprint,
+		result: &agentv1.AircraftCommandResult{
+			CommandId: command.GetCommandId(), AircraftId: command.GetAircraftId(),
+			Status: agentv1.AircraftCommandResult_STATUS_ACCEPTED,
+		},
+		done: done, completed: true, completedAt: completedAt,
+	}
+	session := &DroneSession{aircraftCommands: map[string]*aircraftCommandState{command.GetCommandId(): want}}
+	for i := 1; i < maxOperationCommands; i++ {
+		id := fmt.Sprintf("retained-%04d", i)
+		session.aircraftCommands[id] = &aircraftCommandState{
+			fingerprint: id,
+			done:        done,
+			completed:   true,
+			completedAt: completedAt.Add(time.Duration(i)),
+		}
+	}
+
+	got, owner, err := beginAircraftCommandDelivery(session, command)
+	if err != nil || owner || got != want {
+		t.Fatalf("exact retry = (%p, %v, %v), want (%p, false, nil)", got, owner, err, want)
+	}
+	if len(session.aircraftCommands) != maxOperationCommands {
+		t.Fatalf("retained commands = %d, want %d", len(session.aircraftCommands), maxOperationCommands)
 	}
 }
 

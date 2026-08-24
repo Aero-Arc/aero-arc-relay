@@ -381,7 +381,7 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	if session.aircraftCommands == nil {
 		session.aircraftCommands = make(map[string]*aircraftCommandState)
 	}
-	pruneAircraftCommandsLocked(session, time.Now())
+	expireAircraftCommandsLocked(session, time.Now())
 	if existing := session.aircraftCommands[command.GetCommandId()]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			session.pendingMu.Unlock()
@@ -393,6 +393,7 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 		session.controlStreamMu.RUnlock()
 		return existing, false, nil
 	}
+	makeAircraftCommandRoomLocked(session)
 	if len(session.aircraftCommands) >= maxOperationCommands {
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()
@@ -418,12 +419,15 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	return state, true, nil
 }
 
-func pruneAircraftCommandsLocked(session *DroneSession, now time.Time) {
+func expireAircraftCommandsLocked(session *DroneSession, now time.Time) {
 	for commandID, state := range session.aircraftCommands {
 		if state.completed && now.Sub(state.completedAt) >= operationCommandRetention {
 			delete(session.aircraftCommands, commandID)
 		}
 	}
+}
+
+func makeAircraftCommandRoomLocked(session *DroneSession) {
 	for len(session.aircraftCommands) >= maxOperationCommands {
 		var oldestID string
 		var oldest time.Time
@@ -592,7 +596,8 @@ func beginOperationCommand(
 	if session.operationCommands == nil {
 		session.operationCommands = make(map[string]*operationCommandState)
 	}
-	pruneOperationCommandsLocked(session, time.Now())
+	expireOperationCommandsLocked(session, time.Now())
+	replacingRetryable := false
 	if existing := session.operationCommands[commandID]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			return nil, false, status.Error(codes.AlreadyExists, "operation-context command ID was already used with a different payload")
@@ -600,8 +605,11 @@ func beginOperationCommand(
 		if !existing.completed || !operationCommandRetryable(existing) {
 			return existing, false, nil
 		}
+		replacingRetryable = true
+	} else {
+		makeOperationCommandRoomLocked(session)
 	}
-	if len(session.operationCommands) >= maxOperationCommands {
+	if !replacingRetryable && len(session.operationCommands) >= maxOperationCommands {
 		return nil, false, status.Error(codes.ResourceExhausted, "operation-context command retention is full")
 	}
 
@@ -615,12 +623,15 @@ func beginOperationCommand(
 	return state, true, nil
 }
 
-func pruneOperationCommandsLocked(session *DroneSession, now time.Time) {
+func expireOperationCommandsLocked(session *DroneSession, now time.Time) {
 	for commandID, state := range session.operationCommands {
 		if state.completed && now.Sub(state.completedAt) >= operationCommandRetention {
 			delete(session.operationCommands, commandID)
 		}
 	}
+}
+
+func makeOperationCommandRoomLocked(session *DroneSession) {
 	for len(session.operationCommands) >= maxOperationCommands {
 		var oldestID string
 		var oldest time.Time

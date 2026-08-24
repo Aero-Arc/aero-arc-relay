@@ -2,7 +2,10 @@ package relay
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +15,60 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+func testMessageFingerprint(t *testing.T, message proto.Message) string {
+	t.Helper()
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func TestBeginOperationCommandRetainsExactRetryAtCapacity(t *testing.T) {
+	commandID := "oldest-command"
+	message := &agentv1.RelayStreamMessage{
+		Payload: &agentv1.RelayStreamMessage_SetOperationContext{
+			SetOperationContext: &agentv1.SetOperationContextCommand{
+				CommandId: commandID,
+				Context:   &agentv1.OperationContext{FlightId: "flight-1"},
+			},
+		},
+	}
+	fingerprint := testMessageFingerprint(t, message)
+	completedAt := time.Now().Add(-operationCommandRetention / 2)
+	done := make(chan struct{})
+	close(done)
+	want := &operationCommandState{
+		fingerprint: fingerprint,
+		ack: &agentv1.OperationContextCommandAck{
+			CommandId: commandID,
+			Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		},
+		done: done, completed: true, completedAt: completedAt,
+	}
+	session := &DroneSession{operationCommands: map[string]*operationCommandState{commandID: want}}
+	for i := 1; i < maxOperationCommands; i++ {
+		id := fmt.Sprintf("retained-%04d", i)
+		session.operationCommands[id] = &operationCommandState{
+			fingerprint: id,
+			ack: &agentv1.OperationContextCommandAck{
+				CommandId: id,
+				Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+			},
+			done: done, completed: true, completedAt: completedAt.Add(time.Duration(i)),
+		}
+	}
+
+	got, owner, err := beginOperationCommand(session, commandID, fingerprint, message.GetSetOperationContext().GetContext())
+	if err != nil || owner || got != want {
+		t.Fatalf("exact retry = (%p, %v, %v), want (%p, false, nil)", got, owner, err, want)
+	}
+	if len(session.operationCommands) != maxOperationCommands {
+		t.Fatalf("retained commands = %d, want %d", len(session.operationCommands), maxOperationCommands)
+	}
+}
 
 func TestSetOperationContextRequiresAuthorizedControlCaller(t *testing.T) {
 	want := status.Error(codes.PermissionDenied, "denied")
