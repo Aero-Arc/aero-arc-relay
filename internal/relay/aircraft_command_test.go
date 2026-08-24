@@ -256,6 +256,65 @@ func TestAircraftCommandCallerCancellationDuringSendDoesNotFinalizeSharedCommand
 	}
 }
 
+func TestAircraftCommandDeliveryHoldsSessionLeaseUntilBlockedSendCompletes(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	commandCtx, cancelCommand := context.WithCancel(context.Background())
+	commandResult := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(commandCtx, &relayv1.SendAircraftCommandRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.AircraftCommand{
+				CommandId: "command-replace", AircraftId: "aircraft-1",
+				Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+			},
+		})
+		commandResult <- err
+	}()
+	<-stream.sendStarted
+
+	replaced := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"})
+		replaced <- err
+	}()
+	select {
+	case err := <-replaced:
+		t.Fatalf("session replaced while old command send was blocked: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelCommand()
+	if err := <-commandResult; status.Code(err) != codes.Canceled {
+		t.Fatalf("command caller error = %v, want Canceled", err)
+	}
+	select {
+	case err := <-replaced:
+		t.Fatalf("caller cancellation released lease before old send completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(stream.sendBlock)
+	<-stream.sentAckChan
+	select {
+	case err := <-replaced:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session replacement did not resume after old command send completed")
+	}
+}
+
 func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *testing.T) {
 	stream := &mockTelemetryStream{
 		ctx:         context.Background(),

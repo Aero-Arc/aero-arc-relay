@@ -258,6 +258,18 @@ func newSessionID() (string, error) {
 }
 
 func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
+	return sendToSessionWithWritePolicy(ctx, session, message, false)
+}
+
+// sendToSessionThroughWrite keeps its caller blocked after a stream Send has
+// started until that write returns. Aircraft-command delivery uses this while
+// holding the session ownership lease so replacement cannot publish ahead of a
+// command that is still capable of reaching the retired stream.
+func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
+	return sendToSessionWithWritePolicy(ctx, session, message, true)
+}
+
+func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return status.FromContextError(err).Err()
@@ -282,6 +294,11 @@ func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.
 		if err := ctx.Err(); err != nil {
 			binding.sendMu.Unlock()
 			return status.FromContextError(err).Err()
+		}
+		if waitThroughWrite {
+			err := binding.stream.Send(message)
+			binding.sendMu.Unlock()
+			return err
 		}
 		sent := make(chan error, 1)
 		go func() {

@@ -281,10 +281,13 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 
 	startedAt := time.Now()
 	state, owner, err := beginAircraftCommandDelivery(session, command)
-	session.ownershipMu.RUnlock()
 	if err != nil {
+		session.ownershipMu.RUnlock()
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 		return nil, err
+	}
+	if !owner {
+		session.ownershipMu.RUnlock()
 	}
 	if owner {
 		slog.LogAttrs(ctx, slog.LevelInfo, "command_delivery_started",
@@ -330,6 +333,9 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	return &pb.SendAircraftCommandResponse{Result: result}, nil
 }
 
+// beginAircraftCommandDelivery requires the caller to hold the session
+// ownership read lease. A new delivery transfers that lease to its send task;
+// an attached duplicate or an error leaves release with the caller.
 func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.AircraftCommand) (*aircraftCommandState, bool, error) {
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
 	if err != nil {
@@ -364,7 +370,8 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	session.pendingMu.Unlock()
 	command = proto.Clone(command).(*agentv1.AircraftCommand)
 	go func() {
-		if err := sendToSession(deliveryCtx, session, &agentv1.RelayStreamMessage{
+		defer session.ownershipMu.RUnlock()
+		if err := sendToSessionThroughWrite(deliveryCtx, session, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
 		}); err != nil {
 			finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
