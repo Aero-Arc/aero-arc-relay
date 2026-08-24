@@ -117,14 +117,18 @@ probe Agent connectivity or command state.
 `SendAircraftCommand` uses the same authenticated control-mutation gate. ARM
 and DISARM target only the session active at admission, are not queued across a
 replacement, and are not automatically retried because they are immediate
-vehicle commands rather than durable operation-context mutations.
+vehicle commands rather than durable operation-context mutations. Relay holds
+the session ownership lease through validation and stream delivery, releases it
+before waiting for the autopilot result, and aborts that pending wait if the
+session is retired. A disconnected Agent can therefore be replaced even when a
+control caller supplied no deadline.
 
-Unlike a telemetry ACK, a control command is not a response to a message
-received on a particular stream. It targets the current admitted Agent session.
-If that session changes before the ACK is returned, the Relay reports `Aborted`;
-the caller can retry the same durable command ID and payload against the
-replacement. The Agent WAL is the cross-session and cross-process idempotency
-authority.
+Unlike a telemetry ACK, an operation-context command is not a response to a
+message received on a particular stream. It targets the current admitted Agent
+session. If that session changes before the ACK is returned, the Relay reports
+`Aborted`; the caller can retry the same durable command ID and payload against
+the replacement. The Agent WAL is the cross-session and cross-process
+idempotency authority.
 
 The delivery path:
 

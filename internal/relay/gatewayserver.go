@@ -61,7 +61,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
 		operationCommands: make(map[string]*operationCommandState),
 		operationGate:     makeOperationGate(),
-		pendingAircraft:   make(map[string]chan *agentv1.AircraftCommandResult),
+		pendingAircraft:   make(map[string]chan aircraftCommandOutcome),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -84,6 +84,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
+			previous.abortPendingAircraftCommands()
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
@@ -370,8 +371,20 @@ func (session *DroneSession) handleAircraftCommandResult(result *agentv1.Aircraf
 		return
 	}
 	select {
-	case pending <- result:
+	case pending <- aircraftCommandOutcome{result: result}:
 	default:
+	}
+}
+
+func (session *DroneSession) abortPendingAircraftCommands() {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	for commandID, pending := range session.pendingAircraft {
+		delete(session.pendingAircraft, commandID)
+		select {
+		case pending <- aircraftCommandOutcome{err: status.Error(codes.Aborted, "agent session retired while awaiting aircraft command result")}:
+		default:
+		}
 	}
 }
 

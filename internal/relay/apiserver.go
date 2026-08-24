@@ -245,15 +245,15 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 		return nil, status.Error(codes.NotFound, "agent is not connected")
 	}
 
-	// Pin this exact session generation through result correlation. Registration
-	// replacement and stream cleanup require the write side of this lease, so an
-	// admitted command cannot migrate to a reconnecting Agent.
+	// Pin this exact session generation only through admission and stream send.
+	// Waiting while holding the lease would prevent a disconnected Agent from
+	// being retired or replaced. Retirement explicitly aborts the pending wait.
 	session.ownershipMu.RLock()
-	defer session.ownershipMu.RUnlock()
 	s.sessionsMu.RLock()
 	current := s.grpcSessions[agentID] == session && !session.retired
 	s.sessionsMu.RUnlock()
 	if !current {
+		session.ownershipMu.RUnlock()
 		return nil, status.Error(codes.NotFound, "agent session is no longer active")
 	}
 	session.sessionMu.RLock()
@@ -261,6 +261,7 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	sessionID := session.SessionID
 	session.sessionMu.RUnlock()
 	if !connected {
+		session.ownershipMu.RUnlock()
 		return nil, status.Error(codes.NotFound, "agent stream is not connected")
 	}
 
@@ -272,10 +273,27 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 		slog.String("session_id", sessionID),
 		slog.String("command_type", command.GetType().String()),
 	)
-	result, err := deliverAircraftCommandToSession(ctx, session, command)
+	pending, cleanup, err := beginAircraftCommandDelivery(ctx, session, command)
+	session.ownershipMu.RUnlock()
 	if err != nil {
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 		return nil, err
+	}
+	defer cleanup()
+	var result *agentv1.AircraftCommandResult
+	select {
+	case outcome := <-pending:
+		if outcome.err != nil {
+			relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
+			return nil, outcome.err
+		}
+		result = outcome.result
+	case <-ctx.Done():
+		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
+	if result == nil {
+		return nil, status.Error(codes.Internal, "agent returned an empty aircraft command result")
 	}
 	if result.GetCommandId() != command.GetCommandId() || result.GetAircraftId() != command.GetAircraftId() {
 		return nil, status.Error(codes.Internal, "agent returned a mismatched aircraft command result")
@@ -295,15 +313,15 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	return &pb.SendAircraftCommandResponse{Result: result}, nil
 }
 
-func deliverAircraftCommandToSession(ctx context.Context, session *DroneSession, command *agentv1.AircraftCommand) (*agentv1.AircraftCommandResult, error) {
-	pending := make(chan *agentv1.AircraftCommandResult, 1)
+func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, command *agentv1.AircraftCommand) (<-chan aircraftCommandOutcome, func(), error) {
+	pending := make(chan aircraftCommandOutcome, 1)
 	session.pendingMu.Lock()
 	if session.pendingAircraft == nil {
-		session.pendingAircraft = make(map[string]chan *agentv1.AircraftCommandResult)
+		session.pendingAircraft = make(map[string]chan aircraftCommandOutcome)
 	}
 	if _, exists := session.pendingAircraft[command.GetCommandId()]; exists {
 		session.pendingMu.Unlock()
-		return nil, status.Error(codes.AlreadyExists, "aircraft command is already pending")
+		return nil, nil, status.Error(codes.AlreadyExists, "aircraft command is already pending")
 	}
 	session.pendingAircraft[command.GetCommandId()] = pending
 	session.pendingMu.Unlock()
@@ -316,15 +334,9 @@ func deliverAircraftCommandToSession(ctx context.Context, session *DroneSession,
 		Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
 	}); err != nil {
 		cleanup()
-		return nil, err
+		return nil, nil, err
 	}
-	select {
-	case result := <-pending:
-		return result, nil
-	case <-ctx.Done():
-		cleanup()
-		return nil, status.FromContextError(ctx.Err()).Err()
-	}
+	return pending, cleanup, nil
 }
 
 // deliverOperationCommandToSession retains command fingerprints and terminal

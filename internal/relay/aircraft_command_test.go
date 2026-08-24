@@ -20,7 +20,7 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 	session := &DroneSession{
 		agentID: "agent-1", SessionID: "session-1",
 		stream:          &telemetryStreamBinding{stream: stream},
-		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
+		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
 	}
 	relay := &Relay{
 		controlAuthorizer: func(context.Context) error { return nil },
@@ -97,7 +97,7 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 	session := &DroneSession{
 		agentID: "agent-1", SessionID: "session-1",
 		stream:          &telemetryStreamBinding{stream: stream},
-		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
+		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
 	}
 	relay := &Relay{
 		controlAuthorizer: func(context.Context) error { return nil },
@@ -120,6 +120,56 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 	session.pendingMu.Unlock()
 	if stillPending {
 		t.Fatal("expired command remained pending")
+	}
+}
+
+func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx:         context.Background(),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:          &telemetryStreamBinding{stream: stream},
+		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.AircraftCommand{
+				CommandId: "command-retire", AircraftId: "aircraft-1",
+				Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+			},
+		})
+		completed <- err
+	}()
+	<-stream.sentAckChan
+
+	retired := make(chan struct{})
+	go func() {
+		session.ownershipMu.Lock()
+		session.retired = true
+		session.abortPendingAircraftCommands()
+		session.ownershipMu.Unlock()
+		close(retired)
+	}()
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("session retirement blocked behind aircraft command result wait")
+	}
+	select {
+	case err := <-completed:
+		if status.Code(err) != codes.Aborted {
+			t.Fatalf("command error = %v, want Aborted", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending command did not wake when session retired")
 	}
 }
 

@@ -126,6 +126,7 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 	session.sessionMu.Unlock()
 	if isCurrentStream {
 		session.retired = true
+		session.abortPendingAircraftCommands()
 		delete(r.grpcSessions, agentID)
 		// Stop liveness before releasing the session-map lock. Otherwise a new
 		// registration could publish and activate a replacement stream between
