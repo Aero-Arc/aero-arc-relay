@@ -17,7 +17,7 @@ func TestRecordToPoint(t *testing.T) {
 			OperatorID: "operator-1", AircraftID: "aircraft-1", AgentID: "agent-1",
 			RelayID: "relay-1", SessionID: "session-1", FlightID: "flight-1", IntentID: "intent-1",
 		},
-		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:36:0195f6a8-86d1-7be7-a104-3a814dc19f9e:42", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 42, MessageID: 33, Dialect: "common"},
+		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:42", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 42, MessageID: 33, Dialect: "common"},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: eventTime, RelayTime: eventTime.Add(time.Millisecond), AgentCaptureTime: &agentTime,
 			TimestampSource: telemetrynormalize.TimestampSourceAgent,
@@ -70,7 +70,7 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 			AgentID: "agent-1", RelayID: "relay-1", SessionID: "session-1", AircraftID: "aircraft-1",
 		},
 		Source: telemetrynormalize.SourceContext{
-			FrameID: "7:agent-1:36:0195f6a8-86d1-7be7-a104-3a814dc19f9e:42", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 42, MessageID: 33, Dialect: "common",
+			FrameID: "7:agent-1:1783857600000000000:42", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 42, MessageID: 33, Dialect: "common",
 		},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: eventTime, RelayTime: eventTime, AgentCaptureTime: &agentTime,
@@ -96,7 +96,7 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 		t.Fatalf("recordToPoint(retry) error = %v", err)
 	}
 	secondRecord := record
-	secondRecord.Source.FrameID = "7:agent-1:36:0195f6a8-86d1-7be7-a104-3a814dc19f9e:43"
+	secondRecord.Source.FrameID = "7:agent-1:1783857600000000000:43"
 	secondRecord.Source.Sequence = 43
 	second, err := recordToPoint(secondRecord)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestRecordToPointUsesStableMeasurementWithoutAssignment(t *testing.T) {
 		Identity: telemetrynormalize.IdentityContext{
 			AgentID: "agent-1", RelayID: "relay-1", SessionID: "session-1",
 		},
-		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:36:0195f6a8-86d1-7be7-a104-3a814dc19f9e:1", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 1, MessageID: 0, Dialect: "common"},
+		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:1", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 1, MessageID: 0, Dialect: "common"},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: time.Now().UTC(), RelayTime: time.Now().UTC(), TimestampSource: telemetrynormalize.TimestampSourceRelay,
 		},

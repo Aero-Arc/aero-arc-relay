@@ -54,3 +54,28 @@ that omits the owner field. Roll back Registry owner enforcement first, or use a
 coordinated rollback, then roll back Relay. Rolling back Registry while Relays
 remain updated is wire-compatible because the older Registry ignores the
 unknown field.
+
+### WAL Generation Identity Rollout
+
+Telemetry frames now carry the Agent WAL database's generation UUID. Roll out
+this additive contract in this order:
+
+1. Merge and publish the Protos revision containing `TelemetryFrame.wal_id`.
+2. Deploy Agents that persist and send the WAL generation UUID, while the Relay
+   fleet still accepts the additive field without depending on it.
+3. After all connected Agents send `wal_id`, deploy Relays that validate and
+   persist it with normalized telemetry.
+
+Schema version 1 deliberately retains its deployed capture-time-based
+`frame_id` formula throughout this rollout. If an upgraded Agent loses an ACK
+from an old Relay and retries after connecting to an upgraded Relay, both
+Relays therefore select the same InfluxDB point identity. `wal_id` is stored as
+a field for cursor inspection and replay ordering; it does not alter the
+version 1 point identity.
+
+Do not change the version 1 `frame_id` formula to include `wal_id`. A future
+WAL-based formula requires a new normalized schema version and a coordinated
+drain: stop admission, allow every Agent WAL entry accepted by the old Relay
+fleet to receive its ACK, verify no in-flight version 1 retries remain, deploy
+the new Relay fleet, and then resume admission. Without that drain, a retry can
+be written once under each formula.

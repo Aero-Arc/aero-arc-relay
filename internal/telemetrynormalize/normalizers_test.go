@@ -1,6 +1,7 @@
 package telemetrynormalize
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -368,5 +369,44 @@ func TestNormalizeRejectsInvalidWALGenerationID(t *testing.T) {
 		if _, err := normalizer.Normalize(envelope); err == nil {
 			t.Fatalf("Normalize() accepted WAL generation ID %q", walID)
 		}
+	}
+}
+
+func TestNormalizePreservesV1FrameIDAcrossWALIdentityRollout(t *testing.T) {
+	normalizer, ok := NewRegistry().Lookup("GlobalPositionInt")
+	if !ok {
+		t.Fatal("GlobalPositionInt normalizer is not registered")
+	}
+	envelope := testEnvelope("GlobalPositionInt", 33, map[string]any{
+		"Lat": "418781000", "Lon": "-876291000", "Alt": "123450",
+	})
+	wantFrameID := fmt.Sprintf(
+		"%d:%s:%d:%d",
+		len(envelope.AgentID),
+		envelope.AgentID,
+		envelope.TimestampAgent.UnixNano(),
+		envelope.WALSequence,
+	)
+
+	first, err := normalizer.Normalize(envelope)
+	if err != nil {
+		t.Fatalf("Normalize(first WAL) error = %v", err)
+	}
+	envelope.WALID = "0195f6a8-86d1-7be7-a104-3a814dc19f9f"
+	second, err := normalizer.Normalize(envelope)
+	if err != nil {
+		t.Fatalf("Normalize(second WAL) error = %v", err)
+	}
+
+	if first.Source.FrameID != wantFrameID || second.Source.FrameID != wantFrameID {
+		t.Fatalf(
+			"schema-v1 frame IDs changed with WAL metadata: first=%q second=%q want=%q",
+			first.Source.FrameID,
+			second.Source.FrameID,
+			wantFrameID,
+		)
+	}
+	if first.Source.WALID == second.Source.WALID {
+		t.Fatalf("test WAL identities are equal: %q", first.Source.WALID)
 	}
 }

@@ -124,16 +124,21 @@ invented placeholders.
 unambiguous encoding of:
 
 ```text
-agent_id + WAL generation ID + durable agent WAL sequence
+agent_id + agent capture Unix nanoseconds + durable agent WAL sequence
 ```
 
 The concrete encoding must be stable, documented, and collision-safe. A
 length-delimited or escaped encoding is required; raw concatenation is not.
-Resending the same WAL entry produces the same `frame_id`. The WAL generation
-ID is a UUID stored in the Agent's WAL database: it survives process restarts
-and changes when the database is recreated. It therefore prevents a reset WAL
-sequence from reusing an idempotency key. A future explicit frame UUID may
-replace this derived encoding in a new transport contract.
+Resending the same WAL entry produces the same `frame_id`.
+
+The capture timestamp is persisted in the frame before WAL insertion and is
+stable across retry. Combining it with the WAL sequence prevents ordinary WAL
+recreation from reusing an idempotency key. This version 1 formula is retained
+while WAL generation identity rolls through the Agent and Relay fleet; changing
+it in place would let an entry persisted by an old Relay and retried through a
+new Relay create two InfluxDB points. A future schema version may use the WAL
+generation ID in the point identity only after a coordinated drain of in-flight
+version 1 entries.
 
 `wal_id` is the Agent WAL generation identity. It is required and must not be
 derived from a process, Relay session, SQLite row ID, or MAVLink packet.
@@ -319,7 +324,7 @@ For InfluxDB, measurement, tag set, and timestamp form the point identity. All
 records therefore use the stable `aircraft_telemetry` measurement, and only
 frame-invariant values (`frame_id`, `agent_id`, `message_name`, and
 `schema_version`) are tags. This keeps retries idempotent while ensuring frames
-with the same capture timestamp and different WAL cursors remain distinct.
+with the same capture timestamp and different WAL sequences remain distinct.
 Retry-variable relay, session, assignment, flight, and intent metadata remain
 queryable fields. `wal_id` and `wal_sequence` remain fields for replay ordering,
 inspection, and diagnostics.

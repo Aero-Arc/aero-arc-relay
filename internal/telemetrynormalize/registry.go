@@ -3,6 +3,7 @@ package telemetrynormalize
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/makinje/aero-arc-relay/internal/outputs"
@@ -116,7 +117,7 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 			IntentVersion: envelope.IntentVersion,
 		},
 		Source: SourceContext{
-			FrameID:   fmt.Sprintf("%d:%s:%d:%s:%d", len(envelope.AgentID), envelope.AgentID, len(walID), walID, envelope.WALSequence),
+			FrameID:   frameIDV1(envelope.AgentID, agentTimeValue, envelope.WALSequence),
 			WALID:     walID,
 			Sequence:  envelope.WALSequence,
 			MessageID: envelope.MsgID,
@@ -131,4 +132,11 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 		MessageName: canonicalName,
 		Fields:      make(Fields),
 	}, nil
+}
+
+// frameIDV1 retains the deployed schema-version-1 identity across mixed Relay
+// versions. Changing this formula requires a new schema version and a
+// coordinated drain so one WAL entry cannot be persisted under two identities.
+func frameIDV1(agentID string, agentCaptureTime time.Time, walSequence uint64) string {
+	return fmt.Sprintf("%d:%s:%d:%d", len(agentID), agentID, agentCaptureTime.UnixNano(), walSequence)
 }

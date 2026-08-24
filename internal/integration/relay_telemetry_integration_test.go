@@ -185,8 +185,8 @@ func sendAndRequireOK(
 	return ack
 }
 
-func frameID(sequence uint64, _ time.Time) string {
-	return fmt.Sprintf("%d:%s:%d:%s:%d", len(testAgentID), testAgentID, len(testWALID), testWALID, sequence)
+func frameID(sequence uint64, captureTime time.Time) string {
+	return fmt.Sprintf("%d:%s:%d:%d", len(testAgentID), testAgentID, captureTime.UnixNano(), sequence)
 }
 
 func frameQuery(frameID, sessionID string) string {
