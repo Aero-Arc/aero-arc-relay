@@ -176,6 +176,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 		frameAgentID := strings.TrimSpace(frame.AgentId)
 		frameWALID := strings.TrimSpace(frame.WalId)
+		frameWALUUID, frameWALIDErr := uuid.Parse(frameWALID)
 
 		ack := &agentv1.TelemetryAck{
 			Seq:    frame.Seq,
@@ -206,7 +207,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		} else if frameWALID == "" {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame WAL generation ID is required"
-		} else if _, err := uuid.Parse(frameWALID); err != nil {
+		} else if frameWALIDErr != nil || frameWALUUID == uuid.Nil {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame WAL generation ID is invalid"
 		} else {

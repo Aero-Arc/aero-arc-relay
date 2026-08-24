@@ -91,8 +91,12 @@ func (r Record) Validate() error {
 		return errors.New("frame ID is required")
 	}
 	if r.Source.WALID != "" {
-		if _, err := uuid.Parse(r.Source.WALID); err != nil {
+		walUUID, err := uuid.Parse(r.Source.WALID)
+		if err != nil {
 			return fmt.Errorf("WAL generation ID is invalid: %w", err)
+		}
+		if walUUID == uuid.Nil {
+			return errors.New("WAL generation ID is invalid: nil UUID")
 		}
 	}
 	if r.MessageName == "" {

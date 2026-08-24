@@ -70,6 +70,8 @@ const testAgentToken = "test-agent-token"
 
 const testWALGenerationID = "0195f6a8-86d1-7be7-a104-3a814dc19f9e"
 
+const nilWALGenerationID = "00000000-0000-0000-0000-000000000000"
+
 func relayWithRegistryReporter(t *testing.T, reporter agentRegistryReporter) *Relay {
 	t.Helper()
 	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent-1": testAgentToken})
@@ -736,9 +738,11 @@ func TestTelemetryStreamValidatesWALGenerationIDBeforeRouting(t *testing.T) {
 	}{
 		{name: "unsupported message missing ID", path: "unsupported", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
 		{name: "unsupported message invalid ID", path: "unsupported", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "unsupported message nil ID", path: "unsupported", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
 		{name: "unsupported message valid ID", path: "unsupported", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1},
 		{name: "noop missing ID", path: "noop", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
 		{name: "noop invalid ID", path: "noop", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "noop nil ID", path: "noop", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
 		{name: "noop valid ID", path: "noop", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK},
 	}
 

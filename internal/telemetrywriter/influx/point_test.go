@@ -152,4 +152,8 @@ func TestRecordToPointUsesStableMeasurementWithoutAssignment(t *testing.T) {
 	if got := point.GetField("wal_id"); got != nil {
 		t.Errorf("legacy schema-v1 point contains wal_id = %#v", got)
 	}
+	record.Source.WALID = "00000000-0000-0000-0000-000000000000"
+	if _, err := recordToPoint(record); err == nil {
+		t.Fatal("recordToPoint() accepted a nil WAL generation UUID")
+	}
 }

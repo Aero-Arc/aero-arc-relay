@@ -66,9 +66,9 @@ this additive contract in this order:
 3. After every Agent that may connect sends `wal_id`, deploy Relays that
    validate and persist it with normalized telemetry.
 
-An upgraded Relay validates the WAL UUID at gateway admission before message
-filtering or dispatch to normalized, no-op, or generic outputs. Missing or
-malformed identities receive a permanent-error ACK; only a valid cursor can
+An upgraded Relay validates the non-nil WAL UUID at gateway admission before
+message filtering or dispatch to normalized, no-op, or generic outputs. Missing
+or malformed identities receive a permanent-error ACK; only a valid cursor can
 receive `STATUS_OK` and be discarded from the Agent WAL.
 
 Schema version 1 deliberately retains its deployed capture-time-based

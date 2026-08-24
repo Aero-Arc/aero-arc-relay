@@ -143,11 +143,11 @@ version 1 entries.
 
 `wal_id` is the Agent WAL generation identity. It is optional in normalized
 schema version 1 so historical records and points written by old Relays during
-the staged rollout remain valid. When present, it must be a valid UUID persisted
-by the Agent's WAL database; it must not be derived from a process, Relay
-session, SQLite row ID, or MAVLink packet. Upgraded Relay transport admission
-requires it from upgraded Agents, but consumers of version 1 records must
-accept its absence.
+the staged rollout remain valid. When present, it must be a valid, non-nil UUID
+persisted by the Agent's WAL database; it must not be derived from a process,
+Relay session, SQLite row ID, or MAVLink packet. Upgraded Relay transport
+admission requires it from upgraded Agents, but consumers of version 1 records
+must accept its absence.
 
 `sequence` is the agent WAL sequence carried by the frame. It is required and
 must not be replaced with the MAVLink packet sequence.
@@ -300,7 +300,7 @@ Every normalized record must satisfy all of the following:
 2. `schema_version`, `agent_id`, `relay_id`, `session_id`, `frame_id`,
    `sequence`, `message_id`, `message_name`, `dialect`, `event_time`,
    `relay_time`, and `timestamp_source` are present and valid.
-3. When `wal_id` is present, it is a valid Agent WAL generation UUID.
+3. When `wal_id` is present, it is a valid, non-nil Agent WAL generation UUID.
 4. `frame_id` remains stable across retry and reconnect and does not collide
    after WAL recreation.
 5. Operator, aircraft, flight, and intent identities are authoritative or

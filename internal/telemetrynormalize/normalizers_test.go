@@ -341,6 +341,10 @@ func TestRecordValidationAcceptsLegacyV1WithoutWALGenerationID(t *testing.T) {
 	if err := record.Validate(); err == nil {
 		t.Fatal("schema-v1 record with invalid WAL generation ID passed validation")
 	}
+	record.Source.WALID = "00000000-0000-0000-0000-000000000000"
+	if err := record.Validate(); err == nil {
+		t.Fatal("schema-v1 record with nil WAL generation ID passed validation")
+	}
 }
 
 func testEnvelope(message string, messageID uint32, fields map[string]any) telemetry.TelemetryEnvelope {
@@ -374,7 +378,7 @@ func TestNormalizeRejectsMissingAgentCaptureTime(t *testing.T) {
 }
 
 func TestNormalizeRejectsInvalidWALGenerationID(t *testing.T) {
-	for _, walID := range []string{"", "not-a-uuid"} {
+	for _, walID := range []string{"", "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
 		envelope := testEnvelope("GlobalPositionInt", 33, map[string]any{
 			"Lat": "418781000", "Lon": "-876291000", "Alt": "123450",
 		})
