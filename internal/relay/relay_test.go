@@ -451,6 +451,7 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 		FlightId:           "stale-frame-flight",
 		IntentId:           "stale-frame-intent",
 		IntentVersion:      1,
+		WalId:              "0195f6a8-86d1-7be7-a104-3a814dc19f9e",
 		Seq:                99,
 		SentAtUnixNs:       agentTime.UnixNano(),
 		DeviceTimestampSec: 42.5,
@@ -480,8 +481,8 @@ func TestBuildTelemetryFrameEnvelope(t *testing.T) {
 	if envelope.IntentID != "authoritative-intent" || envelope.IntentVersion != 4 {
 		t.Errorf("intent metadata = %q/%d", envelope.IntentID, envelope.IntentVersion)
 	}
-	if envelope.WALSequence != 99 || envelope.Dialect != "common" {
-		t.Errorf("sequence/dialect metadata = %d/%q", envelope.WALSequence, envelope.Dialect)
+	if envelope.WALID != "0195f6a8-86d1-7be7-a104-3a814dc19f9e" || envelope.WALSequence != 99 || envelope.Dialect != "common" {
+		t.Errorf("WAL ID/sequence/dialect metadata = %q/%d/%q", envelope.WALID, envelope.WALSequence, envelope.Dialect)
 	}
 	if !envelope.TimestampAgent.Equal(agentTime) || envelope.TimestampDevice != 42.5 {
 		t.Errorf("agent/device timestamps = %v/%v", envelope.TimestampAgent, envelope.TimestampDevice)

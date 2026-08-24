@@ -224,6 +224,7 @@ func validPositionEnvelope() telemetry.TelemetryEnvelope {
 		Dialect:        "common",
 		MsgID:          33,
 		MsgName:        "GlobalPositionInt",
+		WALID:          "0195f6a8-86d1-7be7-a104-3a814dc19f9e",
 		WALSequence:    42,
 		Fields: map[string]any{
 			"Lat": "418781000", "Lon": "-876291000", "Alt": "123450",

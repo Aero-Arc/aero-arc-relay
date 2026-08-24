@@ -194,6 +194,8 @@ The relay uses a unified `TelemetryEnvelope` format for all messages:
   "timestamp_device": 1705315800.123,
   "msg_id": 0,
   "msg_name": "Heartbeat",
+  "wal_id": "0195f6a8-86d1-7be7-a104-3a814dc19f9e",
+  "wal_sequence": 42,
   "system_id": 1,
   "component_id": 1,
   "sequence": 42,

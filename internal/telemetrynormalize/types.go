@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const SchemaVersion uint16 = 1
@@ -35,6 +37,7 @@ type IdentityContext struct {
 
 type SourceContext struct {
 	FrameID     string
+	WALID       string
 	Sequence    uint64
 	MessageID   uint32
 	Dialect     string
@@ -67,11 +70,14 @@ type Record struct {
 	Fields        Fields
 }
 
-// Validate validates Record for required fields, supported values, and safety constraints.
+// Validate validates Record for required fields, supported values, and safety
+// constraints. It canonicalizes a present WAL generation ID to the lowercase,
+// hyphenated UUID representation.
 //
 // Returns:
 //   - error: reports validation, dependency, cancellation, or persistence failures.
-func (r Record) Validate() error {
+func (r *Record) Validate() error {
+	canonicalWALID := r.Source.WALID
 	if r.SchemaVersion == 0 {
 		return errors.New("schema version is required")
 	}
@@ -86,6 +92,16 @@ func (r Record) Validate() error {
 	}
 	if r.Source.FrameID == "" {
 		return errors.New("frame ID is required")
+	}
+	if r.Source.WALID != "" {
+		walUUID, err := uuid.Parse(r.Source.WALID)
+		if err != nil {
+			return fmt.Errorf("WAL generation ID is invalid: %w", err)
+		}
+		if walUUID == uuid.Nil {
+			return errors.New("WAL generation ID is invalid: nil UUID")
+		}
+		canonicalWALID = walUUID.String()
 	}
 	if r.MessageName == "" {
 		return errors.New("message name is required")
@@ -113,5 +129,6 @@ func (r Record) Validate() error {
 			return fmt.Errorf("field %s has unsupported type %T", name, value)
 		}
 	}
+	r.Source.WALID = canonicalWALID
 	return nil
 }

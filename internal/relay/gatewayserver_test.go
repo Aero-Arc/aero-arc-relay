@@ -68,6 +68,10 @@ func (r *replacementAgentRegistrar) counts() (int, int) {
 
 const testAgentToken = "test-agent-token"
 
+const testWALGenerationID = "0195f6a8-86d1-7be7-a104-3a814dc19f9e"
+
+const nilWALGenerationID = "00000000-0000-0000-0000-000000000000"
+
 func relayWithRegistryReporter(t *testing.T, reporter agentRegistryReporter) *Relay {
 	t.Helper()
 	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent-1": testAgentToken})
@@ -344,7 +348,7 @@ func TestTelemetryStreamFailedReplacementPreservesAcceptedStream(t *testing.T) {
 
 	original.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
 		AgentId: agentID, SessionId: session.SessionID, Seq: 51,
-		MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case message := <-original.sentAckChan:
@@ -394,7 +398,7 @@ func TestPendingRegistryReplacementDoesNotBlockAcceptedStreamACK(t *testing.T) {
 
 	original.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
 		AgentId: agentID, SessionId: session.SessionID, Seq: 52,
-		MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case message := <-original.sentAckChan:
@@ -691,7 +695,7 @@ func TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure(t *testing.T) {
 			waitForStreamGeneration(t, session, 1)
 
 			stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-				AgentId: agentID, SessionId: session.SessionID, Seq: 44, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+				AgentId: agentID, SessionId: session.SessionID, Seq: 44, MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 			})
 			select {
 			case message := <-stream.sentAckChan:
@@ -713,6 +717,94 @@ func TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure(t *testing.T) {
 			close(stream.recvChan)
 			select {
 			case err := <-errChannel:
+				if err != nil {
+					t.Fatalf("stream returned an error on EOF: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for telemetry stream to close")
+			}
+		})
+	}
+}
+
+func TestTelemetryStreamValidatesWALGenerationIDBeforeRouting(t *testing.T) {
+	tests := []struct {
+		name          string
+		path          string
+		walID         string
+		wantStatus    agentv1.TelemetryAck_Status
+		wantError     string
+		wantSinkCount int
+		wantWALID     string
+	}{
+		{name: "unsupported message missing ID", path: "unsupported", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
+		{name: "unsupported message invalid ID", path: "unsupported", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "unsupported message nil ID", path: "unsupported", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "unsupported message valid ID", path: "unsupported", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1, wantWALID: testWALGenerationID},
+		{name: "unsupported message uppercase ID", path: "unsupported", walID: strings.ToUpper(testWALGenerationID), wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1, wantWALID: testWALGenerationID},
+		{name: "noop missing ID", path: "noop", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
+		{name: "noop invalid ID", path: "noop", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "noop nil ID", path: "noop", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
+		{name: "noop valid ID", path: "noop", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var genericSink *mock.MockSink
+			var relay *Relay
+			messageName := "Heartbeat"
+			if tt.path == "unsupported" {
+				genericSink = mock.NewMockSink()
+				relay = relayWithSinks(genericSink)
+				messageName = "Attitude"
+			} else {
+				relay = &Relay{router: outputs.NewRouter()}
+				relay.router.AddConsumer(telemetrywriter.NewNoopWriter(), telemetryMessageFilter())
+			}
+
+			const agentID = "wal-admission-agent"
+			session := &DroneSession{
+				agentID: agentID, SessionID: "wal-admission-session",
+				pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+			}
+			relay.grpcSessions = map[string]*DroneSession{agentID: session}
+			stream, cancel := newAgentTelemetryStream(agentID, session.SessionID)
+			defer cancel()
+			streamErr := make(chan error, 1)
+			go func() { streamErr <- relay.TelemetryStream(stream) }()
+			waitForStreamGeneration(t, session, 1)
+
+			stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+				AgentId: agentID, SessionId: session.SessionID, Seq: 71,
+				MsgName: messageName, WalId: tt.walID, SentAtUnixNs: time.Now().UnixNano(),
+			})
+			select {
+			case message := <-stream.sentAckChan:
+				ack := message.GetTelemetryAck()
+				if ack == nil {
+					t.Fatal("stream response did not contain a telemetry ACK")
+				}
+				if ack.Status != tt.wantStatus {
+					t.Fatalf("ACK status = %v, want %v; error=%q", ack.Status, tt.wantStatus, ack.Error)
+				}
+				if tt.wantError != "" && !strings.Contains(ack.Error, tt.wantError) {
+					t.Fatalf("ACK error = %q, want substring %q", ack.Error, tt.wantError)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for telemetry ACK")
+			}
+
+			if genericSink != nil && genericSink.GetMessageCount() != tt.wantSinkCount {
+				t.Fatalf("generic sink count = %d, want %d", genericSink.GetMessageCount(), tt.wantSinkCount)
+			}
+			if genericSink != nil && tt.wantWALID != "" {
+				if got := genericSink.GetMessages()[0].WALID; got != tt.wantWALID {
+					t.Fatalf("routed WAL generation ID = %q, want %q", got, tt.wantWALID)
+				}
+			}
+			close(stream.recvChan)
+			select {
+			case err := <-streamErr:
 				if err != nil {
 					t.Fatalf("stream returned an error on EOF: %v", err)
 				}
@@ -767,6 +859,7 @@ func TestTelemetryStream(t *testing.T) {
 		AgentId:      paddedAgentID,
 		SessionId:    "session-stream-test",
 		MsgName:      "Heartbeat",
+		WalId:        testWALGenerationID,
 		SentAtUnixNs: time.Now().UnixNano(),
 		Fields: map[string]string{
 			"type": "1",
@@ -805,7 +898,7 @@ func TestTelemetryStream(t *testing.T) {
 
 	// Test Case 3: Reject a named frame without its durable capture timestamp.
 	missingTimestampFrame := &agentv1.TelemetryFrame{
-		AgentId: agentID, SessionId: "session-stream-test", Seq: 3, MsgName: "Heartbeat",
+		AgentId: agentID, SessionId: "session-stream-test", Seq: 3, MsgName: "Heartbeat", WalId: testWALGenerationID,
 	}
 	stream.recvChan <- telemetryStreamMessage(missingTimestampFrame)
 	select {
@@ -900,6 +993,7 @@ func TestTelemetryStream_OldStreamDoesNotDeleteReplacementSession(t *testing.T) 
 		AgentId:      agentID,
 		SessionId:    oldSession.SessionID,
 		MsgName:      "Heartbeat",
+		WalId:        testWALGenerationID,
 		SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
@@ -967,6 +1061,7 @@ func TestTelemetryStream_ReplacementKeepsACKAndCleanupOnReceivingStream(t *testi
 		SessionId:    session.SessionID,
 		Seq:          42,
 		MsgName:      "Heartbeat",
+		WalId:        testWALGenerationID,
 		SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
@@ -1035,7 +1130,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	waitForStreamGeneration(t, session, 1)
 
 	oldStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId: agentID, SessionId: session.SessionID, Seq: 45, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+		AgentId: agentID, SessionId: session.SessionID, Seq: 45, MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case <-oldStream.sendStarted:
@@ -1052,7 +1147,7 @@ func TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend(t *testing.T) {
 	waitForStreamGeneration(t, session, 2)
 
 	replacementStream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
-		AgentId: agentID, SessionId: session.SessionID, Seq: 46, MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+		AgentId: agentID, SessionId: session.SessionID, Seq: 46, MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case message := <-replacementStream.sentAckChan:
@@ -1116,7 +1211,7 @@ func TestTelemetryStream_KeepsSessionOwnershipThroughAdmission(t *testing.T) {
 
 	stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
 		AgentId: agentID, SessionId: session.SessionID, Seq: 47,
-		MsgName: "Heartbeat", SentAtUnixNs: time.Now().UnixNano(),
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
 	})
 	select {
 	case <-consumer.started:

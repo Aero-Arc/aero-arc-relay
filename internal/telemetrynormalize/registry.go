@@ -3,7 +3,9 @@ package telemetrynormalize
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 )
@@ -95,6 +97,18 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 	if strings.TrimSpace(envelope.AgentID) == "" {
 		return Record{}, fmt.Errorf("agent ID is required")
 	}
+	walID := strings.TrimSpace(envelope.WALID)
+	if walID == "" {
+		return Record{}, fmt.Errorf("WAL generation ID is required")
+	}
+	walUUID, err := uuid.Parse(walID)
+	if err != nil {
+		return Record{}, fmt.Errorf("WAL generation ID is invalid: %w", err)
+	}
+	if walUUID == uuid.Nil {
+		return Record{}, fmt.Errorf("WAL generation ID is invalid: nil UUID")
+	}
+	walID = walUUID.String()
 	return Record{
 		SchemaVersion: SchemaVersion,
 		Identity: IdentityContext{
@@ -108,7 +122,8 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 			IntentVersion: envelope.IntentVersion,
 		},
 		Source: SourceContext{
-			FrameID:   fmt.Sprintf("%d:%s:%d:%d", len(envelope.AgentID), envelope.AgentID, agentTime.UnixNano(), envelope.WALSequence),
+			FrameID:   frameIDV1(envelope.AgentID, agentTimeValue, envelope.WALSequence),
+			WALID:     walID,
 			Sequence:  envelope.WALSequence,
 			MessageID: envelope.MsgID,
 			Dialect:   dialect,
@@ -122,4 +137,11 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 		MessageName: canonicalName,
 		Fields:      make(Fields),
 	}, nil
+}
+
+// frameIDV1 retains the deployed schema-version-1 identity across mixed Relay
+// versions. Changing this formula requires a new schema version and a
+// coordinated drain so one WAL entry cannot be persisted under two identities.
+func frameIDV1(agentID string, agentCaptureTime time.Time, walSequence uint64) string {
+	return fmt.Sprintf("%d:%s:%d:%d", len(agentID), agentID, agentCaptureTime.UnixNano(), walSequence)
 }

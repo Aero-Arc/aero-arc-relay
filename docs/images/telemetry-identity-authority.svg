@@ -134,7 +134,7 @@
   <text class="text authority" x="1060" y="758">Authority · Telemetry ingestion contract</text>
   <text class="muted small" x="1060" y="789">Created when a frame is written to the Agent WAL.</text>
   <text class="text body" x="1060" y="825">First-slice stable idempotency key:</text>
-  <text class="text authority" x="1060" y="854">agent_id + durable WAL sequence</text>
+  <text class="text authority" x="1060" y="854">agent_id + capture time + WAL sequence</text>
   <text class="text body" x="1060" y="884">Unchanged across resend and reconnect.</text>
   <text class="muted body" x="1060" y="915">Session and optional context attribute the record;</text>
   <text class="muted body" x="1060" y="935">frame identity remains retry-stable.</text>
