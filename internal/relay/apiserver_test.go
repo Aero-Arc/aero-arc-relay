@@ -125,6 +125,9 @@ func TestSetOperationContextRejectsMismatchedAppliedContext(t *testing.T) {
 	if err := <-result; status.Code(err) != codes.Internal {
 		t.Fatalf("mismatched ACK error = %v, want Internal", err)
 	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("mismatched applied ACK did not re-fence telemetry")
+	}
 	session.sessionMu.RLock()
 	defer session.sessionMu.RUnlock()
 	if session.FlightID != "" || session.IntentID != "" || session.IntentVersion != 0 {

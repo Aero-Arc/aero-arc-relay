@@ -388,6 +388,9 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 		ack.Status == agentv1.OperationContextCommandAck_STATUS_ALREADY_APPLIED {
 		if !proto.Equal(ack.ActiveContext, state.expected) {
 			ackErr = status.Error(codes.Internal, "agent acknowledged an operation context different from the requested result")
+			session.sessionMu.Lock()
+			session.operationContextUnreconciled = true
+			session.sessionMu.Unlock()
 		} else {
 			session.sessionMu.Lock()
 			if state.expected == nil {
@@ -523,6 +526,15 @@ func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *Dron
 	replacement.IntentVersion = session.IntentVersion
 	replacement.operationContextUnreconciled = session.operationContextUnreconciled
 	replacement.emptyContextCommandID = session.emptyContextCommandID
+	for _, state := range session.operationCommands {
+		if !state.completed && state.delivered {
+			// The retiring Agent may have applied this mutation even though Relay
+			// never received its ACK. The replacement must not inherit the prior
+			// attribution as if the outcome were known.
+			replacement.operationContextUnreconciled = true
+			break
+		}
+	}
 	if replacement.operationContextUnreconciled && replacement.emptyContextCommandID != "" {
 		state := session.operationCommands[replacement.emptyContextCommandID]
 		if state == nil || state.completed {

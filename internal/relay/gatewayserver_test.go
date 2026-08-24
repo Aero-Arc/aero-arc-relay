@@ -1618,7 +1618,7 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 		expected: &agentv1.OperationContext{
 			FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
 		},
-		done: make(chan struct{}),
+		done: make(chan struct{}), delivered: true,
 	}
 	oldSession := &DroneSession{
 		agentID:   agentID,
@@ -1648,6 +1648,9 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay.sessionsMu.RUnlock()
 	if replacementSession == oldSession {
 		t.Fatal("registration did not replace the old session")
+	}
+	if !replacementSession.requiresOperationContextReconciliation() {
+		t.Fatal("replacement inherited reconciled telemetry admission after an uncertain delivered mutation")
 	}
 	select {
 	case <-oldState.done:
