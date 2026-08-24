@@ -80,27 +80,39 @@ type registryService interface {
 }
 
 type DroneSession struct {
-	stream           *telemetryStreamBinding
-	pendingStream    *telemetryStreamBinding
-	streamGeneration uint64
-	agentID          string
-	SessionID        string
-	ConnectedAt      time.Time
-	LastHeartbeat    time.Time
-	Position         *common.MessageGlobalPositionInt
-	Attitude         *common.MessageAttitude
-	VfrHud           *common.MessageVfrHud
-	SystemStatus     *common.MessageSysStatus
-	FlightID         string
-	IntentID         string
-	IntentVersion    uint32
-	sessionMu        sync.RWMutex
-	pendingMu        sync.Mutex
-	pending          map[string]chan *agentv1.OperationContextCommandAck
-	pendingAircraft  map[string]chan *agentv1.AircraftCommandResult
-	ownershipMu      sync.RWMutex
-	publicationMu    sync.Mutex
-	retired          bool
+	stream            *telemetryStreamBinding
+	pendingStream     *telemetryStreamBinding
+	streamGeneration  uint64
+	agentID           string
+	SessionID         string
+	ConnectedAt       time.Time
+	LastHeartbeat     time.Time
+	Position          *common.MessageGlobalPositionInt
+	Attitude          *common.MessageAttitude
+	VfrHud            *common.MessageVfrHud
+	SystemStatus      *common.MessageSysStatus
+	FlightID          string
+	IntentID          string
+	IntentVersion     uint32
+	sessionMu         sync.RWMutex
+	pendingMu         sync.Mutex
+	pending           map[string]chan *agentv1.OperationContextCommandAck
+	operationCommands map[string]*operationCommandState
+	operationGate     chan struct{}
+	pendingAircraft   map[string]chan *agentv1.AircraftCommandResult
+	ownershipMu       sync.RWMutex
+	publicationMu     sync.Mutex
+	retired           bool
+}
+
+type operationCommandState struct {
+	fingerprint string
+	expected    *agentv1.OperationContext
+	done        chan struct{}
+	ack         *agentv1.OperationContextCommandAck
+	err         error
+	completed   bool
+	completedAt time.Time
 }
 
 type telemetryStreamBinding struct {

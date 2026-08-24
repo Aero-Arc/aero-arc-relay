@@ -114,21 +114,31 @@ a verified certificate whose common name, DNS SAN, or URI SAN is allow-listed.
 An unauthenticated caller is rejected before request validation, so it cannot
 probe Agent connectivity or command state.
 
+`SendAircraftCommand` uses the same authenticated control-mutation gate. ARM
+and DISARM target only the session active at admission, are not queued across a
+replacement, and are not automatically retried because they are immediate
+vehicle commands rather than durable operation-context mutations.
+
 Unlike a telemetry ACK, a control command is not a response to a message
 received on a particular stream. It targets the current admitted Agent session.
 If that session changes before the ACK is returned, the Relay reports `Aborted`;
-the caller can safely retry the durable command ID against the replacement.
+the caller can retry the same durable command ID and payload against the
+replacement. The Agent WAL is the cross-session and cross-process idempotency
+authority.
 
 The delivery path:
 
 1. Validates the agent ID and command ID.
 2. Resolves the current registered session.
-3. Adds a pending ACK channel keyed by command ID.
+3. Records a deterministic payload fingerprint and pending result keyed by
+   command ID.
 4. Sends through the captured session, which selects and locks that session's
    current stream binding.
 5. Waits for the matching command ACK or for the caller's context to end.
-6. Removes the pending entry when delivery fails, times out, is cancelled, or
-   receives an ACK.
+6. Retains the fingerprint and terminal outcome after delivery fails, times
+   out, is cancelled, or receives an ACK. Exact concurrent retries share the
+   pending outcome; exact retries of transient outcomes may redeliver, while a
+   conflicting payload is rejected.
 
 Waiting for the stream's send lock observes the control API context. If an
 already-started gRPC `Send` remains flow-controlled past the API deadline, the
@@ -140,16 +150,19 @@ replacement stream from attaching.
 Incoming operation-context ACKs are applied only when their command ID matches a
 pending request on the session captured by the receiving stream handler. The
 pending entry is consumed before an applied ACK may update active flight and
-intent state. Unsolicited and late ACKs are ignored. The relay does not look the
-session up again by agent ID because the same agent may have registered a
-replacement session while an old command ACK was in flight.
+intent state. For `APPLIED` and `ALREADY_APPLIED`, the ACK's active context must
+exactly match the authoritative result derived from the API command. Relay
+updates attribution from that expected result, never from unchecked Agent data.
+Unsolicited and late ACKs without a current matching attempt are ignored. The
+relay does not look the session up again by agent ID because the same agent may
+have registered a replacement session while an old command ACK was in flight.
 
-Before this machinery becomes supported, the protocol must also define command
-idempotency explicitly. Reusing an ID with the same payload should mean retrying
-one logical command; reusing it with a different payload must be rejected; and a
-new logical command must receive a new ID. Concurrent duplicates, completed-ID
-retention, payload fingerprints, session binding, retry limits, and delayed ACKs
-must be covered by integration tests.
+Relay retains outcomes per session for up to 24 hours, capped at 4096 entries,
+and evicts the oldest completed outcome when the bound is reached. This bounds memory; the
+Agent's durable WAL retains each command ID and payload fingerprint across
+session replacement and process restart. Reusing an ID with the same payload is
+one logical command. Reusing it with a different command kind or payload is a
+terminal conflict and cannot mutate operation context.
 
 This creates an intentional routing distinction:
 

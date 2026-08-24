@@ -10,6 +10,7 @@ import (
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestSetOperationContextRequiresAuthorizedControlCaller(t *testing.T) {
@@ -67,6 +68,185 @@ func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
 	}
 	if got.response.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_APPLIED {
 		t.Fatalf("SetOperationContext() response = %#v", got.response)
+	}
+
+	// An exact retry returns the retained result without delivering twice.
+	retry, err := relay.SetOperationContext(context.Background(), request)
+	if err != nil || !proto.Equal(retry.GetResult(), got.response.GetResult()) {
+		t.Fatalf("exact retry = %#v, %v", retry, err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("exact retry redelivered command: %#v", duplicate)
+	default:
+	}
+
+	// A reused ID with a changed payload is rejected before delivery.
+	conflict := proto.Clone(request).(*relayv1.SetOperationContextRequest)
+	conflict.Command.Context.FlightId = "different-flight"
+	if _, err := relay.SetOperationContext(context.Background(), conflict); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("conflicting retry error = %v, want AlreadyExists", err)
+	}
+}
+
+func TestSetOperationContextRejectsMismatchedAppliedContext(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:  &telemetryStreamBinding{stream: stream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	request := &relayv1.SetOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.SetOperationContextCommand{
+			CommandId: "command-mismatch",
+			Context: &agentv1.OperationContext{
+				FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+			},
+		},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), request)
+		result <- err
+	}()
+	<-stream.sentAckChan
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "command-mismatch",
+		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: &agentv1.OperationContext{
+			FlightId: "other-flight", IntentId: "other-intent", IntentVersion: 99,
+		},
+	})
+	if err := <-result; status.Code(err) != codes.Internal {
+		t.Fatalf("mismatched ACK error = %v, want Internal", err)
+	}
+	session.sessionMu.RLock()
+	defer session.sessionMu.RUnlock()
+	if session.FlightID != "" || session.IntentID != "" || session.IntentVersion != 0 {
+		t.Fatalf("mismatched ACK changed context to (%q, %q, %d)", session.FlightID, session.IntentID, session.IntentVersion)
+	}
+}
+
+func TestConcurrentExactOperationContextRetriesShareOneDelivery(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 2)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:  &telemetryStreamBinding{stream: stream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	request := &relayv1.SetOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.SetOperationContextCommand{
+			CommandId: "command-shared",
+			Context: &agentv1.OperationContext{
+				FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+			},
+		},
+	}
+	results := make(chan error, 2)
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), request)
+		results <- err
+	}()
+	<-stream.sentAckChan
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), request)
+		results <- err
+	}()
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("concurrent retry redelivered command: %#v", duplicate)
+	case <-time.After(20 * time.Millisecond):
+	}
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId:     "command-shared",
+		Status:        agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: proto.Clone(request.Command.Context).(*agentv1.OperationContext),
+	})
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("shared retry error = %v", err)
+		}
+	}
+}
+
+func TestOperationContextMutationsAreSerializedPerSession(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 2)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:        &telemetryStreamBinding{stream: stream},
+		pending:       make(map[string]chan *agentv1.OperationContextCommandAck),
+		FlightID:      "flight-a",
+		IntentID:      "intent-a",
+		IntentVersion: 1,
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	setRequest := &relayv1.SetOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.SetOperationContextCommand{
+			CommandId: "set-b",
+			Context: &agentv1.OperationContext{
+				FlightId: "flight-b", IntentId: "intent-b", IntentVersion: 2,
+			},
+		},
+	}
+	clearRequest := &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "clear-a", FlightId: "flight-a"},
+	}
+
+	setResult := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), setRequest)
+		setResult <- err
+	}()
+	<-stream.sentAckChan
+
+	clearResult := make(chan error, 1)
+	go func() {
+		_, err := relay.ClearOperationContext(context.Background(), clearRequest)
+		clearResult <- err
+	}()
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("clear overtook pending set: %#v", message)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId:     "set-b",
+		Status:        agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: proto.Clone(setRequest.Command.Context).(*agentv1.OperationContext),
+	})
+	if err := <-setResult; err != nil {
+		t.Fatalf("set result = %v", err)
+	}
+	clearMessage := <-stream.sentAckChan
+	if clearMessage.GetClearOperationContext().GetCommandId() != "clear-a" {
+		t.Fatalf("second delivery = %#v, want clear-a", clearMessage)
+	}
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId:     "clear-a",
+		Status:        agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: proto.Clone(setRequest.Command.Context).(*agentv1.OperationContext),
+	})
+	if err := <-clearResult; err != nil {
+		t.Fatalf("clear result = %v", err)
+	}
+	if got := droneStatus(session); got.GetFlightId() != "flight-b" || got.GetIntentId() != "intent-b" || got.GetIntentVersion() != 2 {
+		t.Fatalf("final context = %#v, want flight-b/intent-b/2", got)
 	}
 }
 
@@ -157,7 +337,7 @@ func TestDeliverOperationCommandUsesCapturedSession(t *testing.T) {
 			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
 				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "command-1", FlightId: "flight-1"},
 			},
-		})
+		}, nil)
 		resultChannel <- result{ack: ack, err: err}
 	}()
 
@@ -182,7 +362,7 @@ func TestDeliverOperationCommandUsesCapturedSession(t *testing.T) {
 		if got.err != nil {
 			t.Fatalf("deliverOperationCommandToSession() error = %v", got.err)
 		}
-		if got.ack != wantAck {
+		if !proto.Equal(got.ack, wantAck) {
 			t.Fatalf("ACK = %#v, want %#v", got.ack, wantAck)
 		}
 	case <-time.After(time.Second):
@@ -215,7 +395,7 @@ func TestDeliverOperationCommandReturnsWhenSendOutlivesContext(t *testing.T) {
 			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
 				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "command-1", FlightId: "flight-1"},
 			},
-		})
+		}, nil)
 		result <- err
 	}()
 

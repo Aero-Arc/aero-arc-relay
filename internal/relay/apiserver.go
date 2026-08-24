@@ -13,6 +13,8 @@ package relay
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"strings"
 	"time"
@@ -21,9 +23,15 @@ import (
 	pb "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const operationContextControlDisabled = "operation-context control is disabled until mTLS control authentication is configured"
+
+const (
+	operationCommandRetention = 24 * time.Hour
+	maxOperationCommands      = 4096
+)
 
 // ListActiveDrones snapshots the Relay's currently admitted Agent sessions as
 // drone-status records.
@@ -71,16 +79,19 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 	return &pb.GetDroneStatusResponse{Drone: droneStatus(session)}, nil
 }
 
-// SetOperationContext rejects operation-context mutation while the Relay
-// control plane lacks its final authentication and authorization policy.
+// SetOperationContext authenticates a control-plane caller, delivers one
+// idempotent context mutation to the current Agent session, and waits for an
+// acknowledgement whose active context matches the requested value.
 //
 // Parameters:
-//   - ctx: is reserved for the future authenticated control-plane lifecycle.
-//   - request: is reserved for the future operation-context command.
+//   - ctx: bounds authorization, stream delivery, and acknowledgement waiting.
+//   - req: identifies the Agent and carries a durable command ID and context.
 //
 // Returns:
-//   - response: is always nil while the RPC is disabled.
-//   - error: is a gRPC Unimplemented status explaining the security gate.
+//   - response: contains the correlated Agent acknowledgement.
+//   - error: reports disabled or denied control access, invalid input, command
+//     ID reuse with a different payload, missing/replaced sessions, delivery or
+//     context cancellation, and malformed or mismatched acknowledgements.
 func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -101,9 +112,17 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 	if err != nil {
 		return nil, err
 	}
+	release, err := acquireOperationCommandSlot(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if !s.sessionIsCurrent(agentID, session) {
+		return nil, status.Error(codes.Aborted, "agent session changed before operation-context delivery")
+	}
 	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_SetOperationContext{SetOperationContext: command},
-	})
+	}, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -113,16 +132,19 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 	return &pb.SetOperationContextResponse{Result: ack}, nil
 }
 
-// ClearOperationContext rejects operation-context mutation while the Relay
-// control plane lacks its final authentication and authorization policy.
+// ClearOperationContext authenticates a control-plane caller, conditionally
+// clears one flight context on the current Agent session, and waits for a
+// correlated acknowledgement of the authoritative resulting context.
 //
 // Parameters:
-//   - ctx: is reserved for the future authenticated control-plane lifecycle.
-//   - request: is reserved for the future operation-context command.
+//   - ctx: bounds authorization, stream delivery, and acknowledgement waiting.
+//   - req: identifies the Agent and carries a durable command ID and flight ID.
 //
 // Returns:
-//   - response: is always nil while the RPC is disabled.
-//   - error: is a gRPC Unimplemented status explaining the security gate.
+//   - response: contains the correlated Agent acknowledgement.
+//   - error: reports disabled or denied control access, invalid input, command
+//     ID reuse with a different payload, missing/replaced sessions, delivery or
+//     context cancellation, and malformed or mismatched acknowledgements.
 func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -139,9 +161,17 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	if err != nil {
 		return nil, err
 	}
+	release, err := acquireOperationCommandSlot(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if !s.sessionIsCurrent(agentID, session) {
+		return nil, status.Error(codes.Aborted, "agent session changed before operation-context delivery")
+	}
 	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: command},
-	})
+	}, expectedContextAfterClear(session, command.GetFlightId()))
 	if err != nil {
 		return nil, err
 	}
@@ -180,9 +210,10 @@ func (s *Relay) sessionIsCurrent(agentID string, expected *DroneSession) bool {
 	return current == expected
 }
 
-// SendAircraftCommand delivers an immediate ARM or DISARM command to the
-// Agent session active at RPC admission and waits for its correlated result.
-// The command is never queued for a later or replacement session.
+// SendAircraftCommand authenticates a control-plane caller, delivers an
+// immediate ARM or DISARM command to the Agent session active at RPC admission,
+// and waits for its correlated result. The command is never queued for a later
+// or replacement session.
 //
 // Parameters:
 //   - ctx: bounds delivery and the wait for the Agent/autopilot result.
@@ -190,9 +221,13 @@ func (s *Relay) sessionIsCurrent(agentID string, expected *DroneSession) bool {
 //
 // Returns:
 //   - response: contains the Agent's correlated autopilot-level result.
-//   - error: reports invalid input, an offline/replaced Agent session, stream
-//     delivery failure, deadline expiry, or a malformed Agent result.
+//   - error: reports disabled or denied control access, invalid input, an
+//     offline/replaced Agent session, stream delivery failure, deadline expiry,
+//     or a malformed Agent result.
 func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCommandRequest) (*pb.SendAircraftCommandResponse, error) {
+	if err := s.authorizeControlMutation(ctx); err != nil {
+		return nil, err
+	}
 	agentID := strings.TrimSpace(req.GetAgentId())
 	command := req.GetCommand()
 	if agentID == "" || command == nil || strings.TrimSpace(command.GetCommandId()) == "" || strings.TrimSpace(command.GetAircraftId()) == "" {
@@ -292,36 +327,183 @@ func deliverAircraftCommandToSession(ctx context.Context, session *DroneSession,
 	}
 }
 
-// deliverOperationCommandToSession is experimental command-delivery machinery.
-// The public mutation RPCs remain disabled until the control plane is
-// authenticated, authorized, and its command lifecycle is finalized.
-func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage) (*agentv1.OperationContextCommandAck, error) {
-	pending := make(chan *agentv1.OperationContextCommandAck, 1)
+// deliverOperationCommandToSession retains command fingerprints and terminal
+// outcomes for the session, coalesces exact concurrent retries, and rejects a
+// command ID reused with a different payload. The Agent WAL provides the
+// durable cross-session and cross-process idempotency backstop.
+func deliverOperationCommandToSession(
+	ctx context.Context,
+	session *DroneSession,
+	commandID string,
+	message *agentv1.RelayStreamMessage,
+	expected *agentv1.OperationContext,
+) (*agentv1.OperationContextCommandAck, error) {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "fingerprint operation-context command: %v", err)
+	}
+	digest := sha256.Sum256(encoded)
+	fingerprint := hex.EncodeToString(digest[:])
+	state, owner, err := beginOperationCommand(session, commandID, fingerprint, expected)
+	if err != nil {
+		return nil, err
+	}
+	if owner {
+		if err := sendToSession(ctx, session, message); err != nil {
+			finishOperationCommand(session, commandID, state, nil, err)
+		}
+	}
+
+	select {
+	case <-state.done:
+		return operationCommandResult(session, state)
+	case <-ctx.Done():
+		requestErr := status.FromContextError(ctx.Err()).Err()
+		if owner {
+			finishOperationCommand(session, commandID, state, nil, requestErr)
+		}
+		return nil, requestErr
+	}
+}
+
+func makeOperationGate() chan struct{} {
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	return gate
+}
+
+func acquireOperationCommandSlot(ctx context.Context, session *DroneSession) (func(), error) {
 	session.pendingMu.Lock()
+	if session.operationGate == nil {
+		session.operationGate = makeOperationGate()
+	}
+	gate := session.operationGate
+	session.pendingMu.Unlock()
+
+	select {
+	case <-gate:
+		return func() { gate <- struct{}{} }, nil
+	case <-ctx.Done():
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
+}
+
+func beginOperationCommand(
+	session *DroneSession,
+	commandID string,
+	fingerprint string,
+	expected *agentv1.OperationContext,
+) (*operationCommandState, bool, error) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
 	if session.pending == nil {
 		session.pending = make(map[string]chan *agentv1.OperationContextCommandAck)
 	}
-	if _, exists := session.pending[commandID]; exists {
-		session.pendingMu.Unlock()
-		return nil, status.Error(codes.AlreadyExists, "operation-context command is already pending")
+	if session.operationCommands == nil {
+		session.operationCommands = make(map[string]*operationCommandState)
 	}
-	session.pending[commandID] = pending
-	session.pendingMu.Unlock()
-	cleanup := func() {
-		session.pendingMu.Lock()
-		delete(session.pending, commandID)
-		session.pendingMu.Unlock()
+	pruneOperationCommandsLocked(session, time.Now())
+	if existing := session.operationCommands[commandID]; existing != nil {
+		if existing.fingerprint != fingerprint {
+			return nil, false, status.Error(codes.AlreadyExists, "operation-context command ID was already used with a different payload")
+		}
+		if !existing.completed || !operationCommandRetryable(existing) {
+			return existing, false, nil
+		}
 	}
-	if err := sendToSession(ctx, session, message); err != nil {
-		cleanup()
-		return nil, err
+	if len(session.operationCommands) >= maxOperationCommands {
+		return nil, false, status.Error(codes.ResourceExhausted, "operation-context command retention is full")
 	}
-	select {
-	case ack := <-pending:
-		return ack, nil
-	case <-ctx.Done():
-		cleanup()
-		return nil, status.FromContextError(ctx.Err()).Err()
+
+	state := &operationCommandState{
+		fingerprint: fingerprint,
+		expected:    cloneOperationContext(expected),
+		done:        make(chan struct{}),
+	}
+	session.operationCommands[commandID] = state
+	session.pending[commandID] = make(chan *agentv1.OperationContextCommandAck, 1)
+	return state, true, nil
+}
+
+func pruneOperationCommandsLocked(session *DroneSession, now time.Time) {
+	for commandID, state := range session.operationCommands {
+		if state.completed && now.Sub(state.completedAt) >= operationCommandRetention {
+			delete(session.operationCommands, commandID)
+		}
+	}
+	for len(session.operationCommands) >= maxOperationCommands {
+		var oldestID string
+		var oldest time.Time
+		for commandID, state := range session.operationCommands {
+			if !state.completed {
+				continue
+			}
+			if oldestID == "" || state.completedAt.Before(oldest) {
+				oldestID = commandID
+				oldest = state.completedAt
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(session.operationCommands, oldestID)
+	}
+}
+
+func operationCommandRetryable(state *operationCommandState) bool {
+	return state.err != nil || state.ack.GetStatus() == agentv1.OperationContextCommandAck_STATUS_TEMPORARY_ERROR
+}
+
+func finishOperationCommand(
+	session *DroneSession,
+	commandID string,
+	state *operationCommandState,
+	ack *agentv1.OperationContextCommandAck,
+	err error,
+) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if session.operationCommands[commandID] != state || state.completed {
+		return
+	}
+	delete(session.pending, commandID)
+	state.ack = cloneOperationAck(ack)
+	state.err = err
+	state.completed = true
+	state.completedAt = time.Now()
+	close(state.done)
+}
+
+func operationCommandResult(session *DroneSession, state *operationCommandState) (*agentv1.OperationContextCommandAck, error) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	return cloneOperationAck(state.ack), state.err
+}
+
+func cloneOperationContext(value *agentv1.OperationContext) *agentv1.OperationContext {
+	if value == nil {
+		return nil
+	}
+	return proto.Clone(value).(*agentv1.OperationContext)
+}
+
+func cloneOperationAck(value *agentv1.OperationContextCommandAck) *agentv1.OperationContextCommandAck {
+	if value == nil {
+		return nil
+	}
+	return proto.Clone(value).(*agentv1.OperationContextCommandAck)
+}
+
+func expectedContextAfterClear(session *DroneSession, flightID string) *agentv1.OperationContext {
+	session.sessionMu.RLock()
+	defer session.sessionMu.RUnlock()
+	if session.FlightID == "" || session.FlightID == flightID {
+		return nil
+	}
+	return &agentv1.OperationContext{
+		FlightId:      session.FlightID,
+		IntentId:      session.IntentID,
+		IntentVersion: session.IntentVersion,
 	}
 }
 

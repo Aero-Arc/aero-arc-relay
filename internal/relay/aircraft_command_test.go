@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,7 +22,10 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 		stream:          &telemetryStreamBinding{stream: stream},
 		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
 	}
-	relay := &Relay{grpcSessions: map[string]*DroneSession{"agent-1": session}}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
 	command := &agentv1.AircraftCommand{
 		CommandId: "command-1", AircraftId: "aircraft-1",
 		Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
@@ -69,7 +73,10 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 }
 
 func TestSendAircraftCommandRejectsDisconnectedAgent(t *testing.T) {
-	relay := &Relay{grpcSessions: make(map[string]*DroneSession)}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      make(map[string]*DroneSession),
+	}
 	_, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{
 		AgentId: "agent-1",
 		Command: &agentv1.AircraftCommand{
@@ -92,7 +99,10 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 		stream:          &telemetryStreamBinding{stream: stream},
 		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
 	}
-	relay := &Relay{grpcSessions: map[string]*DroneSession{"agent-1": session}}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	_, err := relay.SendAircraftCommand(ctx, &relayv1.SendAircraftCommandRequest{
@@ -110,5 +120,14 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 	session.pendingMu.Unlock()
 	if stillPending {
 		t.Fatal("expired command remained pending")
+	}
+}
+
+func TestSendAircraftCommandRequiresAuthorizedControlCaller(t *testing.T) {
+	want := status.Error(codes.PermissionDenied, "denied")
+	relay := &Relay{controlAuthorizer: func(context.Context) error { return want }}
+	_, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{})
+	if !errors.Is(err, want) {
+		t.Fatalf("SendAircraftCommand() error = %v, want %v", err, want)
 	}
 }

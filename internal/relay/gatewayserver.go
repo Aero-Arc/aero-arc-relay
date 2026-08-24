@@ -50,16 +50,18 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 	newSession := &DroneSession{
-		agentID:         agentID,
-		SessionID:       sessionID,
-		ConnectedAt:     time.Now(),
-		LastHeartbeat:   time.Now(),
-		Position:        nil,
-		Attitude:        nil,
-		VfrHud:          nil,
-		SystemStatus:    nil,
-		pending:         make(map[string]chan *agentv1.OperationContextCommandAck),
-		pendingAircraft: make(map[string]chan *agentv1.AircraftCommandResult),
+		agentID:           agentID,
+		SessionID:         sessionID,
+		ConnectedAt:       time.Now(),
+		LastHeartbeat:     time.Now(),
+		Position:          nil,
+		Attitude:          nil,
+		VfrHud:            nil,
+		SystemStatus:      nil,
+		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands: make(map[string]*operationCommandState),
+		operationGate:     makeOperationGate(),
+		pendingAircraft:   make(map[string]chan *agentv1.AircraftCommandResult),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -317,27 +319,37 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 	// be allowed to change telemetry attribution.
 	session.pendingMu.Lock()
 	pending := session.pending[ack.CommandId]
-	if pending != nil {
-		delete(session.pending, ack.CommandId)
-	}
-	session.pendingMu.Unlock()
-	if pending == nil {
+	state := session.operationCommands[ack.CommandId]
+	if pending == nil || state == nil || state.completed {
+		session.pendingMu.Unlock()
 		return
 	}
+	delete(session.pending, ack.CommandId)
+	var ackErr error
 	if ack.Status == agentv1.OperationContextCommandAck_STATUS_APPLIED ||
 		ack.Status == agentv1.OperationContextCommandAck_STATUS_ALREADY_APPLIED {
-		session.sessionMu.Lock()
-		if active := ack.ActiveContext; active != nil {
-			session.FlightID = active.FlightId
-			session.IntentID = active.IntentId
-			session.IntentVersion = active.IntentVersion
+		if !proto.Equal(ack.ActiveContext, state.expected) {
+			ackErr = status.Error(codes.Internal, "agent acknowledged an operation context different from the requested result")
 		} else {
-			session.FlightID = ""
-			session.IntentID = ""
-			session.IntentVersion = 0
+			session.sessionMu.Lock()
+			if state.expected == nil {
+				session.FlightID = ""
+				session.IntentID = ""
+				session.IntentVersion = 0
+			} else {
+				session.FlightID = state.expected.FlightId
+				session.IntentID = state.expected.IntentId
+				session.IntentVersion = state.expected.IntentVersion
+			}
+			session.sessionMu.Unlock()
 		}
-		session.sessionMu.Unlock()
 	}
+	state.ack = cloneOperationAck(ack)
+	state.err = ackErr
+	state.completed = true
+	state.completedAt = time.Now()
+	close(state.done)
+	session.pendingMu.Unlock()
 	select {
 	case pending <- ack:
 	default:

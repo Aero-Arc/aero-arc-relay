@@ -1368,6 +1368,14 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 		pending: map[string]chan *agentv1.OperationContextCommandAck{
 			"shared-command": oldPending,
 		},
+		operationCommands: map[string]*operationCommandState{
+			"shared-command": {
+				expected: &agentv1.OperationContext{
+					FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
+				},
+				done: make(chan struct{}),
+			},
+		},
 	}
 	relay.grpcSessions[agentID] = oldSession
 
@@ -1391,6 +1399,12 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	replacementPending := make(chan *agentv1.OperationContextCommandAck, 1)
 	replacementSession.pendingMu.Lock()
 	replacementSession.pending["shared-command"] = replacementPending
+	replacementSession.operationCommands["shared-command"] = &operationCommandState{
+		expected: &agentv1.OperationContext{
+			FlightId: "replacement-flight", IntentId: "replacement-intent", IntentVersion: 8,
+		},
+		done: make(chan struct{}),
+	}
 	replacementSession.pendingMu.Unlock()
 
 	commandAck := &agentv1.OperationContextCommandAck{
