@@ -97,6 +97,7 @@ type DroneSession struct {
 	sessionMu        sync.RWMutex
 	pendingMu        sync.Mutex
 	pending          map[string]chan *agentv1.OperationContextCommandAck
+	pendingAircraft  map[string]chan *agentv1.AircraftCommandResult
 	ownershipMu      sync.RWMutex
 	publicationMu    sync.Mutex
 	retired          bool
@@ -158,6 +159,16 @@ var (
 		Name: "aero_relay_sink_errors_total",
 		Help: "Errors returned while forwarding telemetry to sinks.",
 	}, []string{"sink"})
+
+	relayAircraftCommandsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_aircraft_commands_total",
+		Help: "Immediate aircraft commands handled by the relay.",
+	}, []string{"command_type", "result"})
+
+	relayAircraftCommandDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "aero_relay_aircraft_command_duration_seconds",
+		Help: "Time from Relay command receipt to Agent result.",
+	}, []string{"command_type"})
 )
 
 // New validates Agent authentication requirements and constructs a Relay with
