@@ -10,6 +10,7 @@ import (
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testing.T) {
@@ -19,8 +20,7 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 	}
 	session := &DroneSession{
 		agentID: "agent-1", SessionID: "session-1",
-		stream:          &telemetryStreamBinding{stream: stream},
-		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
+		stream: &telemetryStreamBinding{stream: stream},
 	}
 	relay := &Relay{
 		controlAuthorizer: func(context.Context) error { return nil },
@@ -64,11 +64,26 @@ func TestSendAircraftCommandDeliversToConnectedAgentAndCorrelatesResult(t *testi
 		if got.err != nil {
 			t.Fatal(got.err)
 		}
-		if got.response.GetResult() != wantResult {
+		if !proto.Equal(got.response.GetResult(), wantResult) {
 			t.Fatalf("result = %+v", got.response.GetResult())
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for correlated command result")
+	}
+
+	retry, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{AgentId: "agent-1", Command: command})
+	if err != nil || !proto.Equal(retry.GetResult(), wantResult) {
+		t.Fatalf("retained exact retry = %#v, %v", retry, err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("exact retry redelivered aircraft command: %#v", duplicate)
+	default:
+	}
+	conflict := proto.Clone(command).(*agentv1.AircraftCommand)
+	conflict.Type = agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_DISARM
+	if _, err := relay.SendAircraftCommand(context.Background(), &relayv1.SendAircraftCommandRequest{AgentId: "agent-1", Command: conflict}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("conflicting command-ID reuse error = %v, want AlreadyExists", err)
 	}
 }
 
@@ -96,8 +111,7 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 	}
 	session := &DroneSession{
 		agentID: "agent-1", SessionID: "session-1",
-		stream:          &telemetryStreamBinding{stream: stream},
-		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
+		stream: &telemetryStreamBinding{stream: stream},
 	}
 	relay := &Relay{
 		controlAuthorizer: func(context.Context) error { return nil },
@@ -116,10 +130,10 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 		t.Fatalf("error = %v, want DeadlineExceeded", err)
 	}
 	session.pendingMu.Lock()
-	_, stillPending := session.pendingAircraft["command-1"]
+	state := session.aircraftCommands["command-1"]
 	session.pendingMu.Unlock()
-	if stillPending {
-		t.Fatal("expired command remained pending")
+	if state == nil || !state.completed || status.Code(state.err) != codes.DeadlineExceeded {
+		t.Fatalf("expired command state = %#v", state)
 	}
 }
 
@@ -130,8 +144,7 @@ func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *
 	}
 	session := &DroneSession{
 		agentID: "agent-1", SessionID: "session-1",
-		stream:          &telemetryStreamBinding{stream: stream},
-		pendingAircraft: make(map[string]chan aircraftCommandOutcome),
+		stream: &telemetryStreamBinding{stream: stream},
 	}
 	relay := &Relay{
 		controlAuthorizer: func(context.Context) error { return nil },

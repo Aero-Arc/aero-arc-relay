@@ -123,6 +123,13 @@ before waiting for the autopilot result, and aborts that pending wait if the
 session is retired. A disconnected Agent can therefore be replaced even when a
 control caller supplied no deadline.
 
+Within a session, Relay retains deterministic ARM/DISARM payload fingerprints
+and terminal correlation outcomes under the same bounded 24-hour/4096-entry
+policy used for operation-context commands. An exact retry observes the retained
+outcome without redelivery; reusing a command ID for another aircraft or command
+type is rejected. A new deliberate vehicle action therefore requires a new
+command ID.
+
 Unlike a telemetry ACK, an operation-context command is not a response to a
 message received on a particular stream. It targets the current admitted Agent
 session. If that session changes before the ACK is returned, the Relay reports

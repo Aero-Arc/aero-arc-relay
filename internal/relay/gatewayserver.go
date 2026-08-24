@@ -61,7 +61,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
 		operationCommands: make(map[string]*operationCommandState),
 		operationGate:     makeOperationGate(),
-		pendingAircraft:   make(map[string]chan aircraftCommandOutcome),
+		aircraftCommands:  make(map[string]*aircraftCommandState),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -362,18 +362,15 @@ func (session *DroneSession) handleAircraftCommandResult(result *agentv1.Aircraf
 		return
 	}
 	session.pendingMu.Lock()
-	pending := session.pendingAircraft[result.GetCommandId()]
-	if pending != nil {
-		delete(session.pendingAircraft, result.GetCommandId())
-	}
-	session.pendingMu.Unlock()
-	if pending == nil {
+	defer session.pendingMu.Unlock()
+	state := session.aircraftCommands[result.GetCommandId()]
+	if state == nil || state.completed {
 		return
 	}
-	select {
-	case pending <- aircraftCommandOutcome{result: result}:
-	default:
-	}
+	state.result = proto.Clone(result).(*agentv1.AircraftCommandResult)
+	state.completed = true
+	state.completedAt = time.Now()
+	close(state.done)
 }
 
 func (session *DroneSession) abortPendingCommands() {
@@ -390,12 +387,14 @@ func (session *DroneSession) abortPendingCommands() {
 		state.completedAt = now
 		close(state.done)
 	}
-	for commandID, pending := range session.pendingAircraft {
-		delete(session.pendingAircraft, commandID)
-		select {
-		case pending <- aircraftCommandOutcome{err: status.Error(codes.Aborted, "agent session retired while awaiting aircraft command result")}:
-		default:
+	for _, state := range session.aircraftCommands {
+		if state.completed {
+			continue
 		}
+		state.err = status.Error(codes.Aborted, "agent session retired while awaiting aircraft command result")
+		state.completed = true
+		state.completedAt = now
+		close(state.done)
 	}
 }
 

@@ -117,12 +117,19 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 		return nil, err
 	}
 	defer release()
+	session.ownershipMu.RLock()
 	if !s.sessionIsCurrent(agentID, session) {
+		session.ownershipMu.RUnlock()
 		return nil, status.Error(codes.Aborted, "agent session changed before operation-context delivery")
 	}
-	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
+	state, owner, err := beginOperationCommandDelivery(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_SetOperationContext{SetOperationContext: command},
 	}, operation)
+	session.ownershipMu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	ack, err := awaitOperationCommand(ctx, session, command.GetCommandId(), state, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -166,12 +173,19 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 		return nil, err
 	}
 	defer release()
+	session.ownershipMu.RLock()
 	if !s.sessionIsCurrent(agentID, session) {
+		session.ownershipMu.RUnlock()
 		return nil, status.Error(codes.Aborted, "agent session changed before operation-context delivery")
 	}
-	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
+	state, owner, err := beginOperationCommandDelivery(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: command},
 	}, expectedContextAfterClear(session, command.GetFlightId()))
+	session.ownershipMu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	ack, err := awaitOperationCommand(ctx, session, command.GetCommandId(), state, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -266,31 +280,36 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	}
 
 	startedAt := time.Now()
-	slog.LogAttrs(ctx, slog.LevelInfo, "command_delivered_to_agent",
-		slog.String("command_id", command.GetCommandId()),
-		slog.String("aircraft_id", command.GetAircraftId()),
-		slog.String("agent_id", agentID),
-		slog.String("session_id", sessionID),
-		slog.String("command_type", command.GetType().String()),
-	)
-	pending, cleanup, err := beginAircraftCommandDelivery(ctx, session, command)
+	state, owner, err := beginAircraftCommandDelivery(ctx, session, command)
 	session.ownershipMu.RUnlock()
 	if err != nil {
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 		return nil, err
 	}
-	defer cleanup()
+	if owner {
+		slog.LogAttrs(ctx, slog.LevelInfo, "command_delivered_to_agent",
+			slog.String("command_id", command.GetCommandId()),
+			slog.String("aircraft_id", command.GetAircraftId()),
+			slog.String("agent_id", agentID),
+			slog.String("session_id", sessionID),
+			slog.String("command_type", command.GetType().String()),
+		)
+	}
 	var result *agentv1.AircraftCommandResult
 	select {
-	case outcome := <-pending:
-		if outcome.err != nil {
+	case <-state.done:
+		result, err = aircraftCommandResult(session, state)
+		if err != nil {
 			relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
-			return nil, outcome.err
+			return nil, err
 		}
-		result = outcome.result
 	case <-ctx.Done():
+		requestErr := status.FromContextError(ctx.Err()).Err()
+		if owner {
+			finishAircraftCommand(session, command.GetCommandId(), state, nil, requestErr)
+		}
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
-		return nil, status.FromContextError(ctx.Err()).Err()
+		return nil, requestErr
 	}
 	if result == nil {
 		return nil, status.Error(codes.Internal, "agent returned an empty aircraft command result")
@@ -313,59 +332,120 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	return &pb.SendAircraftCommandResponse{Result: result}, nil
 }
 
-func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, command *agentv1.AircraftCommand) (<-chan aircraftCommandOutcome, func(), error) {
-	pending := make(chan aircraftCommandOutcome, 1)
+func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, command *agentv1.AircraftCommand) (*aircraftCommandState, bool, error) {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	if err != nil {
+		return nil, false, status.Errorf(codes.Internal, "fingerprint aircraft command: %v", err)
+	}
+	digest := sha256.Sum256(encoded)
+	fingerprint := hex.EncodeToString(digest[:])
 	session.pendingMu.Lock()
-	if session.pendingAircraft == nil {
-		session.pendingAircraft = make(map[string]chan aircraftCommandOutcome)
+	if session.aircraftCommands == nil {
+		session.aircraftCommands = make(map[string]*aircraftCommandState)
 	}
-	if _, exists := session.pendingAircraft[command.GetCommandId()]; exists {
+	pruneAircraftCommandsLocked(session, time.Now())
+	if existing := session.aircraftCommands[command.GetCommandId()]; existing != nil {
+		if existing.fingerprint != fingerprint {
+			session.pendingMu.Unlock()
+			return nil, false, status.Error(codes.AlreadyExists, "aircraft command ID was already used with a different payload")
+		}
 		session.pendingMu.Unlock()
-		return nil, nil, status.Error(codes.AlreadyExists, "aircraft command is already pending")
+		return existing, false, nil
 	}
-	session.pendingAircraft[command.GetCommandId()] = pending
+	if len(session.aircraftCommands) >= maxOperationCommands {
+		session.pendingMu.Unlock()
+		return nil, false, status.Error(codes.ResourceExhausted, "aircraft command retention is full")
+	}
+	state := &aircraftCommandState{fingerprint: fingerprint, done: make(chan struct{})}
+	session.aircraftCommands[command.GetCommandId()] = state
 	session.pendingMu.Unlock()
-	cleanup := func() {
-		session.pendingMu.Lock()
-		delete(session.pendingAircraft, command.GetCommandId())
-		session.pendingMu.Unlock()
-	}
 	if err := sendToSession(ctx, session, &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
 	}); err != nil {
-		cleanup()
-		return nil, nil, err
+		finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
 	}
-	return pending, cleanup, nil
+	return state, true, nil
+}
+
+func pruneAircraftCommandsLocked(session *DroneSession, now time.Time) {
+	for commandID, state := range session.aircraftCommands {
+		if state.completed && now.Sub(state.completedAt) >= operationCommandRetention {
+			delete(session.aircraftCommands, commandID)
+		}
+	}
+	for len(session.aircraftCommands) >= maxOperationCommands {
+		var oldestID string
+		var oldest time.Time
+		for commandID, state := range session.aircraftCommands {
+			if !state.completed {
+				continue
+			}
+			if oldestID == "" || state.completedAt.Before(oldest) {
+				oldestID = commandID
+				oldest = state.completedAt
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(session.aircraftCommands, oldestID)
+	}
+}
+
+func finishAircraftCommand(session *DroneSession, commandID string, state *aircraftCommandState, result *agentv1.AircraftCommandResult, err error) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if session.aircraftCommands[commandID] != state || state.completed {
+		return
+	}
+	if result != nil {
+		state.result = proto.Clone(result).(*agentv1.AircraftCommandResult)
+	}
+	state.err = err
+	state.completed = true
+	state.completedAt = time.Now()
+	close(state.done)
+}
+
+func aircraftCommandResult(session *DroneSession, state *aircraftCommandState) (*agentv1.AircraftCommandResult, error) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if state.result == nil {
+		return nil, state.err
+	}
+	return proto.Clone(state.result).(*agentv1.AircraftCommandResult), state.err
 }
 
 // deliverOperationCommandToSession retains command fingerprints and terminal
 // outcomes for the session, coalesces exact concurrent retries, and rejects a
 // command ID reused with a different payload. The Agent WAL provides the
 // durable cross-session and cross-process idempotency backstop.
-func deliverOperationCommandToSession(
+func beginOperationCommandDelivery(
 	ctx context.Context,
 	session *DroneSession,
 	commandID string,
 	message *agentv1.RelayStreamMessage,
 	expected *agentv1.OperationContext,
-) (*agentv1.OperationContextCommandAck, error) {
+) (*operationCommandState, bool, error) {
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "fingerprint operation-context command: %v", err)
+		return nil, false, status.Errorf(codes.Internal, "fingerprint operation-context command: %v", err)
 	}
 	digest := sha256.Sum256(encoded)
 	fingerprint := hex.EncodeToString(digest[:])
 	state, owner, err := beginOperationCommand(session, commandID, fingerprint, expected)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if owner {
 		if err := sendToSession(ctx, session, message); err != nil {
 			finishOperationCommand(session, commandID, state, nil, err)
 		}
 	}
+	return state, owner, nil
+}
 
+func awaitOperationCommand(ctx context.Context, session *DroneSession, commandID string, state *operationCommandState, owner bool) (*agentv1.OperationContextCommandAck, error) {
 	select {
 	case <-state.done:
 		return operationCommandResult(session, state)
@@ -376,6 +456,14 @@ func deliverOperationCommandToSession(
 		}
 		return nil, requestErr
 	}
+}
+
+func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage, expected *agentv1.OperationContext) (*agentv1.OperationContextCommandAck, error) {
+	state, owner, err := beginOperationCommandDelivery(ctx, session, commandID, message, expected)
+	if err != nil {
+		return nil, err
+	}
+	return awaitOperationCommand(ctx, session, commandID, state, owner)
 }
 
 func makeOperationGate() chan struct{} {

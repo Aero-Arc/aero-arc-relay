@@ -171,6 +171,58 @@ func TestSetOperationContextWaitAbortsWhenSessionRetires(t *testing.T) {
 	}
 }
 
+func TestSetOperationContextPinsSessionOnlyThroughDelivery(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream}, pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), &relayv1.SetOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.SetOperationContextCommand{
+				CommandId: "set-pinned",
+				Context: &agentv1.OperationContext{
+					FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 1,
+				},
+			},
+		})
+		completed <- err
+	}()
+	<-stream.sendStarted
+
+	leaseAcquired := make(chan struct{})
+	go func() {
+		session.ownershipMu.Lock()
+		close(leaseAcquired)
+		session.retired = true
+		session.abortPendingCommands()
+		session.ownershipMu.Unlock()
+	}()
+	select {
+	case <-leaseAcquired:
+		t.Fatal("session retired before operation-context delivery completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(stream.sendBlock)
+	select {
+	case <-leaseAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("session lease remained held while awaiting operation-context ACK")
+	}
+	if err := <-completed; status.Code(err) != codes.Aborted {
+		t.Fatalf("SetOperationContext() error = %v, want Aborted", err)
+	}
+}
+
 func TestConcurrentExactOperationContextRetriesShareOneDelivery(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 2)}
 	session := &DroneSession{

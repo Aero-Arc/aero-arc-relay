@@ -99,7 +99,7 @@ type DroneSession struct {
 	pending           map[string]chan *agentv1.OperationContextCommandAck
 	operationCommands map[string]*operationCommandState
 	operationGate     chan struct{}
-	pendingAircraft   map[string]chan aircraftCommandOutcome
+	aircraftCommands  map[string]*aircraftCommandState
 	ownershipMu       sync.RWMutex
 	publicationMu     sync.Mutex
 	retired           bool
@@ -115,9 +115,13 @@ type operationCommandState struct {
 	completedAt time.Time
 }
 
-type aircraftCommandOutcome struct {
-	result *agentv1.AircraftCommandResult
-	err    error
+type aircraftCommandState struct {
+	fingerprint string
+	done        chan struct{}
+	result      *agentv1.AircraftCommandResult
+	err         error
+	completed   bool
+	completedAt time.Time
 }
 
 type telemetryStreamBinding struct {
