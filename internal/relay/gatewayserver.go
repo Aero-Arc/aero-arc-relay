@@ -31,7 +31,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Register handles the initial connection handshake from an agent.
+// Register authenticates an Agent identity and publishes a fresh logical
+// session generation for its next TelemetryStream. A first session starts with
+// operation context unreconciled when control mutations are enabled. Replacing
+// an existing generation takes that session's ownership lease, copies its last
+// API-authoritative context and reconciliation state, aborts its pending
+// operation and aircraft commands, stops its Registry liveness, and atomically
+// installs the replacement before releasing the old session.
+//
+// Parameters:
+//   - ctx: carries Agent authentication and bounds request processing.
+//   - req: supplies the stable Agent ID that owns the new session generation.
+//
+// Returns:
+//   - response: contains the authenticated Agent ID, newly generated session
+//     ID, and advertised telemetry in-flight limit.
+//   - error: reports a missing Agent ID, failed authentication, or failure to
+//     generate a cryptographically random session ID.
 func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
 	agentID := strings.TrimSpace(req.AgentId)
 	slog.Info(
