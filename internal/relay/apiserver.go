@@ -280,14 +280,14 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	}
 
 	startedAt := time.Now()
-	state, owner, err := beginAircraftCommandDelivery(ctx, session, command)
+	state, owner, err := beginAircraftCommandDelivery(session, command)
 	session.ownershipMu.RUnlock()
 	if err != nil {
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 		return nil, err
 	}
 	if owner {
-		slog.LogAttrs(ctx, slog.LevelInfo, "command_delivered_to_agent",
+		slog.LogAttrs(ctx, slog.LevelInfo, "command_delivery_started",
 			slog.String("command_id", command.GetCommandId()),
 			slog.String("aircraft_id", command.GetAircraftId()),
 			slog.String("agent_id", agentID),
@@ -330,7 +330,7 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	return &pb.SendAircraftCommandResponse{Result: result}, nil
 }
 
-func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, command *agentv1.AircraftCommand) (*aircraftCommandState, bool, error) {
+func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.AircraftCommand) (*aircraftCommandState, bool, error) {
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
 	if err != nil {
 		return nil, false, status.Errorf(codes.Internal, "fingerprint aircraft command: %v", err)
@@ -355,14 +355,21 @@ func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, co
 		session.pendingMu.Unlock()
 		return nil, false, status.Error(codes.ResourceExhausted, "aircraft command retention is full")
 	}
-	state := &aircraftCommandState{fingerprint: fingerprint, done: make(chan struct{}), waiters: 1}
+	deliveryCtx, deliveryCancel := context.WithCancel(context.Background())
+	state := &aircraftCommandState{
+		fingerprint: fingerprint, done: make(chan struct{}),
+		deliveryCancel: deliveryCancel, waiters: 1,
+	}
 	session.aircraftCommands[command.GetCommandId()] = state
 	session.pendingMu.Unlock()
-	if err := sendToSession(ctx, session, &agentv1.RelayStreamMessage{
-		Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
-	}); err != nil {
-		finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
-	}
+	command = proto.Clone(command).(*agentv1.AircraftCommand)
+	go func() {
+		if err := sendToSession(deliveryCtx, session, &agentv1.RelayStreamMessage{
+			Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
+		}); err != nil {
+			finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
+		}
+	}()
 	return state, true, nil
 }
 
@@ -403,6 +410,7 @@ func finishAircraftCommand(session *DroneSession, commandID string, state *aircr
 	state.err = err
 	state.completed = true
 	state.completedAt = time.Now()
+	state.deliveryCancel()
 	close(state.done)
 }
 
@@ -433,6 +441,7 @@ func cancelAircraftCommandWaiter(session *DroneSession, commandID string, state 
 	state.err = err
 	state.completed = true
 	state.completedAt = time.Now()
+	state.deliveryCancel()
 	close(state.done)
 }
 

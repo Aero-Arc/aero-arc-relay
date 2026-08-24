@@ -189,6 +189,73 @@ func TestAircraftCommandCallerCancellationDoesNotFinalizeSharedCommand(t *testin
 	}
 }
 
+func TestAircraftCommandCallerCancellationDuringSendDoesNotFinalizeSharedCommand(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	request := &relayv1.SendAircraftCommandRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.AircraftCommand{
+			CommandId: "command-shared-send", AircraftId: "aircraft-1",
+			Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+		},
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(firstCtx, request)
+		first <- err
+	}()
+	<-stream.sendStarted
+	second := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(context.Background(), request)
+		second <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state := session.aircraftCommands["command-shared-send"]
+		attached := state != nil && state.waiters == 2
+		session.pendingMu.Unlock()
+		if attached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second caller did not attach to blocked delivery")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancelFirst()
+	if err := <-first; status.Code(err) != codes.Canceled {
+		t.Fatalf("first caller error = %v, want Canceled", err)
+	}
+	select {
+	case err := <-second:
+		t.Fatalf("first cancellation finalized blocked shared delivery: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(stream.sendBlock)
+	<-stream.sentAckChan
+	session.handleAircraftCommandResult(&agentv1.AircraftCommandResult{
+		CommandId: "command-shared-send", AircraftId: "aircraft-1",
+		Status: agentv1.AircraftCommandResult_STATUS_ACCEPTED,
+	})
+	if err := <-second; err != nil {
+		t.Fatalf("second caller error = %v", err)
+	}
+}
+
 func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *testing.T) {
 	stream := &mockTelemetryStream{
 		ctx:         context.Background(),

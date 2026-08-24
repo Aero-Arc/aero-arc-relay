@@ -408,6 +408,7 @@ func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
 		state.err = status.Error(codes.Aborted, "agent session retired while awaiting aircraft command result")
 		state.completed = true
 		state.completedAt = now
+		state.deliveryCancel()
 		close(state.done)
 	}
 }
