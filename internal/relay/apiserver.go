@@ -187,6 +187,13 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	if emptyReconciliation && !session.reserveEmptyContextReconciliation(command.GetCommandId()) {
 		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
 	}
+	if emptyReconciliation {
+		// Successful reconciliation opens admission before this runs, preserving
+		// the durable ID for exact retries. Every failure leaves the session
+		// unreconciled, so the reservation must be released even when the result
+		// was retained and no new delivery was owned by this caller.
+		defer session.releaseEmptyContextReconciliation(command.GetCommandId())
+	}
 	session.ownershipMu.RLock()
 	if !s.sessionIsCurrent(agentID, session) {
 		session.ownershipMu.RUnlock()
@@ -197,9 +204,6 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}, expectedContextAfterClear(session, command.GetFlightId()), true)
 	session.ownershipMu.RUnlock()
 	if err != nil {
-		if emptyReconciliation {
-			session.releaseEmptyContextReconciliation(command.GetCommandId())
-		}
 		return nil, err
 	}
 	ack, err := awaitOperationCommand(ctx, session, command.GetCommandId(), state, owner)

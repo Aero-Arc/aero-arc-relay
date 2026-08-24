@@ -195,6 +195,78 @@ func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.
 	}
 }
 
+func TestClearOperationContextRetainedFailureRetryReleasesEmptyReservation(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream}, pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationContextUnreconciled: true,
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	failedRequest := &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-failed"},
+	}
+	type clearResult struct {
+		response *relayv1.ClearOperationContextResponse
+		err      error
+	}
+	firstResult := make(chan clearResult, 1)
+	go func() {
+		response, err := relay.ClearOperationContext(context.Background(), failedRequest)
+		firstResult <- clearResult{response: response, err: err}
+	}()
+	<-stream.sentAckChan
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "reconcile-failed", Status: agentv1.OperationContextCommandAck_STATUS_REJECTED,
+	})
+	first := <-firstResult
+	if first.err != nil || first.response.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_REJECTED {
+		t.Fatalf("first failed reconciliation = %#v, %v", first.response, first.err)
+	}
+
+	// This exact retry is served from the retained terminal result. It must not
+	// re-reserve the ID, because no new ACK will arrive to release it.
+	retry, err := relay.ClearOperationContext(context.Background(), failedRequest)
+	if err != nil || retry.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_REJECTED {
+		t.Fatalf("retained failed retry = %#v, %v", retry, err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("retained failed retry redelivered: %#v", duplicate)
+	default:
+	}
+	session.sessionMu.RLock()
+	reserved := session.emptyContextCommandID
+	session.sessionMu.RUnlock()
+	if reserved != "" {
+		t.Fatalf("retained failed retry poisoned empty reservation with %q", reserved)
+	}
+
+	// A fresh durable command can now reconcile the still-unreconciled session.
+	freshResult := make(chan error, 1)
+	go func() {
+		_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-fresh"},
+		})
+		freshResult <- err
+	}()
+	message := <-stream.sentAckChan
+	if message.GetClearOperationContext().GetCommandId() != "reconcile-fresh" {
+		t.Fatalf("fresh reconciliation delivery = %#v", message)
+	}
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "reconcile-fresh", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+	})
+	if err := <-freshResult; err != nil {
+		t.Fatalf("fresh reconciliation error = %v", err)
+	}
+}
+
 func TestClearOperationContextRejectsEmptyFlightAfterReconciliation(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
 	session := &DroneSession{
