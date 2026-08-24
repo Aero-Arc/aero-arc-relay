@@ -1755,6 +1755,44 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	}
 }
 
+func TestRegisterReplacementDropsCompletedEmptyReconciliationReservation(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	old := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		operationContextUnreconciled: true,
+		emptyContextCommandID:        "reconcile-failed",
+		pending:                      make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands: map[string]*operationCommandState{
+			"reconcile-failed": {
+				done: make(chan struct{}), ack: &agentv1.OperationContextCommandAck{
+					CommandId: "reconcile-failed",
+					Status:    agentv1.OperationContextCommandAck_STATUS_REJECTED,
+				}, completed: true, completedAt: time.Now(),
+			},
+		},
+	}
+	relay.grpcSessions[old.agentID] = old
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: old.agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[old.agentID]
+	relay.sessionsMu.RUnlock()
+	if replacement == old || !old.retired {
+		t.Fatal("registration did not replace and retire the old session")
+	}
+	replacement.sessionMu.RLock()
+	reserved := replacement.emptyContextCommandID
+	replacement.sessionMu.RUnlock()
+	if reserved != "" {
+		t.Fatalf("replacement inherited completed reconciliation reservation %q", reserved)
+	}
+	if !replacement.reserveEmptyContextReconciliation("reconcile-fresh") {
+		t.Fatal("completed reservation poisoned fresh empty reconciliation")
+	}
+}
+
 func TestFreshRelaySessionRetainsTelemetryUntilContextReconciles(t *testing.T) {
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)

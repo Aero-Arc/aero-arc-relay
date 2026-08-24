@@ -512,6 +512,15 @@ func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *Dron
 	replacement.IntentVersion = session.IntentVersion
 	replacement.operationContextUnreconciled = session.operationContextUnreconciled
 	replacement.emptyContextCommandID = session.emptyContextCommandID
+	if replacement.operationContextUnreconciled && replacement.emptyContextCommandID != "" {
+		state := session.operationCommands[replacement.emptyContextCommandID]
+		if state == nil || state.completed {
+			// A failed or not-yet-admitted attempt has no in-flight outcome to
+			// protect. Its caller may not have run deferred reservation cleanup yet,
+			// so do not copy that transient reservation into the replacement.
+			replacement.emptyContextCommandID = ""
+		}
+	}
 	session.sessionMu.RUnlock()
 	session.abortPendingCommandsLocked(time.Now())
 }
