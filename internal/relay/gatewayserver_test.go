@@ -1500,6 +1500,76 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	if got := droneStatus(replacement); got.GetFlightId() != "flight-1" || got.GetIntentId() != "intent-1" || got.GetIntentVersion() != 7 {
 		t.Fatalf("replacement context = %#v, want flight-1/intent-1/7", got)
 	}
+	if replacement.requiresOperationContextReconciliation() {
+		t.Fatal("same-process replacement lost reconciled operation context")
+	}
+}
+
+func TestFreshRelaySessionRetainsTelemetryUntilContextReconciles(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+
+	registration, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	session := relay.grpcSessions["agent-1"]
+	relay.sessionsMu.RUnlock()
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("first session in Relay process started with an implicitly empty context")
+	}
+
+	stream, cancel := newAgentTelemetryStream("agent-1", registration.GetSessionId())
+	defer cancel()
+	streamErr := make(chan error, 1)
+	go func() { streamErr <- relay.TelemetryStream(stream) }()
+
+	frame := &agentv1.TelemetryFrame{
+		AgentId: "agent-1", SessionId: registration.GetSessionId(), Seq: 1,
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
+	}
+	stream.recvChan <- telemetryStreamMessage(frame)
+	message := <-stream.sentAckChan
+	ack := message.GetTelemetryAck()
+	if ack == nil || ack.GetStatus() != agentv1.TelemetryAck_STATUS_RETRY_WITH_BACKOFF ||
+		!strings.Contains(ack.GetError(), "operation context") {
+		t.Fatalf("unreconciled telemetry ACK = %#v, want retry", ack)
+	}
+	if mockSink.GetMessageCount() != 0 {
+		t.Fatal("unreconciled telemetry reached an output")
+	}
+
+	pending := make(chan *agentv1.OperationContextCommandAck, 1)
+	session.pendingMu.Lock()
+	session.pending["reconcile-clear"] = pending
+	session.operationCommands["reconcile-clear"] = &operationCommandState{
+		expected: nil, done: make(chan struct{}),
+	}
+	session.pendingMu.Unlock()
+	stream.recvChan <- &agentv1.AgentStreamMessage{Payload: &agentv1.AgentStreamMessage_OperationContextCommandAck{
+		OperationContextCommandAck: &agentv1.OperationContextCommandAck{
+			CommandId: "reconcile-clear", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		},
+	}}
+
+	frame.Seq = 2
+	stream.recvChan <- telemetryStreamMessage(frame)
+	message = <-stream.sentAckChan
+	ack = message.GetTelemetryAck()
+	if ack == nil || ack.GetStatus() != agentv1.TelemetryAck_STATUS_OK {
+		t.Fatalf("reconciled telemetry ACK = %#v, want OK", ack)
+	}
+	if mockSink.GetMessageCount() != 1 {
+		t.Fatalf("reconciled telemetry output count = %d, want 1", mockSink.GetMessageCount())
+	}
+
+	close(stream.recvChan)
+	if err := <-streamErr; err != nil {
+		t.Fatalf("TelemetryStream() error = %v", err)
+	}
 }
 
 func TestOperationContextCommandACKRequiresPendingCommand(t *testing.T) {

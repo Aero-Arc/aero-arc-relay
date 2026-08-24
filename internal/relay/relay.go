@@ -80,29 +80,34 @@ type registryService interface {
 }
 
 type DroneSession struct {
-	stream            *telemetryStreamBinding
-	pendingStream     *telemetryStreamBinding
-	streamGeneration  uint64
-	agentID           string
-	SessionID         string
-	ConnectedAt       time.Time
-	LastHeartbeat     time.Time
-	Position          *common.MessageGlobalPositionInt
-	Attitude          *common.MessageAttitude
-	VfrHud            *common.MessageVfrHud
-	SystemStatus      *common.MessageSysStatus
-	FlightID          string
-	IntentID          string
-	IntentVersion     uint32
-	sessionMu         sync.RWMutex
-	pendingMu         sync.Mutex
-	pending           map[string]chan *agentv1.OperationContextCommandAck
-	operationCommands map[string]*operationCommandState
-	operationGate     chan struct{}
-	aircraftCommands  map[string]*aircraftCommandState
-	ownershipMu       sync.RWMutex
-	publicationMu     sync.Mutex
-	retired           bool
+	stream           *telemetryStreamBinding
+	pendingStream    *telemetryStreamBinding
+	streamGeneration uint64
+	agentID          string
+	SessionID        string
+	ConnectedAt      time.Time
+	LastHeartbeat    time.Time
+	Position         *common.MessageGlobalPositionInt
+	Attitude         *common.MessageAttitude
+	VfrHud           *common.MessageVfrHud
+	SystemStatus     *common.MessageSysStatus
+	FlightID         string
+	IntentID         string
+	IntentVersion    uint32
+	// operationContextUnreconciled is set for the first Agent session seen by a
+	// Relay process with context control enabled. Telemetry remains retryable
+	// until the API replays an authoritative Set/Clear command; same-process
+	// replacements inherit the previous session's reconciled state.
+	operationContextUnreconciled bool
+	sessionMu                    sync.RWMutex
+	pendingMu                    sync.Mutex
+	pending                      map[string]chan *agentv1.OperationContextCommandAck
+	operationCommands            map[string]*operationCommandState
+	operationGate                chan struct{}
+	aircraftCommands             map[string]*aircraftCommandState
+	ownershipMu                  sync.RWMutex
+	publicationMu                sync.Mutex
+	retired                      bool
 }
 
 type operationCommandState struct {

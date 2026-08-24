@@ -26,6 +26,16 @@ before it creates or replaces any session. The relay then:
 Registration does not open the telemetry stream. It creates the session that a
 subsequent `TelemetryStream` call must attach to.
 
+When operation-context control is enabled, the first session for an agent
+observed by a Relay process starts with operation context unreconciled. The API
+must replay its durable authoritative state with either `SetOperationContext`
+for an active flight or `ClearOperationContext` for no active flight. Until the
+Agent acknowledges that command, telemetry receives `RETRY_WITH_BACKOFF` and
+remains in the Agent WAL instead of being admitted with an implicitly empty
+flight and intent. This is required after Relay restart; Registry discovery and
+stream admission provide the API-to-Relay replay path. Relays with context
+control disabled preserve their context-free telemetry behavior.
+
 Registering the same agent ID again replaces the map entry with a new
 `DroneSession` and a new session ID. The old stream handler can still be running,
 but it no longer owns the active registered session.
@@ -67,11 +77,17 @@ the relay builds an ACK using the frame sequence number and validates:
 - The frame session ID matches that captured session's ID.
 - The MAVLink message name is not empty.
 - The durable agent capture timestamp is present and positive.
+- The API-owned operation context has been reconciled for this Relay process.
 
 An invalid frame receives a permanent-error ACK and is not routed. A valid frame
 updates the session heartbeat and is converted into a telemetry envelope using
 the session's authoritative flight and intent context. Frame-provided operation
 context cannot override the session state.
+
+An otherwise valid frame received before operation-context reconciliation gets
+`RETRY_WITH_BACKOFF`, not a permanent error. Once the authoritative Set/Clear is
+acknowledged, the Agent can replay the same WAL records without losing them or
+allowing Relay restart to erase active-flight attribution.
 
 Validation and routing occur while holding a read lease on the captured
 session's ownership. Re-registration and active-stream cleanup retire a session
@@ -208,6 +224,8 @@ operation context into the replacement before publishing it, so reconnecting
 telemetry keeps its flight and intent attribution. Delayed operation-command
 ACKs received by the old handler remain bound to the old session and cannot
 update the replacement session's context or pending commands.
+If no prior in-process session exists, Relay does not infer an empty context:
+telemetry remains retryable until the API explicitly replays Set or Clear.
 
 ## 6. Disconnect and Cleanup
 

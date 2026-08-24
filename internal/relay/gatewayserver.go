@@ -50,18 +50,19 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 	newSession := &DroneSession{
-		agentID:           agentID,
-		SessionID:         sessionID,
-		ConnectedAt:       time.Now(),
-		LastHeartbeat:     time.Now(),
-		Position:          nil,
-		Attitude:          nil,
-		VfrHud:            nil,
-		SystemStatus:      nil,
-		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
-		operationCommands: make(map[string]*operationCommandState),
-		operationGate:     makeOperationGate(),
-		aircraftCommands:  make(map[string]*aircraftCommandState),
+		agentID:                      agentID,
+		SessionID:                    sessionID,
+		ConnectedAt:                  time.Now(),
+		LastHeartbeat:                time.Now(),
+		Position:                     nil,
+		Attitude:                     nil,
+		VfrHud:                       nil,
+		SystemStatus:                 nil,
+		operationContextUnreconciled: r.controlAuthorizer != nil,
+		pending:                      make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands:            make(map[string]*operationCommandState),
+		operationGate:                makeOperationGate(),
+		aircraftCommands:             make(map[string]*aircraftCommandState),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -218,6 +219,9 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		} else if frameWALIDErr != nil || frameWALUUID == uuid.Nil {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame WAL generation ID is invalid"
+		} else if streamSession.requiresOperationContextReconciliation() {
+			ack.Status = agentv1.TelemetryAck_STATUS_RETRY_WITH_BACKOFF
+			ack.Error = "operation context has not been reconciled for this Relay session"
 		} else {
 			// Process the frame (e.g., forward to outputs).
 			frame.WalId = frameWALUUID.String()
@@ -359,6 +363,7 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 				session.IntentID = state.expected.IntentId
 				session.IntentVersion = state.expected.IntentVersion
 			}
+			session.operationContextUnreconciled = false
 			session.sessionMu.Unlock()
 		}
 	}
@@ -403,8 +408,15 @@ func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *Dron
 	replacement.FlightID = session.FlightID
 	replacement.IntentID = session.IntentID
 	replacement.IntentVersion = session.IntentVersion
+	replacement.operationContextUnreconciled = session.operationContextUnreconciled
 	session.sessionMu.RUnlock()
 	session.abortPendingCommandsLocked(time.Now())
+}
+
+func (session *DroneSession) requiresOperationContextReconciliation() bool {
+	session.sessionMu.RLock()
+	defer session.sessionMu.RUnlock()
+	return session.operationContextUnreconciled
 }
 
 func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
