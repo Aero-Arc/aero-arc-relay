@@ -22,6 +22,7 @@ import (
 	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	"github.com/google/uuid"
 	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
 	"github.com/makinje/aero-arc-relay/pkg/telemetry"
 	"google.golang.org/grpc/codes"
@@ -174,6 +175,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			continue
 		}
 		frameAgentID := strings.TrimSpace(frame.AgentId)
+		frameWALID := strings.TrimSpace(frame.WalId)
 
 		ack := &agentv1.TelemetryAck{
 			Seq:    frame.Seq,
@@ -201,8 +203,15 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		} else if frame.SentAtUnixNs <= 0 {
 			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
 			ack.Error = "telemetry frame capture timestamp is required"
+		} else if frameWALID == "" {
+			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+			ack.Error = "telemetry frame WAL generation ID is required"
+		} else if _, err := uuid.Parse(frameWALID); err != nil {
+			ack.Status = agentv1.TelemetryAck_STATUS_PERMANENT_ERROR
+			ack.Error = "telemetry frame WAL generation ID is invalid"
 		} else {
 			// Process the frame (e.g., forward to outputs).
+			frame.WalId = frameWALID
 			streamSession.sessionMu.Lock()
 			streamSession.LastHeartbeat = time.Now().UTC()
 			streamSession.sessionMu.Unlock()
