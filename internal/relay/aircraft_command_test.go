@@ -154,7 +154,7 @@ func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *
 	go func() {
 		session.ownershipMu.Lock()
 		session.retired = true
-		session.abortPendingAircraftCommands()
+		session.abortPendingCommands()
 		session.ownershipMu.Unlock()
 		close(retired)
 	}()

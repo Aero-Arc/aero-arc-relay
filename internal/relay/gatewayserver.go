@@ -84,7 +84,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
-			previous.abortPendingAircraftCommands()
+			previous.abortPendingCommands()
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
@@ -376,9 +376,20 @@ func (session *DroneSession) handleAircraftCommandResult(result *agentv1.Aircraf
 	}
 }
 
-func (session *DroneSession) abortPendingAircraftCommands() {
+func (session *DroneSession) abortPendingCommands() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
+	now := time.Now()
+	for commandID, state := range session.operationCommands {
+		if state.completed {
+			continue
+		}
+		delete(session.pending, commandID)
+		state.err = status.Error(codes.Aborted, "agent session retired while awaiting operation-context acknowledgement")
+		state.completed = true
+		state.completedAt = now
+		close(state.done)
+	}
 	for commandID, pending := range session.pendingAircraft {
 		delete(session.pendingAircraft, commandID)
 		select {

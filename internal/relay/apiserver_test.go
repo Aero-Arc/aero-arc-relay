@@ -132,6 +132,45 @@ func TestSetOperationContextRejectsMismatchedAppliedContext(t *testing.T) {
 	}
 }
 
+func TestSetOperationContextWaitAbortsWhenSessionRetires(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:  &telemetryStreamBinding{stream: stream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(context.Background(), &relayv1.SetOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.SetOperationContextCommand{
+				CommandId: "set-retired",
+				Context: &agentv1.OperationContext{
+					FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 1,
+				},
+			},
+		})
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	session.ownershipMu.Lock()
+	session.retired = true
+	session.abortPendingCommands()
+	session.ownershipMu.Unlock()
+	select {
+	case err := <-completed:
+		if status.Code(err) != codes.Aborted {
+			t.Fatalf("SetOperationContext() error = %v, want Aborted", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending operation-context command did not wake on retirement")
+	}
+}
+
 func TestConcurrentExactOperationContextRetriesShareOneDelivery(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 2)}
 	session := &DroneSession{

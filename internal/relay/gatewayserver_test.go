@@ -1362,6 +1362,12 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay.grpcSessions = make(map[string]*DroneSession)
 	agentID := "reconnecting-agent"
 	oldPending := make(chan *agentv1.OperationContextCommandAck, 1)
+	oldState := &operationCommandState{
+		expected: &agentv1.OperationContext{
+			FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
+		},
+		done: make(chan struct{}),
+	}
 	oldSession := &DroneSession{
 		agentID:   agentID,
 		SessionID: "old-session",
@@ -1369,12 +1375,7 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 			"shared-command": oldPending,
 		},
 		operationCommands: map[string]*operationCommandState{
-			"shared-command": {
-				expected: &agentv1.OperationContext{
-					FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
-				},
-				done: make(chan struct{}),
-			},
+			"shared-command": oldState,
 		},
 	}
 	relay.grpcSessions[agentID] = oldSession
@@ -1395,6 +1396,14 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay.sessionsMu.RUnlock()
 	if replacementSession == oldSession {
 		t.Fatal("registration did not replace the old session")
+	}
+	select {
+	case <-oldState.done:
+		if status.Code(oldState.err) != codes.Aborted {
+			t.Fatalf("old pending command error = %v, want Aborted", oldState.err)
+		}
+	default:
+		t.Fatal("replacement did not abort the old pending command")
 	}
 	replacementPending := make(chan *agentv1.OperationContextCommandAck, 1)
 	replacementSession.pendingMu.Lock()
@@ -1421,13 +1430,10 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	}
 	select {
 	case got := <-oldPending:
-		if got != commandAck {
-			t.Fatalf("old pending command received ACK %#v, want %#v", got, commandAck)
-		}
+		t.Fatalf("retired pending command received late ACK %#v", got)
 	case <-replacementPending:
 		t.Fatal("replacement session received a command ACK from the old stream")
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for command ACK on the receiving session")
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	oldSession.sessionMu.RLock()
@@ -1435,8 +1441,8 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	oldIntentID := oldSession.IntentID
 	oldIntentVersion := oldSession.IntentVersion
 	oldSession.sessionMu.RUnlock()
-	if oldFlightID != "old-flight" || oldIntentID != "old-intent" || oldIntentVersion != 7 {
-		t.Fatalf("old session context = (%q, %q, %d)", oldFlightID, oldIntentID, oldIntentVersion)
+	if oldFlightID != "" || oldIntentID != "" || oldIntentVersion != 0 {
+		t.Fatalf("late ACK changed retired session context to (%q, %q, %d)", oldFlightID, oldIntentID, oldIntentVersion)
 	}
 	replacementSession.sessionMu.RLock()
 	replacementFlightID := replacementSession.FlightID
