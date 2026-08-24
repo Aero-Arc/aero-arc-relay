@@ -654,8 +654,8 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 	globalWrite := make(chan struct{})
 	go func() {
 		relay.sessionsMu.Lock()
-		relay.sessionsMu.Unlock()
 		close(globalWrite)
+		relay.sessionsMu.Unlock()
 	}()
 	select {
 	case <-globalWrite:
