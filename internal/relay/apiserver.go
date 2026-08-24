@@ -150,8 +150,9 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 //     acknowledgement waiting. Once a stream Send starts, the session lease is
 //     held through that write, so the RPC may return after ctx expires.
 //   - req: identifies the Agent and carries a durable command ID. Flight ID is
-//     normally required; it may be empty only to reconcile a fresh Relay
-//     session to the API's authoritative empty context.
+//     required for a conditional clear. The authoritative discriminator may be
+//     true with an empty flight ID only to reconcile a gated Relay session to
+//     the API's authoritative empty context.
 //
 // Returns:
 //   - response: contains the correlated Agent acknowledgement.
@@ -180,10 +181,15 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}
 	defer release()
 	flightID := command.GetFlightId()
-	if strings.TrimSpace(flightID) == "" && flightID != "" {
-		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
+	authoritative := command.GetAuthoritative()
+	if authoritative {
+		if flightID != "" {
+			return nil, status.Error(codes.InvalidArgument, "authoritative clear requires an empty flight ID")
+		}
+	} else if strings.TrimSpace(flightID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "conditional clear requires a flight ID")
 	}
-	emptyReconciliation := flightID == ""
+	emptyReconciliation := authoritative
 	if emptyReconciliation && !session.reserveEmptyContextReconciliation(command.GetCommandId()) {
 		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
 	}
@@ -201,7 +207,7 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}
 	state, owner, err := beginOperationCommandDelivery(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: command},
-	}, expectedContextAfterClear(session, command.GetFlightId()), true)
+	}, expectedContextAfterClear(session, command.GetFlightId(), authoritative), true)
 	session.ownershipMu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -676,10 +682,10 @@ func cloneOperationAck(value *agentv1.OperationContextCommandAck) *agentv1.Opera
 	return proto.Clone(value).(*agentv1.OperationContextCommandAck)
 }
 
-func expectedContextAfterClear(session *DroneSession, flightID string) *agentv1.OperationContext {
+func expectedContextAfterClear(session *DroneSession, flightID string, authoritative bool) *agentv1.OperationContext {
 	session.sessionMu.RLock()
 	defer session.sessionMu.RUnlock()
-	if session.FlightID == "" || session.FlightID == flightID {
+	if authoritative || session.FlightID == "" || session.FlightID == flightID {
 		return nil
 	}
 	return &agentv1.OperationContext{

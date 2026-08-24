@@ -744,6 +744,9 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 	if waitErr := <-contextWaitDone; status.Code(waitErr) != codes.Aborted {
 		t.Fatalf("operation-context wait error = %v, want Aborted", waitErr)
 	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("uncertain context handoff did not re-enter telemetry reconciliation")
+	}
 	if waitErr := <-aircraftWaitDone; status.Code(waitErr) != codes.Aborted {
 		t.Fatalf("aircraft-command wait error = %v, want Aborted", waitErr)
 	}
@@ -835,6 +838,9 @@ func TestRegistryBackedStreamReplacementAbortsPendingCommandsAtCommit(t *testing
 	case <-contextState.done:
 	default:
 		t.Fatal("active replacement did not abort operation-context wait")
+	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("Registry-backed uncertain context handoff did not fence telemetry")
 	}
 	select {
 	case <-aircraftState.done:

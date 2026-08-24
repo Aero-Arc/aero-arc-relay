@@ -143,12 +143,28 @@ func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.
 		controlAuthorizer: func(context.Context) error { return nil },
 		grpcSessions:      map[string]*DroneSession{"agent-1": session},
 	}
+	_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "legacy-empty"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("legacy empty clear error = %v, want InvalidArgument", err)
+	}
+	_, err = relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{
+			CommandId: "contradictory-clear", FlightId: "flight-1", Authoritative: true,
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("contradictory authoritative clear error = %v, want InvalidArgument", err)
+	}
 	session.operationCommands = map[string]*operationCommandState{
 		"conflicting-id": {fingerprint: "different-payload"},
 	}
-	_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+	_, err = relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
 		AgentId: "agent-1",
-		Command: &agentv1.ClearOperationContextCommand{CommandId: "conflicting-id"},
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "conflicting-id", Authoritative: true},
 	})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("conflicting empty reconciliation error = %v, want AlreadyExists", err)
@@ -164,12 +180,12 @@ func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.
 	go func() {
 		_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
 			AgentId: "agent-1",
-			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty"},
+			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty", Authoritative: true},
 		})
 		result <- err
 	}()
 	message := <-stream.sentAckChan
-	if command := message.GetClearOperationContext(); command == nil || command.GetFlightId() != "" {
+	if command := message.GetClearOperationContext(); command == nil || command.GetFlightId() != "" || !command.GetAuthoritative() {
 		t.Fatalf("empty reconciliation command = %#v", command)
 	}
 	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
@@ -183,7 +199,7 @@ func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.
 	}
 	retry, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
 		AgentId: "agent-1",
-		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty"},
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty", Authoritative: true},
 	})
 	if err != nil || retry.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_APPLIED {
 		t.Fatalf("exact empty reconciliation retry = %#v, %v", retry, err)
@@ -208,7 +224,7 @@ func TestClearOperationContextRetainedFailureRetryReleasesEmptyReservation(t *te
 	}
 	failedRequest := &relayv1.ClearOperationContextRequest{
 		AgentId: "agent-1",
-		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-failed"},
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-failed", Authoritative: true},
 	}
 	type clearResult struct {
 		response *relayv1.ClearOperationContextResponse
@@ -251,7 +267,7 @@ func TestClearOperationContextRetainedFailureRetryReleasesEmptyReservation(t *te
 	go func() {
 		_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
 			AgentId: "agent-1",
-			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-fresh"},
+			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-fresh", Authoritative: true},
 		})
 		freshResult <- err
 	}()
@@ -278,7 +294,7 @@ func TestClearOperationContextRejectsEmptyFlightAfterReconciliation(t *testing.T
 		grpcSessions:      map[string]*DroneSession{"agent-1": session},
 	}
 	_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
-		AgentId: "agent-1", Command: &agentv1.ClearOperationContextCommand{CommandId: "empty-after-ready"},
+		AgentId: "agent-1", Command: &agentv1.ClearOperationContextCommand{CommandId: "empty-after-ready", Authoritative: true},
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("ClearOperationContext() error = %v, want InvalidArgument", err)

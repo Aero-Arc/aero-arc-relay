@@ -479,10 +479,12 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	now := time.Now()
+	contextOutcomeUncertain := false
 	for commandID, state := range session.operationCommands {
 		if state.completed {
 			continue
 		}
+		contextOutcomeUncertain = true
 		delete(session.pending, commandID)
 		state.err = status.Error(codes.Aborted, "agent stream replaced while awaiting operation-context acknowledgement")
 		state.completed = true
@@ -500,6 +502,15 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 			state.deliveryCancel()
 		}
 		close(state.done)
+	}
+	if contextOutcomeUncertain {
+		// The old stream may have applied Set/Clear before its ACK was lost.
+		// Fence telemetry on the replacement until the API replays its current
+		// authoritative context; retaining the prior acknowledged attribution is
+		// unsafe while the Agent's durable state may now differ.
+		session.sessionMu.Lock()
+		session.operationContextUnreconciled = true
+		session.sessionMu.Unlock()
 	}
 }
 
