@@ -367,6 +367,10 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	}
 	digest := sha256.Sum256(encoded)
 	fingerprint := hex.EncodeToString(digest[:])
+	// Admit the pending state under the same binding fence as its write. A
+	// replacement therefore either follows the completed old-binding write and
+	// aborts its uncertain wait, or precedes admission and receives the command.
+	session.controlStreamMu.RLock()
 	session.pendingMu.Lock()
 	if session.aircraftCommands == nil {
 		session.aircraftCommands = make(map[string]*aircraftCommandState)
@@ -375,14 +379,17 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	if existing := session.aircraftCommands[command.GetCommandId()]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			session.pendingMu.Unlock()
+			session.controlStreamMu.RUnlock()
 			return nil, false, status.Error(codes.AlreadyExists, "aircraft command ID was already used with a different payload")
 		}
 		existing.waiters++
 		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
 		return existing, false, nil
 	}
 	if len(session.aircraftCommands) >= maxOperationCommands {
 		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
 		return nil, false, status.Error(codes.ResourceExhausted, "aircraft command retention is full")
 	}
 	deliveryCtx, deliveryCancel := context.WithCancel(context.Background())
@@ -395,9 +402,10 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	command = proto.Clone(command).(*agentv1.AircraftCommand)
 	go func() {
 		defer session.ownershipMu.RUnlock()
-		if err := sendToSessionThroughWrite(deliveryCtx, session, &agentv1.RelayStreamMessage{
+		defer session.controlStreamMu.RUnlock()
+		if err := sendToSessionWithWritePolicy(deliveryCtx, session, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
-		}); err != nil {
+		}, true); err != nil {
 			finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
 		}
 	}()
@@ -494,6 +502,13 @@ func beginOperationCommandDelivery(
 	}
 	digest := sha256.Sum256(encoded)
 	fingerprint := hex.EncodeToString(digest[:])
+	if waitThroughWrite {
+		// Keep admission and the completed stream write in one binding epoch.
+		// This prevents a state aborted by replacement from later being sent on
+		// the newly active binding.
+		session.controlStreamMu.RLock()
+		defer session.controlStreamMu.RUnlock()
+	}
 	state, owner, err := beginOperationCommand(session, commandID, fingerprint, expected)
 	if err != nil {
 		return nil, false, err
@@ -501,7 +516,9 @@ func beginOperationCommandDelivery(
 	if owner {
 		send := sendToSession
 		if waitThroughWrite {
-			send = sendToSessionThroughWrite
+			send = func(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
+				return sendToSessionWithWritePolicy(ctx, session, message, true)
+			}
 		}
 		if err := send(ctx, session, message); err != nil {
 			finishOperationCommand(session, commandID, state, nil, err)

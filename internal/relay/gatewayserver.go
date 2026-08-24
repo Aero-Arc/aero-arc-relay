@@ -457,6 +457,34 @@ func (session *DroneSession) abortPendingCommands() {
 	session.abortPendingCommandsLocked(time.Now())
 }
 
+func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	now := time.Now()
+	for commandID, state := range session.operationCommands {
+		if state.completed {
+			continue
+		}
+		delete(session.pending, commandID)
+		state.err = status.Error(codes.Aborted, "agent stream replaced while awaiting operation-context acknowledgement")
+		state.completed = true
+		state.completedAt = now
+		close(state.done)
+	}
+	for _, state := range session.aircraftCommands {
+		if state.completed {
+			continue
+		}
+		state.err = status.Error(codes.Aborted, "agent stream replaced after aircraft command delivery; outcome is uncertain")
+		state.completed = true
+		state.completedAt = now
+		if state.deliveryCancel != nil {
+			state.deliveryCancel()
+		}
+		close(state.done)
+	}
+}
+
 func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *DroneSession) {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()

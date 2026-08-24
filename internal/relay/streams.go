@@ -42,8 +42,6 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 		return nil, nil, nil, ErrSessionNotFound
 	}
 	session.sessionMu.Lock()
-	defer session.sessionMu.Unlock()
-
 	previous := session.stream
 	session.streamGeneration++
 	binding := &telemetryStreamBinding{
@@ -54,6 +52,13 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 		session.stream = binding
 	} else {
 		session.pendingStream = binding
+	}
+	session.sessionMu.Unlock()
+	if r.registryReporter == nil && previous != nil && previous != binding {
+		// The old binding can no longer provide authoritative command evidence.
+		// Complete its pending waits while the control write fence still excludes
+		// both old evidence and new command admission.
+		session.abortPendingCommandsForStreamReplacement()
 	}
 
 	return session, binding, previous, nil
@@ -111,17 +116,23 @@ func (r *Relay) registerActiveAgent(
 	expectedSession.controlStreamMu.Lock()
 	defer expectedSession.controlStreamMu.Unlock()
 	expectedSession.sessionMu.Lock()
-	defer expectedSession.sessionMu.Unlock()
 	if isActive {
+		expectedSession.sessionMu.Unlock()
 		return nil
 	}
 	if expectedSession.pendingStream != expectedStream || expectedStream.closed {
+		expectedSession.sessionMu.Unlock()
 		return ErrSessionNotFound
 	}
 	// The prior accepted binding stays current and can route telemetry throughout
 	// the Registry RPC. Commit the replacement only after publication succeeds.
+	previousStream := expectedSession.stream
 	expectedSession.stream = expectedStream
 	expectedSession.pendingStream = nil
+	expectedSession.sessionMu.Unlock()
+	if previousStream != nil && previousStream != expectedStream {
+		expectedSession.abortPendingCommandsForStreamReplacement()
+	}
 	return nil
 }
 

@@ -214,6 +214,15 @@ After replacement:
 - The active-binding swap waits for any already-started control-command write;
   ordinary telemetry ACK sends remain isolated per binding and do not delay the
   replacement.
+- Pending operation-context and aircraft-command waits whose write completed on
+  the superseded binding finish with `Aborted` at the active-binding swap. This
+  releases the serialized operation-context gate instead of waiting forever for
+  evidence that is no longer authoritative. An aircraft-command caller must
+  treat this result as outcome-uncertain because the old Agent may have passed
+  the command to the autopilot before reconnecting.
+- Command admission is fenced with its stream write. A command waiting behind
+  the swap is admitted only after the replacement becomes active, so Relay
+  cannot abort it and then deliver it on the new binding.
 - Operation-context ACKs and aircraft-command results from the superseded
   binding are ignored, even though it shares the same session ID.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
@@ -329,9 +338,13 @@ blocked ACK on an old stream does not prevent a replacement stream from attachin
 and sending.
 
 `TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence` verifies
-that the active-binding swap waits for a blocked control write and that both
-operation-context and aircraft-command evidence from the superseded binding are
-ignored.
+that the active-binding swap waits for a blocked control write, aborts pending
+waiters, releases the operation-context gate, and ignores both operation-context
+and aircraft-command evidence from the superseded binding.
+
+`TestRegistryBackedStreamReplacementAbortsPendingCommandsAtCommit` verifies the
+same abort rule applies only when a Registry-backed replacement is successfully
+published and committed, not while it is merely a pending candidate.
 
 `TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure` verifies that queue
 admission failures are retryable and deterministic normalization failures are

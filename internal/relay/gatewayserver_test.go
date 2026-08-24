@@ -636,6 +636,32 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 	case <-time.After(time.Second):
 		t.Fatal("control write did not start")
 	}
+	oldContextState := &operationCommandState{done: make(chan struct{})}
+	_, cancelOldAircraft := context.WithCancel(context.Background())
+	oldAircraftState := &aircraftCommandState{done: make(chan struct{}), deliveryCancel: cancelOldAircraft}
+	session.pendingMu.Lock()
+	session.pending["old-context-command"] = make(chan *agentv1.OperationContextCommandAck, 1)
+	session.operationCommands["old-context-command"] = oldContextState
+	session.aircraftCommands["old-aircraft-command"] = oldAircraftState
+	session.pendingMu.Unlock()
+	releaseOperationSlot, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextWaitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := awaitOperationCommand(
+			context.Background(), session, "old-context-command", oldContextState, true,
+		)
+		releaseOperationSlot()
+		contextWaitDone <- waitErr
+	}()
+	aircraftWaitDone := make(chan error, 1)
+	go func() {
+		<-oldAircraftState.done
+		_, waitErr := takeAircraftCommandResult(session, oldAircraftState)
+		aircraftWaitDone <- waitErr
+	}()
 
 	type replacementResult struct {
 		binding *telemetryStreamBinding
@@ -673,6 +699,25 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 	newBinding := replacement.binding
 	if newBinding == nil {
 		t.Fatal("replacement binding is nil")
+	}
+	if waitErr := <-contextWaitDone; status.Code(waitErr) != codes.Aborted {
+		t.Fatalf("operation-context wait error = %v, want Aborted", waitErr)
+	}
+	if waitErr := <-aircraftWaitDone; status.Code(waitErr) != codes.Aborted {
+		t.Fatalf("aircraft-command wait error = %v, want Aborted", waitErr)
+	}
+	gateCtx, cancelGate := context.WithTimeout(context.Background(), time.Second)
+	defer cancelGate()
+	releaseNextOperationSlot, err := acquireOperationCommandSlot(gateCtx, session)
+	if err != nil {
+		t.Fatalf("replacement left operation gate blocked: %v", err)
+	}
+	releaseNextOperationSlot()
+	session.pendingMu.Lock()
+	_, oldContextStillPending := session.pending["old-context-command"]
+	session.pendingMu.Unlock()
+	if oldContextStillPending {
+		t.Fatal("replacement retained the superseded context ACK route")
 	}
 
 	contextState := &operationCommandState{done: make(chan struct{})}
@@ -714,6 +759,59 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 	case <-aircraftState.done:
 	default:
 		t.Fatal("active stream did not complete the aircraft command")
+	}
+}
+
+func TestRegistryBackedStreamReplacementAbortsPendingCommandsAtCommit(t *testing.T) {
+	relay := relayWithRegistryReporter(t, &recordingAgentRegistrar{})
+	oldBinding := &telemetryStreamBinding{stream: &mockTelemetryStream{}, generation: 1}
+	contextState := &operationCommandState{done: make(chan struct{})}
+	_, cancelAircraft := context.WithCancel(context.Background())
+	aircraftState := &aircraftCommandState{done: make(chan struct{}), deliveryCancel: cancelAircraft}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1", stream: oldBinding, streamGeneration: 1,
+		pending: map[string]chan *agentv1.OperationContextCommandAck{
+			"context-command": make(chan *agentv1.OperationContextCommandAck, 1),
+		},
+		operationCommands: map[string]*operationCommandState{"context-command": contextState},
+		aircraftCommands:  map[string]*aircraftCommandState{"aircraft-command": aircraftState},
+	}
+	relay.grpcSessions[session.agentID] = session
+
+	_, replacement, previous, err := relay.updateStream(session.agentID, session.SessionID, &mockTelemetryStream{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-contextState.done:
+		t.Fatal("pending publication aborted commands before becoming active")
+	default:
+	}
+	if err := relay.registerActiveAgent(context.Background(), session.agentID, session, replacement, previous); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-contextState.done:
+	default:
+		t.Fatal("active replacement did not abort operation-context wait")
+	}
+	select {
+	case <-aircraftState.done:
+	default:
+		t.Fatal("active replacement did not abort aircraft-command wait")
+	}
+	session.pendingMu.Lock()
+	contextErr := contextState.err
+	aircraftErr := aircraftState.err
+	session.pendingMu.Unlock()
+	if status.Code(contextErr) != codes.Aborted || status.Code(aircraftErr) != codes.Aborted {
+		t.Fatalf("replacement errors = (%v, %v), want Aborted", contextErr, aircraftErr)
+	}
+	session.sessionMu.RLock()
+	active := session.stream
+	session.sessionMu.RUnlock()
+	if active != replacement {
+		t.Fatal("published replacement did not become active")
 	}
 }
 

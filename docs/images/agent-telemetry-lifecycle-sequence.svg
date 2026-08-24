@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1120" role="img" aria-labelledby="title desc">
   <title id="title">Agent telemetry stream lifecycle</title>
-  <desc id="desc">Sequence diagram across Agent, Relay, and Outputs or Control API. It covers authenticated registration, session creation, stream attachment, telemetry validation and routing, response-bound acknowledgements, active-stream control commands, command acknowledgements, stream replacement, and generation-safe cleanup.</desc>
+  <desc id="desc">Sequence diagram across Agent, Relay, and Outputs or Control API. It covers authenticated registration, session creation, stream attachment, telemetry validation and routing, response-bound acknowledgements, active-stream control commands, command acknowledgements, stream replacement with pending command aborts, and generation-safe cleanup.</desc>
   <style>
     :root { color-scheme: light dark; }
     .bg { fill: #f8fafc; }
@@ -88,7 +88,8 @@
   <text class="muted label" x="50" y="876">4 · REPLACE AND CLEAN UP SAFELY</text>
   <path class="cleanup" d="M180 910 H600"/>
   <text class="text label" x="390" y="901" text-anchor="middle">Replacement stream</text>
-  <text class="muted note" x="620" y="930">Attach generation N+1</text>
+  <text class="muted note" x="620" y="922">Attach generation N+1</text>
+  <text class="muted note" x="620" y="943">Abort pending old-binding command waits</text>
   <path class="cleanup" d="M180 962 H600"/>
   <text class="text label" x="390" y="953" text-anchor="middle">Old stream closes</text>
   <text class="muted note" x="620" y="975">Ignore stale cleanup</text>
