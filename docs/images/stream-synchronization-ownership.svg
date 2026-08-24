@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 850" role="img" aria-labelledby="title desc">
   <title id="title">Layered stream synchronization ownership</title>
-  <desc id="desc">Nested architecture diagram. The outer sessionsMu boundary protects the grpcSessions map and session identity replacement. Within a selected DroneSession, ownershipMu provides the retirement and frame-admission lease. sessionMu protects mutable state, active stream, and generation. Independent old and replacement bindings each have their own sendMu for that RPC stream. pendingMu separately protects the pending operation-command acknowledgement map.</desc>
+  <desc id="desc">Nested architecture diagram. The outer sessionsMu boundary protects the grpcSessions map and session identity replacement. Within a selected DroneSession, ownershipMu provides the retirement and frame-admission lease. sessionMu protects mutable state, active stream, and generation. controlStreamMu fences control writes and evidence across the active-binding swap. Independent old and replacement bindings each have their own sendMu for that RPC stream. pendingMu separately protects the pending operation-command acknowledgement map.</desc>
   <style>
     :root { color-scheme: light dark; }
     .bg { fill: #f8fafc; }
@@ -62,6 +62,8 @@
   <rect x="770" y="380" width="250" height="68" rx="18" fill="#64748b" opacity="0.15"/>
   <text class="text node" x="895" y="407" text-anchor="middle">streamGeneration</text>
   <text class="muted body" x="895" y="431" text-anchor="middle">N → N+1</text>
+  <text class="text node" x="400" y="495">controlStreamMu</text>
+  <text class="muted body" x="575" y="495">Fences control writes + evidence across active-binding swaps.</text>
 
   <path class="arrow" d="M635 460 V575 H485"/>
   <path class="arrow" d="M635 460 V575 H865"/>

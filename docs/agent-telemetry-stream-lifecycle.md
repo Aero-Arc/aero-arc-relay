@@ -180,9 +180,10 @@ commands use the same through-write session fence in their shared delivery task,
 but an individual caller may detach at its deadline and must treat that command
 outcome as uncertain while the started write finishes.
 
-Incoming operation-context ACKs are applied only when their command ID matches a
-pending request on the session captured by the receiving stream handler. The
-pending entry is consumed before an applied ACK may update active flight and
+Incoming operation-context ACKs and aircraft-command results are applied only
+when their command ID matches a pending request on the session captured by the
+receiving stream handler and that handler still owns the active stream binding.
+The pending entry is consumed before an applied ACK may update active flight and
 intent state. For `APPLIED` and `ALREADY_APPLIED`, the ACK's active context must
 exactly match the authoritative result derived from the API command. Relay
 updates attribution from that expected result, never from unchecked Agent data.
@@ -210,6 +211,11 @@ stream.
 After replacement:
 
 - New control commands target the replacement stream.
+- The active-binding swap waits for any already-started control-command write;
+  ordinary telemetry ACK sends remain isolated per binding and do not delay the
+  replacement.
+- Operation-context ACKs and aircraft-command results from the superseded
+  binding are ignored, even though it shares the same session ID.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
   old stream while the shared session remains registered.
 - Sends remain serialized independently on each stream binding.
@@ -256,7 +262,7 @@ another telemetry stream.
 
 ## Synchronization and Ownership
 
-The stream lifecycle uses five locks with separate responsibilities:
+The stream lifecycle uses six locks with separate responsibilities:
 
 ![Ownership map of sessionsMu, sessionMu, ownershipMu, per-binding sendMu, and pendingMu with the state each lock protects](images/stream-synchronization-ownership.svg)
 
@@ -274,6 +280,8 @@ The important ownership invariants are:
 8. A command and its pending ACK are owned by the same captured session.
 9. A successful telemetry ACK requires admission by the official normalized
    telemetry consumer.
+10. `controlStreamMu` linearizes through-write control sends, active-binding
+    swaps, and command evidence so one command cannot cross stream generations.
 
 These rules prevent a replacement connection from receiving an unrelated ACK and
 prevent stale handler cleanup from tearing down the current connection.
@@ -286,6 +294,8 @@ and receive ACKs for its own frames while the shared session remains registered.
 It also means both handlers can temporarily submit valid telemetry for the same
 session. If the active replacement closes and removes the session, any surviving
 old handler returns permanent-error ACKs for later frames and does not route them.
+The drain allowance applies only to telemetry; command ACKs and results from a
+superseded binding never complete shared session command state.
 
 If the protocol later requires strict single-stream ingestion, replacement should
 also cancel the previous handler or cause stale generations to reject new frames.
@@ -314,6 +324,11 @@ ID.
 `TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend` verifies that a
 blocked ACK on an old stream does not prevent a replacement stream from attaching
 and sending.
+
+`TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence` verifies
+that the active-binding swap waits for a blocked control write and that both
+operation-context and aircraft-command evidence from the superseded binding are
+ignored.
 
 `TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure` verifies that queue
 admission failures are retryable and deterministic normalization failures are

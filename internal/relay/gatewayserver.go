@@ -171,11 +171,11 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
-			streamSession.handleOperationContextCommandAck(commandAck)
+			streamSession.handleOperationContextCommandAckFrom(streamBinding, commandAck)
 			continue
 		}
 		if commandResult := message.GetAircraftCommandResult(); commandResult != nil {
-			streamSession.handleAircraftCommandResult(commandResult)
+			streamSession.handleAircraftCommandResultFrom(streamBinding, commandResult)
 			continue
 		}
 		frame := message.GetTelemetryFrame()
@@ -270,6 +270,8 @@ func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.
 // holding the session ownership lease so replacement cannot publish ahead of a
 // command that is still capable of reaching the retired stream.
 func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
 	return sendToSessionWithWritePolicy(ctx, session, message, true)
 }
 
@@ -387,6 +389,21 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 	}
 }
 
+func (session *DroneSession) handleOperationContextCommandAckFrom(binding *telemetryStreamBinding, ack *agentv1.OperationContextCommandAck) {
+	if session == nil || binding == nil || ack == nil {
+		return
+	}
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
+	session.sessionMu.RLock()
+	isCurrent := session.stream == binding && !binding.closed
+	session.sessionMu.RUnlock()
+	if !isCurrent {
+		return
+	}
+	session.handleOperationContextCommandAck(ack)
+}
+
 func (session *DroneSession) handleAircraftCommandResult(result *agentv1.AircraftCommandResult) {
 	if session == nil || result == nil {
 		return
@@ -401,6 +418,21 @@ func (session *DroneSession) handleAircraftCommandResult(result *agentv1.Aircraf
 	state.completed = true
 	state.completedAt = time.Now()
 	close(state.done)
+}
+
+func (session *DroneSession) handleAircraftCommandResultFrom(binding *telemetryStreamBinding, result *agentv1.AircraftCommandResult) {
+	if session == nil || binding == nil || result == nil {
+		return
+	}
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
+	session.sessionMu.RLock()
+	isCurrent := session.stream == binding && !binding.closed
+	session.sessionMu.RUnlock()
+	if !isCurrent {
+		return
+	}
+	session.handleAircraftCommandResult(result)
 }
 
 func (session *DroneSession) abortPendingCommands() {

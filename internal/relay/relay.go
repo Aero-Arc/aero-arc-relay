@@ -109,9 +109,13 @@ type DroneSession struct {
 	operationCommands     map[string]*operationCommandState
 	operationGate         chan struct{}
 	aircraftCommands      map[string]*aircraftCommandState
-	ownershipMu           sync.RWMutex
-	publicationMu         sync.Mutex
-	retired               bool
+	// controlStreamMu keeps command writes and command evidence on one active
+	// telemetry-stream binding. Same-session stream replacement takes the write
+	// side only for the binding swap, not for Registry publication or telemetry.
+	controlStreamMu sync.RWMutex
+	ownershipMu     sync.RWMutex
+	publicationMu   sync.Mutex
+	retired         bool
 }
 
 type operationCommandState struct {

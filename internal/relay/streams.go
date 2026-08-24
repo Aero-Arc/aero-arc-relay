@@ -26,6 +26,10 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 		return nil, nil, nil, ErrSessionNotFound
 	}
 
+	if r.registryReporter == nil {
+		session.controlStreamMu.Lock()
+		defer session.controlStreamMu.Unlock()
+	}
 	session.sessionMu.Lock()
 	defer session.sessionMu.Unlock()
 
@@ -91,6 +95,10 @@ func (r *Relay) registerActiveAgent(
 		return err
 	}
 
+	// Publication may remain slow without blocking accepted telemetry. Only the
+	// final active-binding swap excludes command writes and command evidence.
+	expectedSession.controlStreamMu.Lock()
+	defer expectedSession.controlStreamMu.Unlock()
 	expectedSession.sessionMu.Lock()
 	defer expectedSession.sessionMu.Unlock()
 	if isActive {

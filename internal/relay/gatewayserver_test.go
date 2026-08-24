@@ -610,6 +610,102 @@ func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *test
 	}
 }
 
+func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *testing.T) {
+	oldStream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	oldBinding := &telemetryStreamBinding{stream: oldStream, generation: 1}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1", stream: oldBinding, streamGeneration: 1,
+		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands: make(map[string]*operationCommandState),
+		aircraftCommands:  make(map[string]*aircraftCommandState),
+	}
+	relay := &Relay{grpcSessions: map[string]*DroneSession{"agent-1": session}}
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- sendToSessionThroughWrite(context.Background(), session, &agentv1.RelayStreamMessage{
+			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
+				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "context-command"},
+			},
+		})
+	}()
+	select {
+	case <-oldStream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("control write did not start")
+	}
+
+	type replacementResult struct {
+		binding *telemetryStreamBinding
+		err     error
+	}
+	replacementDone := make(chan replacementResult, 1)
+	go func() {
+		_, binding, _, err := relay.updateStream("agent-1", "session-1", &mockTelemetryStream{})
+		replacementDone <- replacementResult{binding: binding, err: err}
+	}()
+	select {
+	case <-replacementDone:
+		t.Fatal("same-session replacement committed during a control write")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(oldStream.sendBlock)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("control write error = %v", err)
+	}
+	replacement := <-replacementDone
+	if replacement.err != nil {
+		t.Fatalf("updateStream() error = %v", replacement.err)
+	}
+	newBinding := replacement.binding
+	if newBinding == nil {
+		t.Fatal("replacement binding is nil")
+	}
+
+	contextState := &operationCommandState{done: make(chan struct{})}
+	session.pendingMu.Lock()
+	session.pending["context-command"] = make(chan *agentv1.OperationContextCommandAck, 1)
+	session.operationCommands["context-command"] = contextState
+	session.pendingMu.Unlock()
+	contextACK := &agentv1.OperationContextCommandAck{
+		CommandId: "context-command", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+	}
+	session.handleOperationContextCommandAckFrom(oldBinding, contextACK)
+	select {
+	case <-contextState.done:
+		t.Fatal("superseded stream completed the operation-context command")
+	default:
+	}
+	session.handleOperationContextCommandAckFrom(newBinding, contextACK)
+	select {
+	case <-contextState.done:
+	default:
+		t.Fatal("active stream did not complete the operation-context command")
+	}
+
+	aircraftState := &aircraftCommandState{done: make(chan struct{})}
+	session.pendingMu.Lock()
+	session.aircraftCommands["aircraft-command"] = aircraftState
+	session.pendingMu.Unlock()
+	aircraftResult := &agentv1.AircraftCommandResult{
+		CommandId: "aircraft-command", Status: agentv1.AircraftCommandResult_STATUS_ACCEPTED,
+	}
+	session.handleAircraftCommandResultFrom(oldBinding, aircraftResult)
+	select {
+	case <-aircraftState.done:
+		t.Fatal("superseded stream completed the aircraft command")
+	default:
+	}
+	session.handleAircraftCommandResultFrom(newBinding, aircraftResult)
+	select {
+	case <-aircraftState.done:
+	default:
+		t.Fatal("active stream did not complete the aircraft command")
+	}
+}
+
 // mockTelemetryStream implements agentv1.AgentGateway_TelemetryStreamServer
 type mockTelemetryStream struct {
 	grpc.ServerStream
