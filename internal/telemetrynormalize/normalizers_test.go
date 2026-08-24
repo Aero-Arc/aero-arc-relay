@@ -326,6 +326,23 @@ func TestRecordValidationRequiresRelayAndSessionIdentity(t *testing.T) {
 	}
 }
 
+func TestRecordValidationAcceptsLegacyV1WithoutWALGenerationID(t *testing.T) {
+	normalizer, _ := NewRegistry().Lookup("Heartbeat")
+	record, err := normalizer.Normalize(testEnvelope("Heartbeat", 0, nil))
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	record.Source.WALID = ""
+	if err := record.Validate(); err != nil {
+		t.Fatalf("legacy schema-v1 record without WAL generation ID failed validation: %v", err)
+	}
+	record.Source.WALID = "not-a-uuid"
+	if err := record.Validate(); err == nil {
+		t.Fatal("schema-v1 record with invalid WAL generation ID passed validation")
+	}
+}
+
 func testEnvelope(message string, messageID uint32, fields map[string]any) telemetry.TelemetryEnvelope {
 	return telemetry.TelemetryEnvelope{
 		AgentID:        "agent-1",

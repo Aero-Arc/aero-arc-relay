@@ -132,7 +132,7 @@ func TestRecordToPointUsesStableMeasurementWithoutAssignment(t *testing.T) {
 		Identity: telemetrynormalize.IdentityContext{
 			AgentID: "agent-1", RelayID: "relay-1", SessionID: "session-1",
 		},
-		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:1", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 1, MessageID: 0, Dialect: "common"},
+		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:1", Sequence: 1, MessageID: 0, Dialect: "common"},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: time.Now().UTC(), RelayTime: time.Now().UTC(), TimestampSource: telemetrynormalize.TimestampSourceRelay,
 		},
@@ -148,5 +148,8 @@ func TestRecordToPointUsesStableMeasurementWithoutAssignment(t *testing.T) {
 	}
 	if _, ok := point.GetTag("aircraft_id"); ok {
 		t.Error("unassigned point unexpectedly has aircraft_id tag")
+	}
+	if got := point.GetField("wal_id"); got != nil {
+		t.Errorf("legacy schema-v1 point contains wal_id = %#v", got)
 	}
 }

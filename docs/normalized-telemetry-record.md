@@ -53,6 +53,7 @@ type IdentityContext struct {
 
 type SourceContext struct {
 	FrameID     string
+	WALID       string
 	Sequence    uint64
 	MessageID   uint32
 	Dialect     string
@@ -140,8 +141,13 @@ new Relay create two InfluxDB points. A future schema version may use the WAL
 generation ID in the point identity only after a coordinated drain of in-flight
 version 1 entries.
 
-`wal_id` is the Agent WAL generation identity. It is required and must not be
-derived from a process, Relay session, SQLite row ID, or MAVLink packet.
+`wal_id` is the Agent WAL generation identity. It is optional in normalized
+schema version 1 so historical records and points written by old Relays during
+the staged rollout remain valid. When present, it must be a valid UUID persisted
+by the Agent's WAL database; it must not be derived from a process, Relay
+session, SQLite row ID, or MAVLink packet. Upgraded Relay transport admission
+requires it from upgraded Agents, but consumers of version 1 records must
+accept its absence.
 
 `sequence` is the agent WAL sequence carried by the frame. It is required and
 must not be replaced with the MAVLink packet sequence.
@@ -292,18 +298,19 @@ Every normalized record must satisfy all of the following:
 1. It represents exactly one input telemetry frame and one canonical MAVLink
    message.
 2. `schema_version`, `agent_id`, `relay_id`, `session_id`, `frame_id`,
-   `wal_id`, `sequence`, `message_id`, `message_name`, `dialect`, `event_time`,
+   `sequence`, `message_id`, `message_name`, `dialect`, `event_time`,
    `relay_time`, and `timestamp_source` are present and valid.
-3. `frame_id` remains stable across retry and reconnect and does not collide
+3. When `wal_id` is present, it is a valid Agent WAL generation UUID.
+4. `frame_id` remains stable across retry and reconnect and does not collide
    after WAL recreation.
-4. Operator, aircraft, flight, and intent identities are authoritative or
+5. Operator, aircraft, flight, and intent identities are authoritative or
    absent; they are never inferred from MAVLink fields.
-5. Fields are approved for the record's message and schema version.
-6. Field values use approved scalar types and documented units.
-7. Invalid sentinel values are not exposed as measurements.
-8. The record contains no generic raw payload and no storage-specific point,
+6. Fields are approved for the record's message and schema version.
+7. Field values use approved scalar types and documented units.
+8. Invalid sentinel values are not exposed as measurements.
+9. The record contains no generic raw payload and no storage-specific point,
    tag, bucket, measurement, or client type.
-9. The normalizer is deterministic for the same envelope and bound identity
+10. The normalizer is deterministic for the same envelope and bound identity
    and timing context.
 
 ## Backend responsibilities
@@ -326,8 +333,9 @@ frame-invariant values (`frame_id`, `agent_id`, `message_name`, and
 `schema_version`) are tags. This keeps retries idempotent while ensuring frames
 with the same capture timestamp and different WAL sequences remain distinct.
 Retry-variable relay, session, assignment, flight, and intent metadata remain
-queryable fields. `wal_id` and `wal_sequence` remain fields for replay ordering,
-inspection, and diagnostics.
+queryable fields. `wal_sequence` remains a field for inspection and diagnostics.
+When available, `wal_id` is also written as a field for replay ordering and
+cursor diagnostics; the backend omits it for legacy version 1 records.
 
 ## API relationship
 
