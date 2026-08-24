@@ -84,7 +84,9 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 // acknowledgement whose active context matches the requested value.
 //
 // Parameters:
-//   - ctx: bounds authorization, stream delivery, and acknowledgement waiting.
+//   - ctx: bounds authorization, waiting to start stream delivery, and
+//     acknowledgement waiting. Once a stream Send starts, the session lease is
+//     held through that write, so the RPC may return after ctx expires.
 //   - req: identifies the Agent and carries a durable command ID and context.
 //
 // Returns:
@@ -144,8 +146,12 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 // correlated acknowledgement of the authoritative resulting context.
 //
 // Parameters:
-//   - ctx: bounds authorization, stream delivery, and acknowledgement waiting.
-//   - req: identifies the Agent and carries a durable command ID and flight ID.
+//   - ctx: bounds authorization, waiting to start stream delivery, and
+//     acknowledgement waiting. Once a stream Send starts, the session lease is
+//     held through that write, so the RPC may return after ctx expires.
+//   - req: identifies the Agent and carries a durable command ID. Flight ID is
+//     normally required; it may be empty only to reconcile a fresh Relay
+//     session to the API's authoritative empty context.
 //
 // Returns:
 //   - response: contains the correlated Agent acknowledgement.
@@ -161,8 +167,8 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	if agentID == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent ID is required")
 	}
-	if command == nil || strings.TrimSpace(command.GetCommandId()) == "" || strings.TrimSpace(command.GetFlightId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "operation-context command ID and flight ID are required")
+	if command == nil || strings.TrimSpace(command.GetCommandId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "operation-context command ID is required")
 	}
 	session, err := s.currentControlSession(agentID)
 	if err != nil {
@@ -173,6 +179,10 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 		return nil, err
 	}
 	defer release()
+	flightID := command.GetFlightId()
+	if strings.TrimSpace(flightID) == "" && (flightID != "" || !session.reserveEmptyContextReconciliation(command.GetCommandId())) {
+		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
+	}
 	session.ownershipMu.RLock()
 	if !s.sessionIsCurrent(agentID, session) {
 		session.ownershipMu.RUnlock()

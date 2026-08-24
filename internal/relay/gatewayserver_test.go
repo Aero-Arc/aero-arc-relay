@@ -1485,7 +1485,8 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	old := &DroneSession{
 		agentID: "agent-1", SessionID: "old-session",
 		FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
-		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+		emptyContextCommandID: "reconcile-empty",
+		pending:               make(map[string]chan *agentv1.OperationContextCommandAck),
 	}
 	relay.grpcSessions["agent-1"] = old
 	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
@@ -1502,6 +1503,9 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	}
 	if replacement.requiresOperationContextReconciliation() {
 		t.Fatal("same-process replacement lost reconciled operation context")
+	}
+	if !replacement.reserveEmptyContextReconciliation("reconcile-empty") || replacement.reserveEmptyContextReconciliation("different-empty") {
+		t.Fatal("same-process replacement lost the retained empty-context command identity")
 	}
 }
 

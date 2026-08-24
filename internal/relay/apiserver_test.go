@@ -132,6 +132,75 @@ func TestSetOperationContextRejectsMismatchedAppliedContext(t *testing.T) {
 	}
 }
 
+func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream}, pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationContextUnreconciled: true,
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty"},
+		})
+		result <- err
+	}()
+	message := <-stream.sentAckChan
+	if command := message.GetClearOperationContext(); command == nil || command.GetFlightId() != "" {
+		t.Fatalf("empty reconciliation command = %#v", command)
+	}
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "reconcile-empty", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+	})
+	if err := <-result; err != nil {
+		t.Fatalf("ClearOperationContext() error = %v", err)
+	}
+	if session.requiresOperationContextReconciliation() {
+		t.Fatal("acknowledged empty context did not open telemetry admission")
+	}
+	retry, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "reconcile-empty"},
+	})
+	if err != nil || retry.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_APPLIED {
+		t.Fatalf("exact empty reconciliation retry = %#v, %v", retry, err)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("exact empty reconciliation retry redelivered: %#v", message)
+	default:
+	}
+}
+
+func TestClearOperationContextRejectsEmptyFlightAfterReconciliation(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream}, pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1", Command: &agentv1.ClearOperationContextCommand{CommandId: "empty-after-ready"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("ClearOperationContext() error = %v, want InvalidArgument", err)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("invalid empty clear reached Agent: %#v", message)
+	default:
+	}
+}
+
 func TestSetOperationContextWaitAbortsWhenSessionRetires(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
 	session := &DroneSession{

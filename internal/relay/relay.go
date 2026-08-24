@@ -99,15 +99,19 @@ type DroneSession struct {
 	// until the API replays an authoritative Set/Clear command; same-process
 	// replacements inherit the previous session's reconciled state.
 	operationContextUnreconciled bool
-	sessionMu                    sync.RWMutex
-	pendingMu                    sync.Mutex
-	pending                      map[string]chan *agentv1.OperationContextCommandAck
-	operationCommands            map[string]*operationCommandState
-	operationGate                chan struct{}
-	aircraftCommands             map[string]*aircraftCommandState
-	ownershipMu                  sync.RWMutex
-	publicationMu                sync.Mutex
-	retired                      bool
+	// emptyContextCommandID retains the one durable command permitted to assert
+	// an authoritative empty context, including exact retries after admission
+	// opens and same-process session replacement.
+	emptyContextCommandID string
+	sessionMu             sync.RWMutex
+	pendingMu             sync.Mutex
+	pending               map[string]chan *agentv1.OperationContextCommandAck
+	operationCommands     map[string]*operationCommandState
+	operationGate         chan struct{}
+	aircraftCommands      map[string]*aircraftCommandState
+	ownershipMu           sync.RWMutex
+	publicationMu         sync.Mutex
+	retired               bool
 }
 
 type operationCommandState struct {

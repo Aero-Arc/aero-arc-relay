@@ -367,6 +367,14 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 			session.sessionMu.Unlock()
 		}
 	}
+	if (ack.Status != agentv1.OperationContextCommandAck_STATUS_APPLIED &&
+		ack.Status != agentv1.OperationContextCommandAck_STATUS_ALREADY_APPLIED) || ackErr != nil {
+		session.sessionMu.Lock()
+		if session.emptyContextCommandID == ack.CommandId {
+			session.emptyContextCommandID = ""
+		}
+		session.sessionMu.Unlock()
+	}
 	state.ack = cloneOperationAck(ack)
 	state.err = ackErr
 	state.completed = true
@@ -409,6 +417,7 @@ func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *Dron
 	replacement.IntentID = session.IntentID
 	replacement.IntentVersion = session.IntentVersion
 	replacement.operationContextUnreconciled = session.operationContextUnreconciled
+	replacement.emptyContextCommandID = session.emptyContextCommandID
 	session.sessionMu.RUnlock()
 	session.abortPendingCommandsLocked(time.Now())
 }
@@ -417,6 +426,19 @@ func (session *DroneSession) requiresOperationContextReconciliation() bool {
 	session.sessionMu.RLock()
 	defer session.sessionMu.RUnlock()
 	return session.operationContextUnreconciled
+}
+
+func (session *DroneSession) reserveEmptyContextReconciliation(commandID string) bool {
+	session.sessionMu.Lock()
+	defer session.sessionMu.Unlock()
+	if session.emptyContextCommandID != "" {
+		return session.emptyContextCommandID == commandID
+	}
+	if !session.operationContextUnreconciled {
+		return false
+	}
+	session.emptyContextCommandID = commandID
+	return true
 }
 
 func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {

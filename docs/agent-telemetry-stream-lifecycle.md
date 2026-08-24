@@ -29,7 +29,9 @@ subsequent `TelemetryStream` call must attach to.
 When operation-context control is enabled, the first session for an agent
 observed by a Relay process starts with operation context unreconciled. The API
 must replay its durable authoritative state with either `SetOperationContext`
-for an active flight or `ClearOperationContext` for no active flight. Until the
+for an active flight or `ClearOperationContext` with no flight ID for no active
+flight. Empty-flight Clear is accepted only for this initial reconciliation;
+ordinary clears remain scoped to a specific flight. Until the
 Agent acknowledges that command, telemetry receives `RETRY_WITH_BACKOFF` and
 remains in the Agent WAL instead of being admitted with an implicitly empty
 flight and intent. This is required after Relay restart; Registry discovery and
