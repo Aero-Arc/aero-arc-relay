@@ -124,7 +124,7 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 	}
 	state, owner, err := beginOperationCommandDelivery(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_SetOperationContext{SetOperationContext: command},
-	}, operation)
+	}, operation, true)
 	session.ownershipMu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}
 	state, owner, err := beginOperationCommandDelivery(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
 		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: command},
-	}, expectedContextAfterClear(session, command.GetFlightId()))
+	}, expectedContextAfterClear(session, command.GetFlightId()), true)
 	session.ownershipMu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -462,6 +462,7 @@ func beginOperationCommandDelivery(
 	commandID string,
 	message *agentv1.RelayStreamMessage,
 	expected *agentv1.OperationContext,
+	waitThroughWrite bool,
 ) (*operationCommandState, bool, error) {
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
 	if err != nil {
@@ -474,7 +475,11 @@ func beginOperationCommandDelivery(
 		return nil, false, err
 	}
 	if owner {
-		if err := sendToSession(ctx, session, message); err != nil {
+		send := sendToSession
+		if waitThroughWrite {
+			send = sendToSessionThroughWrite
+		}
+		if err := send(ctx, session, message); err != nil {
 			finishOperationCommand(session, commandID, state, nil, err)
 		}
 	}
@@ -495,7 +500,7 @@ func awaitOperationCommand(ctx context.Context, session *DroneSession, commandID
 }
 
 func deliverOperationCommandToSession(ctx context.Context, session *DroneSession, commandID string, message *agentv1.RelayStreamMessage, expected *agentv1.OperationContext) (*agentv1.OperationContextCommandAck, error) {
-	state, owner, err := beginOperationCommandDelivery(ctx, session, commandID, message, expected)
+	state, owner, err := beginOperationCommandDelivery(ctx, session, commandID, message, expected, false)
 	if err != nil {
 		return nil, err
 	}

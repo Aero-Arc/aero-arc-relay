@@ -512,3 +512,69 @@ func TestDeliverOperationCommandReturnsWhenSendOutlivesContext(t *testing.T) {
 	}
 	close(stream.sendBlock)
 }
+
+func TestSetOperationContextHoldsSessionLeaseUntilBlockedSendCompletes(t *testing.T) {
+	stream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	commandCtx, cancelCommand := context.WithCancel(context.Background())
+	commandResult := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(commandCtx, &relayv1.SetOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.SetOperationContextCommand{
+				CommandId: "context-replace",
+				Context: &agentv1.OperationContext{
+					FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 1,
+				},
+			},
+		})
+		commandResult <- err
+	}()
+	<-stream.sendStarted
+
+	replaced := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"})
+		replaced <- err
+	}()
+	select {
+	case err := <-replaced:
+		t.Fatalf("session replaced while old context send was blocked: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelCommand()
+	select {
+	case err := <-commandResult:
+		t.Fatalf("context caller returned before its started write completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case err := <-replaced:
+		t.Fatalf("context cancellation released lease before old send completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(stream.sendBlock)
+	<-stream.sentAckChan
+	if err := <-commandResult; status.Code(err) != codes.Canceled && status.Code(err) != codes.Aborted {
+		t.Fatalf("context caller error = %v, want Canceled or Aborted", err)
+	}
+	select {
+	case err := <-replaced:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session replacement did not resume after old context write completed")
+	}
+}
