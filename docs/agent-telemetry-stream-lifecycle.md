@@ -171,10 +171,14 @@ The delivery path:
 
 Waiting for the stream's send lock observes the control API context. If an
 already-started gRPC `Send` remains flow-controlled past the API deadline, the
-API request returns at its deadline while that send retains its binding's lock
-until gRPC completes. This preserves send serialization without allowing a
-wedged agent connection to accumulate blocked control handlers or prevent a
-replacement stream from attaching.
+Set/Clear API request and its session ownership lease remain held until that
+write returns, even after the deadline. Only then does the RPC observe context
+cancellation rather than waiting for the Agent ACK. This intentional
+through-write fence prevents registration from publishing a replacement while
+an operation-context mutation can still land on the old Agent stream. Aircraft
+commands use the same through-write session fence in their shared delivery task,
+but an individual caller may detach at its deadline and must treat that command
+outcome as uncertain while the started write finishes.
 
 Incoming operation-context ACKs are applied only when their command ID matches a
 pending request on the session captured by the receiving stream handler. The
