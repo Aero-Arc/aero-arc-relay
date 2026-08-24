@@ -10,6 +10,16 @@ registry:
     ca_file: ""
     server_name: ""
 
+# Mutating RelayControl RPCs remain disabled unless this mTLS boundary is
+# enabled. Agents may still connect without a client certificate; only control
+# callers must present a certificate issued by this CA with an allow-listed CN,
+# DNS SAN, or URI SAN.
+control_auth:
+  enabled: false
+  client_ca_file: "${AERO_ARC_CONTROL_CLIENT_CA_FILE}"
+  allowed_identities:
+    - "spiffe://aero-arc/api"
+
 telemetry:
   enabled: false
   backend: "influxdb3"

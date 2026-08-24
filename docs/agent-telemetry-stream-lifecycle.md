@@ -105,19 +105,19 @@ sending.
 
 ## 4. Delivering Control Commands
 
-`SetOperationContext` and `ClearOperationContext` currently return gRPC
-`Unimplemented`. The relay exposes the agent gateway and relay control service
-on one listener with server-authenticated TLS, so enabling mutation RPCs before
-the control plane has its own authenticated and authorized boundary would allow
-an arbitrary reachable client to target another agent.
+`SetOperationContext` and `ClearOperationContext` remain disabled by default.
+They are enabled only when `control_auth` supplies a client CA and an explicit
+workload-identity allow list. The shared TLS listener uses
+`VerifyClientCertIfGiven`: Agents continue to use their bearer credentials and
+do not need client certificates, while every mutating control caller must present
+a verified certificate whose common name, DNS SAN, or URI SAN is allow-listed.
+An unauthenticated caller is rejected before request validation, so it cannot
+probe Agent connectivity or command state.
 
-The internal command-delivery machinery remains implemented and tested as a
-highly experimental foundation. It is not yet a supported control interface.
-It may be enabled only after the control API is moved to a private listener
-protected by workload authentication and authorization and the operations panel
-has an intentional command workflow. Unlike a telemetry ACK, a control command
-is not a response to a message received on a particular stream. It should target
-whichever stream is currently active.
+Unlike a telemetry ACK, a control command is not a response to a message
+received on a particular stream. It targets the current admitted Agent session.
+If that session changes before the ACK is returned, the Relay reports `Aborted`;
+the caller can safely retry the durable command ID against the replacement.
 
 The delivery path:
 

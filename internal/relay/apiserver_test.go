@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,84 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestSetOperationContextRequiresAuthorizedControlCaller(t *testing.T) {
+	want := status.Error(codes.PermissionDenied, "denied")
+	relay := &Relay{controlAuthorizer: func(context.Context) error { return want }}
+	_, err := relay.SetOperationContext(context.Background(), &relayv1.SetOperationContextRequest{})
+	if !errors.Is(err, want) {
+		t.Fatalf("SetOperationContext() error = %v, want %v", err, want)
+	}
+}
+
+func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream:  &telemetryStreamBinding{stream: stream},
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	request := &relayv1.SetOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.SetOperationContextCommand{
+			CommandId: "command-1",
+			Context: &agentv1.OperationContext{
+				FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+			},
+		},
+	}
+	type result struct {
+		response *relayv1.SetOperationContextResponse
+		err      error
+	}
+	resultChannel := make(chan result, 1)
+	go func() {
+		response, err := relay.SetOperationContext(context.Background(), request)
+		resultChannel <- result{response: response, err: err}
+	}()
+	message := <-stream.sentAckChan
+	if message.GetSetOperationContext().GetContext().GetFlightId() != "flight-1" {
+		t.Fatalf("delivered command = %#v", message.GetSetOperationContext())
+	}
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "command-1",
+		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: &agentv1.OperationContext{
+			FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+		},
+	})
+	got := <-resultChannel
+	if got.err != nil {
+		t.Fatalf("SetOperationContext() error = %v", got.err)
+	}
+	if got.response.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_APPLIED {
+		t.Fatalf("SetOperationContext() response = %#v", got.response)
+	}
+}
+
+func TestOperationContextRequestValidation(t *testing.T) {
+	relay := &Relay{controlAuthorizer: func(context.Context) error { return nil }}
+	for name, call := range map[string]func() error{
+		"set": func() error {
+			_, err := relay.SetOperationContext(context.Background(), &relayv1.SetOperationContextRequest{AgentId: "agent-1"})
+			return err
+		},
+		"clear": func() error {
+			_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{AgentId: "agent-1"})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("operation-context validation error = %v, want InvalidArgument", err)
+			}
+		})
+	}
+}
 
 func TestOperationContextRPCsDisabledWithoutAuthenticatedControlPlane(t *testing.T) {
 	relay := &Relay{}

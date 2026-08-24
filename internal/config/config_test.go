@@ -37,6 +37,12 @@ agent_auth:
   tokens:
     "agent-1": "test-agent-token"
 
+control_auth:
+  enabled: true
+  client_ca_file: "/run/secrets/control-ca.pem"
+  allowed_identities:
+    - "spiffe://aero-arc/api"
+
 telemetry:
   enabled: true
   backend: "influxdb3"
@@ -122,6 +128,9 @@ logging:
 	}
 	if cfg.AgentAuth.Tokens["agent-1"] != "test-agent-token" {
 		t.Errorf("unexpected agent authentication config: %#v", cfg.AgentAuth)
+	}
+	if !cfg.ControlAuth.Enabled || cfg.ControlAuth.ClientCAFile != "/run/secrets/control-ca.pem" || len(cfg.ControlAuth.AllowedIdentities) != 1 {
+		t.Errorf("unexpected control authentication config: %#v", cfg.ControlAuth)
 	}
 	if !cfg.Telemetry.Enabled {
 		t.Error("Telemetry should be enabled")
@@ -291,6 +300,31 @@ func TestRegistryConfigRequiresValidAgentCredentials(t *testing.T) {
 			config.AgentAuth.Tokens = tokens
 			if err := config.validateRegistry(); err == nil {
 				t.Fatal("expected invalid Agent credential configuration")
+			}
+		})
+	}
+}
+
+func TestControlAuthRequiresCAAndAllowedIdentity(t *testing.T) {
+	valid := Config{ControlAuth: ControlAuthConfig{
+		Enabled: true, ClientCAFile: "/run/secrets/control-ca.pem", AllowedIdentities: []string{"spiffe://aero-arc/api"},
+	}}
+	if err := valid.validateControlAuth(); err != nil {
+		t.Fatalf("valid control authentication rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"missing CA":          func(c *Config) { c.ControlAuth.ClientCAFile = "" },
+		"missing identities":  func(c *Config) { c.ControlAuth.AllowedIdentities = nil },
+		"padded identity":     func(c *Config) { c.ControlAuth.AllowedIdentities = []string{" api "} },
+		"duplicate identity":  func(c *Config) { c.ControlAuth.AllowedIdentities = []string{"api", "api"} },
+		"padded CA file path": func(c *Config) { c.ControlAuth.ClientCAFile = " ca.pem " },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			candidate.ControlAuth.AllowedIdentities = append([]string(nil), valid.ControlAuth.AllowedIdentities...)
+			mutate(&candidate)
+			if err := candidate.validateControlAuth(); err == nil {
+				t.Fatal("expected invalid control authentication configuration")
 			}
 		})
 	}

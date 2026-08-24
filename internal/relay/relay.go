@@ -59,6 +59,7 @@ type Relay struct {
 	registryReporter   agentRegistryReporter
 	registryLifecycle  registryLifecycle
 	agentAuthenticator func(context.Context, string) error
+	controlAuthorizer  controlPlaneAuthorizer
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -170,6 +171,9 @@ var (
 //   - relay: owns initialized outputs but is not yet serving.
 //   - error: reports authentication or output initialization failure.
 func New(cfg *config.Config) (*Relay, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("relay configuration is required")
+	}
 	authenticator, err := newAgentTokenAuthenticator(cfg.AgentAuth.Tokens)
 	if err != nil {
 		return nil, err
@@ -177,11 +181,16 @@ func New(cfg *config.Config) (*Relay, error) {
 	if cfg.Registry.Enabled && authenticator == nil {
 		return nil, fmt.Errorf("agent authentication is required when registry reporting is enabled")
 	}
+	controlAuthorizer, err := newControlPlaneAuthorizer(cfg.ControlAuth)
+	if err != nil {
+		return nil, fmt.Errorf("configure control-plane authentication: %w", err)
+	}
 	relay := &Relay{
 		config:             cfg,
 		sinks:              make([]sinks.Sink, 0),
 		grpcSessions:       make(map[string]*DroneSession),
 		agentAuthenticator: authenticator,
+		controlAuthorizer:  controlAuthorizer,
 	}
 
 	if err := relay.initializeOutputs(); err != nil {
@@ -220,7 +229,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	var creds credentials.TransportCredentials
 	var homeDir string
 
-	creds, err = credentials.NewServerTLSFromFile(r.config.TLSCertPath, r.config.TLSKeyPath)
+	creds, err = serverTransportCredentials(r.config, r.config.TLSCertPath, r.config.TLSKeyPath)
 	if r.config.Debug {
 		homeDir, err = os.UserHomeDir()
 		if err != nil {
@@ -230,7 +239,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
 		keyPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSKeyPath)
-		creds, err = credentials.NewServerTLSFromFile(certPath, keyPath)
+		creds, err = serverTransportCredentials(r.config, certPath, keyPath)
 	}
 
 	if err != nil {

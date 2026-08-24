@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const operationContextControlDisabled = "operation-context control is experimental and disabled until the relay control plane is authenticated and authorized"
+const operationContextControlDisabled = "operation-context control is disabled until mTLS control authentication is configured"
 
 // ListActiveDrones snapshots the Relay's currently admitted Agent sessions as
 // drone-status records.
@@ -79,8 +79,36 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 // Returns:
 //   - response: is always nil while the RPC is disabled.
 //   - error: is a gRPC Unimplemented status explaining the security gate.
-func (*Relay) SetOperationContext(context.Context, *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
-	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
+func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
+	if err := s.authorizeControlMutation(ctx); err != nil {
+		return nil, err
+	}
+	agentID := strings.TrimSpace(req.GetAgentId())
+	command := req.GetCommand()
+	if agentID == "" {
+		return nil, status.Error(codes.InvalidArgument, "agent ID is required")
+	}
+	if command == nil || strings.TrimSpace(command.GetCommandId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "operation-context command ID is required")
+	}
+	operation := command.GetContext()
+	if operation == nil || strings.TrimSpace(operation.GetFlightId()) == "" || strings.TrimSpace(operation.GetIntentId()) == "" || operation.GetIntentVersion() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "flight ID, intent ID, and positive intent version are required")
+	}
+	session, err := s.currentControlSession(agentID)
+	if err != nil {
+		return nil, err
+	}
+	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
+		Payload: &agentv1.RelayStreamMessage_SetOperationContext{SetOperationContext: command},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !s.sessionIsCurrent(agentID, session) {
+		return nil, status.Error(codes.Aborted, "agent session changed while applying operation context")
+	}
+	return &pb.SetOperationContextResponse{Result: ack}, nil
 }
 
 // ClearOperationContext rejects operation-context mutation while the Relay
@@ -93,8 +121,61 @@ func (*Relay) SetOperationContext(context.Context, *pb.SetOperationContextReques
 // Returns:
 //   - response: is always nil while the RPC is disabled.
 //   - error: is a gRPC Unimplemented status explaining the security gate.
-func (*Relay) ClearOperationContext(context.Context, *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
-	return nil, status.Error(codes.Unimplemented, operationContextControlDisabled)
+func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
+	if err := s.authorizeControlMutation(ctx); err != nil {
+		return nil, err
+	}
+	agentID := strings.TrimSpace(req.GetAgentId())
+	command := req.GetCommand()
+	if agentID == "" {
+		return nil, status.Error(codes.InvalidArgument, "agent ID is required")
+	}
+	if command == nil || strings.TrimSpace(command.GetCommandId()) == "" || strings.TrimSpace(command.GetFlightId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "operation-context command ID and flight ID are required")
+	}
+	session, err := s.currentControlSession(agentID)
+	if err != nil {
+		return nil, err
+	}
+	ack, err := deliverOperationCommandToSession(ctx, session, command.GetCommandId(), &agentv1.RelayStreamMessage{
+		Payload: &agentv1.RelayStreamMessage_ClearOperationContext{ClearOperationContext: command},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !s.sessionIsCurrent(agentID, session) {
+		return nil, status.Error(codes.Aborted, "agent session changed while clearing operation context")
+	}
+	return &pb.ClearOperationContextResponse{Result: ack}, nil
+}
+
+func (s *Relay) authorizeControlMutation(ctx context.Context) error {
+	if s.controlAuthorizer == nil {
+		return status.Error(codes.Unimplemented, operationContextControlDisabled)
+	}
+	return s.controlAuthorizer(ctx)
+}
+
+func (s *Relay) currentControlSession(agentID string) (*DroneSession, error) {
+	s.sessionsMu.RLock()
+	session := s.grpcSessions[agentID]
+	s.sessionsMu.RUnlock()
+	if session == nil {
+		return nil, status.Error(codes.NotFound, "agent is not registered")
+	}
+	session.ownershipMu.RLock()
+	defer session.ownershipMu.RUnlock()
+	if !s.sessionIsCurrent(agentID, session) || session.retired {
+		return nil, status.Error(codes.Aborted, "agent session changed before operation-context delivery")
+	}
+	return session, nil
+}
+
+func (s *Relay) sessionIsCurrent(agentID string, expected *DroneSession) bool {
+	s.sessionsMu.RLock()
+	current := s.grpcSessions[agentID]
+	s.sessionsMu.RUnlock()
+	return current == expected
 }
 
 // deliverOperationCommandToSession is experimental command-delivery machinery.

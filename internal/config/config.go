@@ -24,16 +24,26 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Sinks       SinksConfig     `yaml:"sinks"`
-	Registry    RegistryConfig  `yaml:"registry"`
-	AgentAuth   AgentAuthConfig `yaml:"agent_auth"`
-	Telemetry   TelemetryConfig `yaml:"telemetry"`
-	Logging     LoggingConfig   `yaml:"logging"`
+	Sinks       SinksConfig       `yaml:"sinks"`
+	Registry    RegistryConfig    `yaml:"registry"`
+	AgentAuth   AgentAuthConfig   `yaml:"agent_auth"`
+	ControlAuth ControlAuthConfig `yaml:"control_auth"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	Logging     LoggingConfig     `yaml:"logging"`
 	Debug       bool
 	TLSCertPath string
 	TLSKeyPath  string
 	GrpcPort    int
 	BufferSize  int
+}
+
+// ControlAuthConfig protects the mutating Relay control RPCs with a client
+// certificate. The shared listener continues to accept Agent clients without a
+// certificate; only control mutations require a verified, allow-listed identity.
+type ControlAuthConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	ClientCAFile      string   `yaml:"client_ca_file"`
+	AllowedIdentities []string `yaml:"allowed_identities"`
 }
 
 // AgentAuthConfig contains bootstrap credentials for authenticating an agent
@@ -304,8 +314,34 @@ func Load(path string) (*Config, error) {
 	if err := config.validateRegistry(); err != nil {
 		return nil, err
 	}
+	if err := config.validateControlAuth(); err != nil {
+		return nil, err
+	}
 
 	return &config, nil
+}
+
+func (c *Config) validateControlAuth() error {
+	if !c.ControlAuth.Enabled {
+		return nil
+	}
+	if c.ControlAuth.ClientCAFile == "" || c.ControlAuth.ClientCAFile != strings.TrimSpace(c.ControlAuth.ClientCAFile) {
+		return fmt.Errorf("control_auth.client_ca_file is required without surrounding whitespace when control authentication is enabled")
+	}
+	if len(c.ControlAuth.AllowedIdentities) == 0 {
+		return fmt.Errorf("control_auth.allowed_identities is required when control authentication is enabled")
+	}
+	seen := make(map[string]struct{}, len(c.ControlAuth.AllowedIdentities))
+	for _, identity := range c.ControlAuth.AllowedIdentities {
+		if identity == "" || identity != strings.TrimSpace(identity) {
+			return fmt.Errorf("control_auth.allowed_identities contains an empty or untrimmed identity")
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			return fmt.Errorf("control_auth.allowed_identities contains duplicate identity %q", identity)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
 }
 
 func (c *Config) validateRegistry() error {
