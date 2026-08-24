@@ -139,7 +139,28 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	}, nil
 }
 
-// TelemetryStream handles bidirectional telemetry streaming.
+// TelemetryStream authenticates and binds one Agent's bidirectional stream,
+// admits durable telemetry in receive order, and correlates control evidence
+// with commands written on that exact active binding.
+//
+// Parameters:
+//   - stream: supplies the authenticated Agent/session metadata, inbound WAL
+//     frames and command evidence, and serialized outbound telemetry
+//     acknowledgements and control commands.
+//
+// Returns:
+//   - error: reports missing or invalid identity/session metadata,
+//     authentication failure, stale session ownership, Registry publication
+//     failure, stream receive/send failure, or context cancellation. Telemetry
+//     admission failures are returned to the Agent as retryable or permanent
+//     per-frame acknowledgements instead of terminating the stream.
+//
+// A successfully published binding owns Registry liveness until cleanup. A
+// replacement aborts old-binding command waiters and fences uncertain operation
+// context before it can admit telemetry. Operation-context ACKs and aircraft
+// results are handled ahead of telemetry routing and remain bound to the stream
+// that received them. Cleanup removes only this binding, so a superseding stream
+// remains active.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
 	ctx := stream.Context()
 
@@ -181,10 +202,6 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	}
 
 	defer r.deleteStream(agentID, streamSession, streamBinding)
-
-	// TODO: In a real implementation, you might want to start a goroutine to send ACKs back
-	// independently of receiving frames, but for strict request-response style streaming
-	// (or simple acking), a simple loop works.
 
 	for {
 		select {
@@ -296,7 +313,8 @@ func newSessionID() (string, error) {
 }
 
 func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
-	return sendToSessionWithWritePolicy(ctx, session, message, false)
+	_, err := sendToSessionWithWritePolicy(ctx, session, message, false)
+	return err
 }
 
 // sendToSessionThroughWrite keeps its caller blocked after a stream Send has
@@ -306,23 +324,27 @@ func sendToSession(ctx context.Context, session *DroneSession, message *agentv1.
 func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
 	session.controlStreamMu.RLock()
 	defer session.controlStreamMu.RUnlock()
-	return sendToSessionWithWritePolicy(ctx, session, message, true)
+	_, err := sendToSessionWithWritePolicy(ctx, session, message, true)
+	return err
 }
 
-func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) error {
+// sendToSessionWithWritePolicy reports whether the active stream's Send method
+// was invoked. Once invoked, either a nil or error result is delivery-uncertain:
+// the peer may have applied the message before Relay observed the outcome.
+func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) (bool, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return status.FromContextError(err).Err()
+			return false, status.FromContextError(err).Err()
 		}
 		session.sessionMu.RLock()
 		binding := session.stream
 		session.sessionMu.RUnlock()
 		if binding == nil {
-			return status.Error(codes.Unavailable, "agent stream is not connected")
+			return false, status.Error(codes.Unavailable, "agent stream is not connected")
 		}
 
 		if err := binding.sendMu.Lock(ctx); err != nil {
-			return status.FromContextError(err).Err()
+			return false, status.FromContextError(err).Err()
 		}
 		session.sessionMu.RLock()
 		isCurrent := session.stream == binding
@@ -333,12 +355,12 @@ func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, me
 		}
 		if err := ctx.Err(); err != nil {
 			binding.sendMu.Unlock()
-			return status.FromContextError(err).Err()
+			return false, status.FromContextError(err).Err()
 		}
 		if waitThroughWrite {
 			err := binding.stream.Send(message)
 			binding.sendMu.Unlock()
-			return err
+			return true, err
 		}
 		sent := make(chan error, 1)
 		go func() {
@@ -348,13 +370,13 @@ func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, me
 		}()
 		select {
 		case err := <-sent:
-			return err
+			return true, err
 		case <-ctx.Done():
 			select {
 			case err := <-sent:
-				return err
+				return true, err
 			default:
-				return status.FromContextError(ctx.Err()).Err()
+				return true, status.FromContextError(ctx.Err()).Err()
 			}
 		}
 	}

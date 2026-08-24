@@ -146,6 +146,46 @@ func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
 	}
 }
 
+func TestSetOperationContextSendErrorFencesTelemetry(t *testing.T) {
+	sendErr := errors.New("stream outcome unknown")
+	stream := &mockTelemetryStream{
+		ctx:         context.Background(),
+		sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendErr:     sendErr,
+	}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	_, err := relay.SetOperationContext(context.Background(), &relayv1.SetOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.SetOperationContextCommand{
+			CommandId: "uncertain-send",
+			Context: &agentv1.OperationContext{
+				FlightId: "flight-2", IntentId: "intent-2", IntentVersion: 1,
+			},
+		},
+	})
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("SetOperationContext() error = %v, want %v", err, sendErr)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		if message.GetSetOperationContext().GetCommandId() != "uncertain-send" {
+			t.Fatalf("delivered command = %#v", message.GetSetOperationContext())
+		}
+	default:
+		t.Fatal("stream error occurred before the operation command was attempted")
+	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("uncertain operation-context send did not fence telemetry")
+	}
+}
+
 func TestSetOperationContextRejectsMismatchedAppliedContext(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
 	session := &DroneSession{

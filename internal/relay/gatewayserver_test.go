@@ -871,6 +871,7 @@ type mockTelemetryStream struct {
 	errChan     chan error
 	sendStarted chan struct{}
 	sendBlock   chan struct{}
+	sendErr     error
 }
 
 func (m *mockTelemetryStream) Context() context.Context {
@@ -907,7 +908,7 @@ func (m *mockTelemetryStream) Send(ack *agentv1.RelayStreamMessage) error {
 	}
 	select {
 	case m.sentAckChan <- ack:
-		return nil
+		return m.sendErr
 	case <-m.ctx.Done():
 		return m.ctx.Err()
 	}

@@ -410,7 +410,7 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	go func() {
 		defer session.ownershipMu.RUnlock()
 		defer session.controlStreamMu.RUnlock()
-		if err := sendToSessionWithWritePolicy(deliveryCtx, session, &agentv1.RelayStreamMessage{
+		if _, err := sendToSessionWithWritePolicy(deliveryCtx, session, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_AircraftCommand{AircraftCommand: command},
 		}, true); err != nil {
 			finishAircraftCommand(session, command.GetCommandId(), state, nil, err)
@@ -524,16 +524,15 @@ func beginOperationCommandDelivery(
 		return nil, false, err
 	}
 	if owner {
-		send := sendToSession
-		if waitThroughWrite {
-			send = func(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage) error {
-				return sendToSessionWithWritePolicy(ctx, session, message, true)
-			}
-		}
-		if err := send(ctx, session, message); err != nil {
-			finishOperationCommand(session, commandID, state, nil, err, false)
-		} else {
+		sendAttempted, sendErr := sendToSessionWithWritePolicy(ctx, session, message, waitThroughWrite)
+		if sendAttempted {
+			// Both successful Send and Send errors are outcome-uncertain until the
+			// Agent ACK is correlated: the peer may have durably applied the
+			// mutation before Relay observed either result.
 			markOperationCommandDelivered(session, commandID, state)
+		}
+		if sendErr != nil {
+			finishOperationCommand(session, commandID, state, nil, sendErr, sendAttempted)
 		}
 	}
 	return state, owner, nil
