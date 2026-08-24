@@ -298,16 +298,14 @@ func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCom
 	var result *agentv1.AircraftCommandResult
 	select {
 	case <-state.done:
-		result, err = aircraftCommandResult(session, state)
+		result, err = takeAircraftCommandResult(session, state)
 		if err != nil {
 			relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 			return nil, err
 		}
 	case <-ctx.Done():
 		requestErr := status.FromContextError(ctx.Err()).Err()
-		if owner {
-			finishAircraftCommand(session, command.GetCommandId(), state, nil, requestErr)
-		}
+		cancelAircraftCommandWaiter(session, command.GetCommandId(), state, requestErr)
 		relayAircraftCommandsTotal.WithLabelValues(command.GetType().String(), "delivery_failed").Inc()
 		return nil, requestErr
 	}
@@ -349,6 +347,7 @@ func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, co
 			session.pendingMu.Unlock()
 			return nil, false, status.Error(codes.AlreadyExists, "aircraft command ID was already used with a different payload")
 		}
+		existing.waiters++
 		session.pendingMu.Unlock()
 		return existing, false, nil
 	}
@@ -356,7 +355,7 @@ func beginAircraftCommandDelivery(ctx context.Context, session *DroneSession, co
 		session.pendingMu.Unlock()
 		return nil, false, status.Error(codes.ResourceExhausted, "aircraft command retention is full")
 	}
-	state := &aircraftCommandState{fingerprint: fingerprint, done: make(chan struct{})}
+	state := &aircraftCommandState{fingerprint: fingerprint, done: make(chan struct{}), waiters: 1}
 	session.aircraftCommands[command.GetCommandId()] = state
 	session.pendingMu.Unlock()
 	if err := sendToSession(ctx, session, &agentv1.RelayStreamMessage{
@@ -407,13 +406,34 @@ func finishAircraftCommand(session *DroneSession, commandID string, state *aircr
 	close(state.done)
 }
 
-func aircraftCommandResult(session *DroneSession, state *aircraftCommandState) (*agentv1.AircraftCommandResult, error) {
+func takeAircraftCommandResult(session *DroneSession, state *aircraftCommandState) (*agentv1.AircraftCommandResult, error) {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
+	if state.waiters > 0 {
+		state.waiters--
+	}
 	if state.result == nil {
 		return nil, state.err
 	}
 	return proto.Clone(state.result).(*agentv1.AircraftCommandResult), state.err
+}
+
+func cancelAircraftCommandWaiter(session *DroneSession, commandID string, state *aircraftCommandState, err error) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if session.aircraftCommands[commandID] != state {
+		return
+	}
+	if state.waiters > 0 {
+		state.waiters--
+	}
+	if state.waiters != 0 || state.completed {
+		return
+	}
+	state.err = err
+	state.completed = true
+	state.completedAt = time.Now()
+	close(state.done)
 }
 
 // deliverOperationCommandToSession retains command fingerprints and terminal

@@ -203,9 +203,11 @@ If the agent registers again instead of only replacing its stream, the new map
 entry has a different `DroneSession` pointer and session ID. The old handler's
 cleanup is rejected by the session pointer check. Frames from the old registration
 also fail the active-session-identity validation and receive their error ACK on
-the old stream. Delayed operation-command ACKs received by the old handler remain
-bound to the old session and cannot update the replacement session's context or
-pending commands.
+the old stream. Relay atomically copies the last API-authoritative acknowledged
+operation context into the replacement before publishing it, so reconnecting
+telemetry keeps its flight and intent attribution. Delayed operation-command
+ACKs received by the old handler remain bound to the old session and cannot
+update the replacement session's context or pending commands.
 
 ## 6. Disconnect and Cleanup
 

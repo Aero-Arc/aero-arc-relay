@@ -118,6 +118,7 @@ type operationCommandState struct {
 type aircraftCommandState struct {
 	fingerprint string
 	done        chan struct{}
+	waiters     int
 	result      *agentv1.AircraftCommandResult
 	err         error
 	completed   bool

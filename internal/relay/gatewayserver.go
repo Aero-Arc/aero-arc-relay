@@ -84,7 +84,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
-			previous.abortPendingCommands()
+			previous.restoreContextIntoAndAbortPending(newSession)
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
@@ -376,7 +376,21 @@ func (session *DroneSession) handleAircraftCommandResult(result *agentv1.Aircraf
 func (session *DroneSession) abortPendingCommands() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
-	now := time.Now()
+	session.abortPendingCommandsLocked(time.Now())
+}
+
+func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *DroneSession) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	session.sessionMu.RLock()
+	replacement.FlightID = session.FlightID
+	replacement.IntentID = session.IntentID
+	replacement.IntentVersion = session.IntentVersion
+	session.sessionMu.RUnlock()
+	session.abortPendingCommandsLocked(time.Now())
+}
+
+func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
 	for commandID, state := range session.operationCommands {
 		if state.completed {
 			continue

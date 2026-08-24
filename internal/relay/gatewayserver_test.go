@@ -1479,6 +1479,29 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	}
 }
 
+func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	old := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		pending: make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions["agent-1"] = old
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions["agent-1"]
+	relay.sessionsMu.RUnlock()
+	if replacement == old {
+		t.Fatal("registration did not replace the old session")
+	}
+	if got := droneStatus(replacement); got.GetFlightId() != "flight-1" || got.GetIntentId() != "intent-1" || got.GetIntentVersion() != 7 {
+		t.Fatalf("replacement context = %#v, want flight-1/intent-1/7", got)
+	}
+}
+
 func TestOperationContextCommandACKRequiresPendingCommand(t *testing.T) {
 	session := &DroneSession{
 		FlightID:      "existing-flight",

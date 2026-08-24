@@ -137,6 +137,58 @@ func TestSendAircraftCommandDeadlineCleansPendingCorrelation(t *testing.T) {
 	}
 }
 
+func TestAircraftCommandCallerCancellationDoesNotFinalizeSharedCommand(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 2)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	request := &relayv1.SendAircraftCommandRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.AircraftCommand{
+			CommandId: "command-shared", AircraftId: "aircraft-1",
+			Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+		},
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(firstCtx, request)
+		first <- err
+	}()
+	<-stream.sentAckChan
+	second := make(chan error, 1)
+	go func() {
+		_, err := relay.SendAircraftCommand(context.Background(), request)
+		second <- err
+	}()
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("shared caller redelivered command: %#v", duplicate)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelFirst()
+	if err := <-first; status.Code(err) != codes.Canceled {
+		t.Fatalf("first caller error = %v, want Canceled", err)
+	}
+	select {
+	case err := <-second:
+		t.Fatalf("first cancellation finalized shared command: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	session.handleAircraftCommandResult(&agentv1.AircraftCommandResult{
+		CommandId: "command-shared", AircraftId: "aircraft-1",
+		Status: agentv1.AircraftCommandResult_STATUS_ACCEPTED,
+	})
+	if err := <-second; err != nil {
+		t.Fatalf("second caller error = %v", err)
+	}
+}
+
 func TestSendAircraftCommandDoesNotBlockSessionRetirementWhileAwaitingResult(t *testing.T) {
 	stream := &mockTelemetryStream{
 		ctx:         context.Background(),
