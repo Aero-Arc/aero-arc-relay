@@ -752,3 +752,52 @@ func TestSetOperationContextHoldsSessionLeaseUntilBlockedSendCompletes(t *testin
 		t.Fatal("session replacement did not resume after old context write completed")
 	}
 }
+
+func TestSetOperationContextTimeoutAfterDeliveryRefencesTelemetry(t *testing.T) {
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1",
+		stream: &telemetryStreamBinding{stream: stream},
+	}
+	relay := &Relay{
+		controlAuthorizer: func(context.Context) error { return nil },
+		grpcSessions:      map[string]*DroneSession{"agent-1": session},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := relay.SetOperationContext(ctx, &relayv1.SetOperationContextRequest{
+			AgentId: "agent-1",
+			Command: &agentv1.SetOperationContextCommand{
+				CommandId: "delivered-timeout",
+				Context: &agentv1.OperationContext{
+					FlightId: "flight-new", IntentId: "intent-new", IntentVersion: 2,
+				},
+			},
+		})
+		result <- err
+	}()
+	select {
+	case <-stream.sentAckChan:
+	case <-time.After(time.Second):
+		t.Fatal("operation-context mutation was not delivered")
+	}
+	if err := <-result; status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("SetOperationContext() error = %v, want DeadlineExceeded", err)
+	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("delivered mutation timeout did not re-fence telemetry")
+	}
+
+	// Its uncorrelated late ACK cannot reopen admission; only API replay can.
+	session.handleOperationContextCommandAck(&agentv1.OperationContextCommandAck{
+		CommandId: "delivered-timeout", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		ActiveContext: &agentv1.OperationContext{
+			FlightId: "flight-new", IntentId: "intent-new", IntentVersion: 2,
+		},
+	})
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("late ACK reopened telemetry after its correlation was retired")
+	}
+}

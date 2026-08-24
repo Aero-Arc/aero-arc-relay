@@ -527,7 +527,9 @@ func beginOperationCommandDelivery(
 			}
 		}
 		if err := send(ctx, session, message); err != nil {
-			finishOperationCommand(session, commandID, state, nil, err)
+			finishOperationCommand(session, commandID, state, nil, err, false)
+		} else {
+			markOperationCommandDelivered(session, commandID, state)
 		}
 	}
 	return state, owner, nil
@@ -540,7 +542,7 @@ func awaitOperationCommand(ctx context.Context, session *DroneSession, commandID
 	case <-ctx.Done():
 		requestErr := status.FromContextError(ctx.Err()).Err()
 		if owner {
-			finishOperationCommand(session, commandID, state, nil, requestErr)
+			finishOperationCommand(session, commandID, state, nil, requestErr, true)
 		}
 		return nil, requestErr
 	}
@@ -648,11 +650,20 @@ func finishOperationCommand(
 	state *operationCommandState,
 	ack *agentv1.OperationContextCommandAck,
 	err error,
+	fenceIfDelivered bool,
 ) {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	if session.operationCommands[commandID] != state || state.completed {
 		return
+	}
+	if fenceIfDelivered && state.delivered {
+		// The Agent may have durably applied this mutation before the caller's
+		// deadline elapsed. Its now-uncorrelated ACK cannot safely update Relay's
+		// attribution, so telemetry must wait for API reconciliation.
+		session.sessionMu.Lock()
+		session.operationContextUnreconciled = true
+		session.sessionMu.Unlock()
 	}
 	delete(session.pending, commandID)
 	state.ack = cloneOperationAck(ack)
@@ -660,6 +671,14 @@ func finishOperationCommand(
 	state.completed = true
 	state.completedAt = time.Now()
 	close(state.done)
+}
+
+func markOperationCommandDelivered(session *DroneSession, commandID string, state *operationCommandState) {
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if session.operationCommands[commandID] == state && !state.completed {
+		state.delivered = true
+	}
 }
 
 func operationCommandResult(session *DroneSession, state *operationCommandState) (*agentv1.OperationContextCommandAck, error) {

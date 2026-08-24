@@ -124,6 +124,7 @@ type operationCommandState struct {
 	done        chan struct{}
 	ack         *agentv1.OperationContextCommandAck
 	err         error
+	delivered   bool
 	completed   bool
 	completedAt time.Time
 }
