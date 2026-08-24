@@ -143,6 +143,23 @@ func TestClearOperationContextAllowsAuthoritativeEmptyReconciliation(t *testing.
 		controlAuthorizer: func(context.Context) error { return nil },
 		grpcSessions:      map[string]*DroneSession{"agent-1": session},
 	}
+	session.operationCommands = map[string]*operationCommandState{
+		"conflicting-id": {fingerprint: "different-payload"},
+	}
+	_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{
+		AgentId: "agent-1",
+		Command: &agentv1.ClearOperationContextCommand{CommandId: "conflicting-id"},
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("conflicting empty reconciliation error = %v, want AlreadyExists", err)
+	}
+	session.sessionMu.RLock()
+	poisonedReservation := session.emptyContextCommandID
+	session.sessionMu.RUnlock()
+	if poisonedReservation != "" {
+		t.Fatalf("failed empty reconciliation retained command ID %q", poisonedReservation)
+	}
+
 	result := make(chan error, 1)
 	go func() {
 		_, err := relay.ClearOperationContext(context.Background(), &relayv1.ClearOperationContextRequest{

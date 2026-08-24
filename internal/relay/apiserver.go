@@ -180,7 +180,11 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}
 	defer release()
 	flightID := command.GetFlightId()
-	if strings.TrimSpace(flightID) == "" && (flightID != "" || !session.reserveEmptyContextReconciliation(command.GetCommandId())) {
+	if strings.TrimSpace(flightID) == "" && flightID != "" {
+		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
+	}
+	emptyReconciliation := flightID == ""
+	if emptyReconciliation && !session.reserveEmptyContextReconciliation(command.GetCommandId()) {
 		return nil, status.Error(codes.InvalidArgument, "flight ID may be empty only while reconciling a fresh Relay session")
 	}
 	session.ownershipMu.RLock()
@@ -193,6 +197,9 @@ func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperatio
 	}, expectedContextAfterClear(session, command.GetFlightId()), true)
 	session.ownershipMu.RUnlock()
 	if err != nil {
+		if emptyReconciliation {
+			session.releaseEmptyContextReconciliation(command.GetCommandId())
+		}
 		return nil, err
 	}
 	ack, err := awaitOperationCommand(ctx, session, command.GetCommandId(), state, owner)
@@ -240,7 +247,10 @@ func (s *Relay) sessionIsCurrent(agentID string, expected *DroneSession) bool {
 // or replacement session.
 //
 // Parameters:
-//   - ctx: bounds delivery and the wait for the Agent/autopilot result.
+//   - ctx: bounds waiting to start delivery and waiting for the
+//     Agent/autopilot result. Once stream Send starts, shared command/session
+//     ownership continues through that write, so delivery may complete after
+//     ctx expires and the caller must treat the outcome as uncertain.
 //   - req: identifies the Agent route and carries the aircraft command envelope.
 //
 // Returns:

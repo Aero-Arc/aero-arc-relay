@@ -441,6 +441,14 @@ func (session *DroneSession) reserveEmptyContextReconciliation(commandID string)
 	return true
 }
 
+func (session *DroneSession) releaseEmptyContextReconciliation(commandID string) {
+	session.sessionMu.Lock()
+	defer session.sessionMu.Unlock()
+	if session.emptyContextCommandID == commandID && session.operationContextUnreconciled {
+		session.emptyContextCommandID = ""
+	}
+}
+
 func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
 	for commandID, state := range session.operationCommands {
 		if state.completed {
