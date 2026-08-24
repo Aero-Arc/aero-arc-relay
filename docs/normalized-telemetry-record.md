@@ -141,15 +141,17 @@ new Relay create two InfluxDB points. A future schema version may use the WAL
 generation ID in the point identity only after a coordinated drain of in-flight
 version 1 entries.
 
-`wal_id` is the Agent WAL generation identity. It is optional in normalized
-schema version 1 so historical records and points written by old Relays during
-the staged rollout remain valid. When present, it must be a valid, non-nil UUID
-persisted by the Agent's WAL database; it must not be derived from a process,
-Relay session, SQLite row ID, or MAVLink packet. Upgraded Relay transport
-admission requires it from upgraded Agents, but consumers of version 1 records
-must accept its absence. Relays canonicalize accepted values to the lowercase,
-hyphenated UUID representation before routing or persistence so equivalent text
-representations cannot split cursor checkpoints.
+`wal_id` is the Agent WAL append-generation identity. It is optional in
+normalized schema version 1 so historical records and points written by old
+Relays during the staged rollout remain valid. When present, it must be a valid,
+non-nil UUID stamped into the frame before its first durable write. A successful
+WAL open rotates the generation for new capture, while persisted frames retain
+their original generation on retry; the value must not be derived from a
+process, Relay session, SQLite row ID, or MAVLink packet. Upgraded Relay
+transport admission requires it from upgraded Agents, but consumers of version
+1 records must accept its absence. Relays canonicalize accepted values to the
+lowercase, hyphenated UUID representation before routing or persistence so
+equivalent text representations cannot split cursor checkpoints.
 
 `sequence` is the agent WAL sequence carried by the frame. It is required and
 must not be replaced with the MAVLink packet sequence.

@@ -57,8 +57,10 @@ unknown field.
 
 ### WAL Generation Identity Rollout
 
-Telemetry frames now carry the Agent WAL database's generation UUID. Roll out
-this additive contract in this order:
+Telemetry frames now carry the Agent WAL append-generation UUID. A successful
+Agent WAL open rotates the generation for newly captured frames, while frames
+already persisted keep the generation they received before their first durable
+write. Roll out this additive contract in this order:
 
 1. Merge and publish the Protos revision containing `TelemetryFrame.wal_id`.
 2. Deploy Agents that persist and send the WAL generation UUID, while the Relay

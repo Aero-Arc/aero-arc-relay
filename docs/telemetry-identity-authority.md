@@ -84,6 +84,21 @@ identity must not override the server-resolved operator or aircraft identity.
 Flight and intent context may be added from an authoritative assignment, but
 must never be guessed from MAVLink fields.
 
+## Telemetry cursor and point identity
+
+The Agent owns the durable telemetry cursor. Its WAL rotates a fresh `wal_id`
+append generation on every successful open and stamps it into new frames before
+their first durable write. `seq` is monotonic only within that generation, so
+the transport cursor is `(wal_id, seq)`. Persisted frames retain the same pair
+through retry, reconnect, spool recovery, and process restart.
+
+The Relay separately owns the normalized point-identity contract. Schema
+version 1 keeps its deployed `frame_id` formula based on `agent_id`, the durable
+Agent capture timestamp, and the WAL sequence. `wal_id` is stored alongside it
+for cursor inspection but does not change version 1 point identity during a
+mixed rollout. Introducing a WAL-based `frame_id` requires a new schema version
+and a coordinated drain of in-flight version 1 retries.
+
 ## Unassigned agents
 
 A supported MAVLink message from an authenticated but unassigned agent is
