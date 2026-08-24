@@ -212,7 +212,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			ack.Error = "telemetry frame WAL generation ID is invalid"
 		} else {
 			// Process the frame (e.g., forward to outputs).
-			frame.WalId = frameWALID
+			frame.WalId = frameWALUUID.String()
 			streamSession.sessionMu.Lock()
 			streamSession.LastHeartbeat = time.Now().UTC()
 			streamSession.sessionMu.Unlock()

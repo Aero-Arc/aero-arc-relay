@@ -69,7 +69,8 @@ this additive contract in this order:
 An upgraded Relay validates the non-nil WAL UUID at gateway admission before
 message filtering or dispatch to normalized, no-op, or generic outputs. Missing
 or malformed identities receive a permanent-error ACK; only a valid cursor can
-receive `STATUS_OK` and be discarded from the Agent WAL.
+receive `STATUS_OK` and be discarded from the Agent WAL. Accepted UUIDs are
+canonicalized to lowercase hyphenated text before routing and persistence.
 
 Schema version 1 deliberately retains its deployed capture-time-based
 `frame_id` formula throughout this rollout. If an upgraded Agent loses an ACK

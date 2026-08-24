@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,6 +346,13 @@ func TestRecordValidationAcceptsLegacyV1WithoutWALGenerationID(t *testing.T) {
 	if err := record.Validate(); err == nil {
 		t.Fatal("schema-v1 record with nil WAL generation ID passed validation")
 	}
+	record.Source.WALID = strings.ToUpper("0195f6a8-86d1-7be7-a104-3a814dc19f9e")
+	if err := record.Validate(); err != nil {
+		t.Fatalf("schema-v1 record with uppercase WAL generation ID failed validation: %v", err)
+	}
+	if record.Source.WALID != "0195f6a8-86d1-7be7-a104-3a814dc19f9e" {
+		t.Fatalf("validated WAL generation ID = %q, want canonical lowercase UUID", record.Source.WALID)
+	}
 }
 
 func testEnvelope(message string, messageID uint32, fields map[string]any) telemetry.TelemetryEnvelope {
@@ -390,6 +398,20 @@ func TestNormalizeRejectsInvalidWALGenerationID(t *testing.T) {
 		if _, err := normalizer.Normalize(envelope); err == nil {
 			t.Fatalf("Normalize() accepted WAL generation ID %q", walID)
 		}
+	}
+}
+
+func TestNormalizeCanonicalizesWALGenerationID(t *testing.T) {
+	envelope := testEnvelope("Heartbeat", 0, nil)
+	envelope.WALID = strings.ToUpper(envelope.WALID)
+	normalizer, _ := NewRegistry().Lookup(envelope.MsgName)
+
+	record, err := normalizer.Normalize(envelope)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if record.Source.WALID != "0195f6a8-86d1-7be7-a104-3a814dc19f9e" {
+		t.Fatalf("normalized WAL generation ID = %q, want canonical lowercase UUID", record.Source.WALID)
 	}
 }
 

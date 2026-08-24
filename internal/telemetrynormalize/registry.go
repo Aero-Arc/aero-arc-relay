@@ -108,6 +108,7 @@ func baseRecord(envelope telemetry.TelemetryEnvelope, canonicalName string) (Rec
 	if walUUID == uuid.Nil {
 		return Record{}, fmt.Errorf("WAL generation ID is invalid: nil UUID")
 	}
+	walID = walUUID.String()
 	return Record{
 		SchemaVersion: SchemaVersion,
 		Identity: IdentityContext{

@@ -2,6 +2,7 @@ package influx
 
 import (
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ func TestRecordToPoint(t *testing.T) {
 			OperatorID: "operator-1", AircraftID: "aircraft-1", AgentID: "agent-1",
 			RelayID: "relay-1", SessionID: "session-1", FlightID: "flight-1", IntentID: "intent-1",
 		},
-		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:42", WALID: "0195f6a8-86d1-7be7-a104-3a814dc19f9e", Sequence: 42, MessageID: 33, Dialect: "common"},
+		Source: telemetrynormalize.SourceContext{FrameID: "7:agent-1:1783857600000000000:42", WALID: "0195F6A8-86D1-7BE7-A104-3A814DC19F9E", Sequence: 42, MessageID: 33, Dialect: "common"},
 		Timing: telemetrynormalize.TimingContext{
 			EventTime: eventTime, RelayTime: eventTime.Add(time.Millisecond), AgentCaptureTime: &agentTime,
 			TimestampSource: telemetrynormalize.TimestampSourceAgent,
@@ -53,8 +54,8 @@ func TestRecordToPoint(t *testing.T) {
 	if _, ok := point.GetField("wal_sequence").(uint64); !ok {
 		t.Errorf("wal_sequence type = %T", point.GetField("wal_sequence"))
 	}
-	if got := point.GetField("wal_id"); got != record.Source.WALID {
-		t.Errorf("wal_id = %#v, want %q", got, record.Source.WALID)
+	if got := point.GetField("wal_id"); got != "0195f6a8-86d1-7be7-a104-3a814dc19f9e" {
+		t.Errorf("wal_id = %#v, want canonical lowercase UUID", got)
 	}
 	if !point.Values.Timestamp.Equal(eventTime) {
 		t.Errorf("timestamp = %v", point.Values.Timestamp)
@@ -85,6 +86,7 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 		t.Fatalf("recordToPoint(first) error = %v", err)
 	}
 	retryRecord := record
+	retryRecord.Source.WALID = strings.ToUpper(record.Source.WALID)
 	retryRecord.Identity = telemetrynormalize.IdentityContext{
 		OperatorID: "operator-2", AircraftID: "", AgentID: "agent-1",
 		RelayID: "relay-2", SessionID: "session-2", FlightID: "flight-2",
@@ -117,6 +119,9 @@ func TestRecordToPointUsesFrameIDForPointIdentity(t *testing.T) {
 	}
 	if got := retry.GetField("flight_id"); got != "flight-2" {
 		t.Fatalf("retry flight field = %#v", got)
+	}
+	if first.GetField("wal_id") != retry.GetField("wal_id") {
+		t.Fatalf("equivalent WAL UUID representations split cursor identity: first=%#v retry=%#v", first.GetField("wal_id"), retry.GetField("wal_id"))
 	}
 	if firstFrameID == secondFrameID {
 		t.Fatalf("distinct WAL frames share frame ID tag %q", firstFrameID)

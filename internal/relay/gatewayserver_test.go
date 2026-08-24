@@ -735,11 +735,13 @@ func TestTelemetryStreamValidatesWALGenerationIDBeforeRouting(t *testing.T) {
 		wantStatus    agentv1.TelemetryAck_Status
 		wantError     string
 		wantSinkCount int
+		wantWALID     string
 	}{
 		{name: "unsupported message missing ID", path: "unsupported", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
 		{name: "unsupported message invalid ID", path: "unsupported", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
 		{name: "unsupported message nil ID", path: "unsupported", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
-		{name: "unsupported message valid ID", path: "unsupported", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1},
+		{name: "unsupported message valid ID", path: "unsupported", walID: testWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1, wantWALID: testWALGenerationID},
+		{name: "unsupported message uppercase ID", path: "unsupported", walID: strings.ToUpper(testWALGenerationID), wantStatus: agentv1.TelemetryAck_STATUS_OK, wantSinkCount: 1, wantWALID: testWALGenerationID},
 		{name: "noop missing ID", path: "noop", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "required"},
 		{name: "noop invalid ID", path: "noop", walID: "not-a-uuid", wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
 		{name: "noop nil ID", path: "noop", walID: nilWALGenerationID, wantStatus: agentv1.TelemetryAck_STATUS_PERMANENT_ERROR, wantError: "invalid"},
@@ -794,6 +796,11 @@ func TestTelemetryStreamValidatesWALGenerationIDBeforeRouting(t *testing.T) {
 
 			if genericSink != nil && genericSink.GetMessageCount() != tt.wantSinkCount {
 				t.Fatalf("generic sink count = %d, want %d", genericSink.GetMessageCount(), tt.wantSinkCount)
+			}
+			if genericSink != nil && tt.wantWALID != "" {
+				if got := genericSink.GetMessages()[0].WALID; got != tt.wantWALID {
+					t.Fatalf("routed WAL generation ID = %q, want %q", got, tt.wantWALID)
+				}
 			}
 			close(stream.recvChan)
 			select {
