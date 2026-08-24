@@ -282,6 +282,9 @@ The important ownership invariants are:
    telemetry consumer.
 10. `controlStreamMu` linearizes through-write control sends, active-binding
     swaps, and command evidence so one command cannot cross stream generations.
+11. Stream replacement captures and later revalidates its session under
+    `sessionsMu`; it never waits for a per-session fence while holding the
+    Relay-wide map lock, so one blocked Agent cannot stall unrelated Agents.
 
 These rules prevent a replacement connection from receiving an unrelated ACK and
 prevent stale handler cleanup from tearing down the current connection.

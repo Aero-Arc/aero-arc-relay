@@ -19,16 +19,27 @@ import (
 
 func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, *telemetryStreamBinding, error) {
 	r.sessionsMu.RLock()
-	defer r.sessionsMu.RUnlock()
-
 	session, ok := r.grpcSessions[agentID]
-	if !ok || session.SessionID != sessionID || session.retired {
+	valid := ok && session.SessionID == sessionID && !session.retired
+	r.sessionsMu.RUnlock()
+	if !valid {
 		return nil, nil, nil, ErrSessionNotFound
 	}
 
+	// Never wait for one Agent's stream fences while holding the Relay-wide map
+	// lock. Pin this session, then briefly revalidate map ownership before
+	// publishing a binding; unrelated Agent registration and cleanup stay live.
+	session.ownershipMu.RLock()
+	defer session.ownershipMu.RUnlock()
 	if r.registryReporter == nil {
 		session.controlStreamMu.Lock()
 		defer session.controlStreamMu.Unlock()
+	}
+	r.sessionsMu.RLock()
+	isCurrent := r.grpcSessions[agentID] == session && session.SessionID == sessionID && !session.retired
+	r.sessionsMu.RUnlock()
+	if !isCurrent {
+		return nil, nil, nil, ErrSessionNotFound
 	}
 	session.sessionMu.Lock()
 	defer session.sessionMu.Unlock()

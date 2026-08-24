@@ -651,6 +651,17 @@ func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *test
 		t.Fatal("same-session replacement committed during a control write")
 	case <-time.After(20 * time.Millisecond):
 	}
+	globalWrite := make(chan struct{})
+	go func() {
+		relay.sessionsMu.Lock()
+		relay.sessionsMu.Unlock()
+		close(globalWrite)
+	}()
+	select {
+	case <-globalWrite:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("per-session stream fence blocked the Relay-wide session map")
+	}
 	close(oldStream.sendBlock)
 	if err := <-sendDone; err != nil {
 		t.Fatalf("control write error = %v", err)
