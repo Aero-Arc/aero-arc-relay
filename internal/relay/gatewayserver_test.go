@@ -257,6 +257,47 @@ func TestRegisterDoesNotPublishAgentBeforeTelemetryStream(t *testing.T) {
 	}
 }
 
+func TestCanceledRegisterPreservesSessionHeldByInFlightWork(t *testing.T) {
+	const agentID = "agent-1"
+	previous := &DroneSession{agentID: agentID, SessionID: "session-1"}
+	reporter := &recordingAgentRegistrar{}
+	relay := relayWithRegistryReporter(t, reporter)
+	relay.grpcSessions[agentID] = previous
+	previous.ownershipMu.RLock()
+	ctx, cancel := context.WithCancel(authenticatedAgentContext(agentID))
+	registrationDone := make(chan error, 1)
+	go func() {
+		_, err := relay.Register(ctx, &agentv1.RegisterRequest{AgentId: agentID})
+		registrationDone <- err
+	}()
+	select {
+	case err := <-registrationDone:
+		previous.ownershipMu.RUnlock()
+		t.Fatalf("Register() completed while session ownership was held: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	previous.ownershipMu.RUnlock()
+	select {
+	case err := <-registrationDone:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("Register() error = %v, want Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled Register() did not return after ownership was released")
+	}
+	relay.sessionsMu.RLock()
+	current := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if current != previous || previous.retired {
+		t.Fatal("canceled registration replaced or retired the live session")
+	}
+	if len(reporter.stopped) != 0 {
+		t.Fatalf("canceled registration stopped Registry liveness: %v", reporter.stopped)
+	}
+}
+
 func TestRegisterSucceedsWhileRegistryIsUnavailable(t *testing.T) {
 	reporter := &recordingAgentRegistrar{err: errors.New("registry unavailable")}
 	relay := relayWithRegistryReporter(t, reporter)
@@ -610,6 +651,217 @@ func TestStreamCleanupStopsOldLivenessBeforePublishingReplacementSession(t *test
 	}
 }
 
+func TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence(t *testing.T) {
+	oldStream := &mockTelemetryStream{
+		ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1),
+		sendStarted: make(chan struct{}, 1), sendBlock: make(chan struct{}),
+	}
+	oldBinding := &telemetryStreamBinding{stream: oldStream, generation: 1}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1", stream: oldBinding, streamGeneration: 1,
+		pending:           make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands: make(map[string]*operationCommandState),
+		aircraftCommands:  make(map[string]*aircraftCommandState),
+	}
+	relay := &Relay{grpcSessions: map[string]*DroneSession{"agent-1": session}}
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- sendToSessionThroughWrite(context.Background(), session, &agentv1.RelayStreamMessage{
+			Payload: &agentv1.RelayStreamMessage_ClearOperationContext{
+				ClearOperationContext: &agentv1.ClearOperationContextCommand{CommandId: "context-command"},
+			},
+		})
+	}()
+	select {
+	case <-oldStream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("control write did not start")
+	}
+	oldContextState := &operationCommandState{done: make(chan struct{})}
+	_, cancelOldAircraft := context.WithCancel(context.Background())
+	oldAircraftState := &aircraftCommandState{done: make(chan struct{}), deliveryCancel: cancelOldAircraft}
+	session.pendingMu.Lock()
+	session.pending["old-context-command"] = make(chan *agentv1.OperationContextCommandAck, 1)
+	session.operationCommands["old-context-command"] = oldContextState
+	session.aircraftCommands["old-aircraft-command"] = oldAircraftState
+	session.pendingMu.Unlock()
+	releaseOperationSlot, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextWaitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := awaitOperationCommand(
+			context.Background(), session, "old-context-command", oldContextState, true,
+		)
+		releaseOperationSlot()
+		contextWaitDone <- waitErr
+	}()
+	aircraftWaitDone := make(chan error, 1)
+	go func() {
+		<-oldAircraftState.done
+		_, waitErr := takeAircraftCommandResult(session, oldAircraftState)
+		aircraftWaitDone <- waitErr
+	}()
+
+	type replacementResult struct {
+		binding *telemetryStreamBinding
+		err     error
+	}
+	replacementDone := make(chan replacementResult, 1)
+	go func() {
+		_, binding, _, err := relay.updateStream("agent-1", "session-1", &mockTelemetryStream{})
+		replacementDone <- replacementResult{binding: binding, err: err}
+	}()
+	select {
+	case <-replacementDone:
+		t.Fatal("same-session replacement committed during a control write")
+	case <-time.After(20 * time.Millisecond):
+	}
+	globalWrite := make(chan struct{})
+	go func() {
+		relay.sessionsMu.Lock()
+		close(globalWrite)
+		relay.sessionsMu.Unlock()
+	}()
+	select {
+	case <-globalWrite:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("per-session stream fence blocked the Relay-wide session map")
+	}
+	close(oldStream.sendBlock)
+	if err := <-sendDone; err != nil {
+		t.Fatalf("control write error = %v", err)
+	}
+	replacement := <-replacementDone
+	if replacement.err != nil {
+		t.Fatalf("updateStream() error = %v", replacement.err)
+	}
+	newBinding := replacement.binding
+	if newBinding == nil {
+		t.Fatal("replacement binding is nil")
+	}
+	if waitErr := <-contextWaitDone; status.Code(waitErr) != codes.Aborted {
+		t.Fatalf("operation-context wait error = %v, want Aborted", waitErr)
+	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("uncertain context handoff did not re-enter telemetry reconciliation")
+	}
+	if waitErr := <-aircraftWaitDone; status.Code(waitErr) != codes.Aborted {
+		t.Fatalf("aircraft-command wait error = %v, want Aborted", waitErr)
+	}
+	gateCtx, cancelGate := context.WithTimeout(context.Background(), time.Second)
+	defer cancelGate()
+	releaseNextOperationSlot, err := acquireOperationCommandSlot(gateCtx, session)
+	if err != nil {
+		t.Fatalf("replacement left operation gate blocked: %v", err)
+	}
+	releaseNextOperationSlot()
+	session.pendingMu.Lock()
+	_, oldContextStillPending := session.pending["old-context-command"]
+	session.pendingMu.Unlock()
+	if oldContextStillPending {
+		t.Fatal("replacement retained the superseded context ACK route")
+	}
+
+	contextState := &operationCommandState{done: make(chan struct{})}
+	session.pendingMu.Lock()
+	session.pending["context-command"] = make(chan *agentv1.OperationContextCommandAck, 1)
+	session.operationCommands["context-command"] = contextState
+	session.pendingMu.Unlock()
+	contextACK := &agentv1.OperationContextCommandAck{
+		CommandId: "context-command", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+	}
+	session.handleOperationContextCommandAckFrom(oldBinding, contextACK)
+	select {
+	case <-contextState.done:
+		t.Fatal("superseded stream completed the operation-context command")
+	default:
+	}
+	session.handleOperationContextCommandAckFrom(newBinding, contextACK)
+	select {
+	case <-contextState.done:
+	default:
+		t.Fatal("active stream did not complete the operation-context command")
+	}
+
+	aircraftState := &aircraftCommandState{done: make(chan struct{})}
+	session.pendingMu.Lock()
+	session.aircraftCommands["aircraft-command"] = aircraftState
+	session.pendingMu.Unlock()
+	aircraftResult := &agentv1.AircraftCommandResult{
+		CommandId: "aircraft-command", Status: agentv1.AircraftCommandResult_STATUS_ACCEPTED,
+	}
+	session.handleAircraftCommandResultFrom(oldBinding, aircraftResult)
+	select {
+	case <-aircraftState.done:
+		t.Fatal("superseded stream completed the aircraft command")
+	default:
+	}
+	session.handleAircraftCommandResultFrom(newBinding, aircraftResult)
+	select {
+	case <-aircraftState.done:
+	default:
+		t.Fatal("active stream did not complete the aircraft command")
+	}
+}
+
+func TestRegistryBackedStreamReplacementAbortsPendingCommandsAtCommit(t *testing.T) {
+	relay := relayWithRegistryReporter(t, &recordingAgentRegistrar{})
+	oldBinding := &telemetryStreamBinding{stream: &mockTelemetryStream{}, generation: 1}
+	contextState := &operationCommandState{done: make(chan struct{})}
+	_, cancelAircraft := context.WithCancel(context.Background())
+	aircraftState := &aircraftCommandState{done: make(chan struct{}), deliveryCancel: cancelAircraft}
+	session := &DroneSession{
+		agentID: "agent-1", SessionID: "session-1", stream: oldBinding, streamGeneration: 1,
+		pending: map[string]chan *agentv1.OperationContextCommandAck{
+			"context-command": make(chan *agentv1.OperationContextCommandAck, 1),
+		},
+		operationCommands: map[string]*operationCommandState{"context-command": contextState},
+		aircraftCommands:  map[string]*aircraftCommandState{"aircraft-command": aircraftState},
+	}
+	relay.grpcSessions[session.agentID] = session
+
+	_, replacement, previous, err := relay.updateStream(session.agentID, session.SessionID, &mockTelemetryStream{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-contextState.done:
+		t.Fatal("pending publication aborted commands before becoming active")
+	default:
+	}
+	if err := relay.registerActiveAgent(context.Background(), session.agentID, session, replacement, previous); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-contextState.done:
+	default:
+		t.Fatal("active replacement did not abort operation-context wait")
+	}
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("Registry-backed uncertain context handoff did not fence telemetry")
+	}
+	select {
+	case <-aircraftState.done:
+	default:
+		t.Fatal("active replacement did not abort aircraft-command wait")
+	}
+	session.pendingMu.Lock()
+	contextErr := contextState.err
+	aircraftErr := aircraftState.err
+	session.pendingMu.Unlock()
+	if status.Code(contextErr) != codes.Aborted || status.Code(aircraftErr) != codes.Aborted {
+		t.Fatalf("replacement errors = (%v, %v), want Aborted", contextErr, aircraftErr)
+	}
+	session.sessionMu.RLock()
+	active := session.stream
+	session.sessionMu.RUnlock()
+	if active != replacement {
+		t.Fatal("published replacement did not become active")
+	}
+}
+
 // mockTelemetryStream implements agentv1.AgentGateway_TelemetryStreamServer
 type mockTelemetryStream struct {
 	grpc.ServerStream
@@ -619,6 +871,7 @@ type mockTelemetryStream struct {
 	errChan     chan error
 	sendStarted chan struct{}
 	sendBlock   chan struct{}
+	sendErr     error
 }
 
 func (m *mockTelemetryStream) Context() context.Context {
@@ -655,7 +908,7 @@ func (m *mockTelemetryStream) Send(ack *agentv1.RelayStreamMessage) error {
 	}
 	select {
 	case m.sentAckChan <- ack:
-		return nil
+		return m.sendErr
 	case <-m.ctx.Done():
 		return m.ctx.Err()
 	}
@@ -1362,11 +1615,20 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay.grpcSessions = make(map[string]*DroneSession)
 	agentID := "reconnecting-agent"
 	oldPending := make(chan *agentv1.OperationContextCommandAck, 1)
+	oldState := &operationCommandState{
+		expected: &agentv1.OperationContext{
+			FlightId: "old-flight", IntentId: "old-intent", IntentVersion: 7,
+		},
+		done: make(chan struct{}), delivered: true,
+	}
 	oldSession := &DroneSession{
 		agentID:   agentID,
 		SessionID: "old-session",
 		pending: map[string]chan *agentv1.OperationContextCommandAck{
 			"shared-command": oldPending,
+		},
+		operationCommands: map[string]*operationCommandState{
+			"shared-command": oldState,
 		},
 	}
 	relay.grpcSessions[agentID] = oldSession
@@ -1388,9 +1650,26 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	if replacementSession == oldSession {
 		t.Fatal("registration did not replace the old session")
 	}
+	if !replacementSession.requiresOperationContextReconciliation() {
+		t.Fatal("replacement inherited reconciled telemetry admission after an uncertain delivered mutation")
+	}
+	select {
+	case <-oldState.done:
+		if status.Code(oldState.err) != codes.Aborted {
+			t.Fatalf("old pending command error = %v, want Aborted", oldState.err)
+		}
+	default:
+		t.Fatal("replacement did not abort the old pending command")
+	}
 	replacementPending := make(chan *agentv1.OperationContextCommandAck, 1)
 	replacementSession.pendingMu.Lock()
 	replacementSession.pending["shared-command"] = replacementPending
+	replacementSession.operationCommands["shared-command"] = &operationCommandState{
+		expected: &agentv1.OperationContext{
+			FlightId: "replacement-flight", IntentId: "replacement-intent", IntentVersion: 8,
+		},
+		done: make(chan struct{}),
+	}
 	replacementSession.pendingMu.Unlock()
 
 	commandAck := &agentv1.OperationContextCommandAck{
@@ -1407,13 +1686,10 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	}
 	select {
 	case got := <-oldPending:
-		if got != commandAck {
-			t.Fatalf("old pending command received ACK %#v, want %#v", got, commandAck)
-		}
+		t.Fatalf("retired pending command received late ACK %#v", got)
 	case <-replacementPending:
 		t.Fatal("replacement session received a command ACK from the old stream")
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for command ACK on the receiving session")
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	oldSession.sessionMu.RLock()
@@ -1421,8 +1697,8 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	oldIntentID := oldSession.IntentID
 	oldIntentVersion := oldSession.IntentVersion
 	oldSession.sessionMu.RUnlock()
-	if oldFlightID != "old-flight" || oldIntentID != "old-intent" || oldIntentVersion != 7 {
-		t.Fatalf("old session context = (%q, %q, %d)", oldFlightID, oldIntentID, oldIntentVersion)
+	if oldFlightID != "" || oldIntentID != "" || oldIntentVersion != 0 {
+		t.Fatalf("late ACK changed retired session context to (%q, %q, %d)", oldFlightID, oldIntentID, oldIntentVersion)
 	}
 	replacementSession.sessionMu.RLock()
 	replacementFlightID := replacementSession.FlightID
@@ -1456,6 +1732,141 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay.sessionsMu.RUnlock()
 	if current != replacementSession {
 		t.Fatal("old stream cleanup removed the replacement session")
+	}
+}
+
+func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	old := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		emptyContextCommandID: "reconcile-empty",
+		pending:               make(map[string]chan *agentv1.OperationContextCommandAck),
+	}
+	relay.grpcSessions["agent-1"] = old
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions["agent-1"]
+	relay.sessionsMu.RUnlock()
+	if replacement == old {
+		t.Fatal("registration did not replace the old session")
+	}
+	if got := droneStatus(replacement); got.GetFlightId() != "flight-1" || got.GetIntentId() != "intent-1" || got.GetIntentVersion() != 7 {
+		t.Fatalf("replacement context = %#v, want flight-1/intent-1/7", got)
+	}
+	if replacement.requiresOperationContextReconciliation() {
+		t.Fatal("same-process replacement lost reconciled operation context")
+	}
+	if !replacement.reserveEmptyContextReconciliation("reconcile-empty") || replacement.reserveEmptyContextReconciliation("different-empty") {
+		t.Fatal("same-process replacement lost the retained empty-context command identity")
+	}
+}
+
+func TestRegisterReplacementDropsCompletedEmptyReconciliationReservation(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.grpcSessions = make(map[string]*DroneSession)
+	old := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		operationContextUnreconciled: true,
+		emptyContextCommandID:        "reconcile-failed",
+		pending:                      make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands: map[string]*operationCommandState{
+			"reconcile-failed": {
+				done: make(chan struct{}), ack: &agentv1.OperationContextCommandAck{
+					CommandId: "reconcile-failed",
+					Status:    agentv1.OperationContextCommandAck_STATUS_REJECTED,
+				}, completed: true, completedAt: time.Now(),
+			},
+		},
+	}
+	relay.grpcSessions[old.agentID] = old
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: old.agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[old.agentID]
+	relay.sessionsMu.RUnlock()
+	if replacement == old || !old.retired {
+		t.Fatal("registration did not replace and retire the old session")
+	}
+	replacement.sessionMu.RLock()
+	reserved := replacement.emptyContextCommandID
+	replacement.sessionMu.RUnlock()
+	if reserved != "" {
+		t.Fatalf("replacement inherited completed reconciliation reservation %q", reserved)
+	}
+	if !replacement.reserveEmptyContextReconciliation("reconcile-fresh") {
+		t.Fatal("completed reservation poisoned fresh empty reconciliation")
+	}
+}
+
+func TestFreshRelaySessionRetainsTelemetryUntilContextReconciles(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+
+	registration, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	session := relay.grpcSessions["agent-1"]
+	relay.sessionsMu.RUnlock()
+	if !session.requiresOperationContextReconciliation() {
+		t.Fatal("first session in Relay process started with an implicitly empty context")
+	}
+
+	stream, cancel := newAgentTelemetryStream("agent-1", registration.GetSessionId())
+	defer cancel()
+	streamErr := make(chan error, 1)
+	go func() { streamErr <- relay.TelemetryStream(stream) }()
+
+	frame := &agentv1.TelemetryFrame{
+		AgentId: "agent-1", SessionId: registration.GetSessionId(), Seq: 1,
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
+	}
+	stream.recvChan <- telemetryStreamMessage(frame)
+	message := <-stream.sentAckChan
+	ack := message.GetTelemetryAck()
+	if ack == nil || ack.GetStatus() != agentv1.TelemetryAck_STATUS_RETRY_WITH_BACKOFF ||
+		!strings.Contains(ack.GetError(), "operation context") {
+		t.Fatalf("unreconciled telemetry ACK = %#v, want retry", ack)
+	}
+	if mockSink.GetMessageCount() != 0 {
+		t.Fatal("unreconciled telemetry reached an output")
+	}
+
+	pending := make(chan *agentv1.OperationContextCommandAck, 1)
+	session.pendingMu.Lock()
+	session.pending["reconcile-clear"] = pending
+	session.operationCommands["reconcile-clear"] = &operationCommandState{
+		expected: nil, done: make(chan struct{}),
+	}
+	session.pendingMu.Unlock()
+	stream.recvChan <- &agentv1.AgentStreamMessage{Payload: &agentv1.AgentStreamMessage_OperationContextCommandAck{
+		OperationContextCommandAck: &agentv1.OperationContextCommandAck{
+			CommandId: "reconcile-clear", Status: agentv1.OperationContextCommandAck_STATUS_APPLIED,
+		},
+	}}
+
+	frame.Seq = 2
+	stream.recvChan <- telemetryStreamMessage(frame)
+	message = <-stream.sentAckChan
+	ack = message.GetTelemetryAck()
+	if ack == nil || ack.GetStatus() != agentv1.TelemetryAck_STATUS_OK {
+		t.Fatalf("reconciled telemetry ACK = %#v, want OK", ack)
+	}
+	if mockSink.GetMessageCount() != 1 {
+		t.Fatalf("reconciled telemetry output count = %d, want 1", mockSink.GetMessageCount())
+	}
+
+	close(stream.recvChan)
+	if err := <-streamErr; err != nil {
+		t.Fatalf("TelemetryStream() error = %v", err)
 	}
 }
 

@@ -26,6 +26,18 @@ before it creates or replaces any session. The relay then:
 Registration does not open the telemetry stream. It creates the session that a
 subsequent `TelemetryStream` call must attach to.
 
+When operation-context control is enabled, the first session for an agent
+observed by a Relay process starts with operation context unreconciled. The API
+must replay its durable authoritative state with either `SetOperationContext`
+for an active flight or `ClearOperationContext` with no flight ID for no active
+flight. Empty-flight Clear is accepted only for this initial reconciliation;
+ordinary clears remain scoped to a specific flight. Until the
+Agent acknowledges that command, telemetry receives `RETRY_WITH_BACKOFF` and
+remains in the Agent WAL instead of being admitted with an implicitly empty
+flight and intent. This is required after Relay restart; Registry discovery and
+stream admission provide the API-to-Relay replay path. Relays with context
+control disabled preserve their context-free telemetry behavior.
+
 Registering the same agent ID again replaces the map entry with a new
 `DroneSession` and a new session ID. The old stream handler can still be running,
 but it no longer owns the active registered session.
@@ -67,11 +79,17 @@ the relay builds an ACK using the frame sequence number and validates:
 - The frame session ID matches that captured session's ID.
 - The MAVLink message name is not empty.
 - The durable agent capture timestamp is present and positive.
+- The API-owned operation context has been reconciled for this Relay process.
 
 An invalid frame receives a permanent-error ACK and is not routed. A valid frame
 updates the session heartbeat and is converted into a telemetry envelope using
 the session's authoritative flight and intent context. Frame-provided operation
 context cannot override the session state.
+
+An otherwise valid frame received before operation-context reconciliation gets
+`RETRY_WITH_BACKOFF`, not a permanent error. Once the authoritative Set/Clear is
+acknowledged, the Agent can replay the same WAL records without losing them or
+allowing Relay restart to erase active-flight attribution.
 
 Validation and routing occur while holding a read lease on the captured
 session's ownership. Re-registration and active-stream cleanup retire a session
@@ -105,51 +123,80 @@ sending.
 
 ## 4. Delivering Control Commands
 
-`SetOperationContext` and `ClearOperationContext` currently return gRPC
-`Unimplemented`. The relay exposes the agent gateway and relay control service
-on one listener with server-authenticated TLS, so enabling mutation RPCs before
-the control plane has its own authenticated and authorized boundary would allow
-an arbitrary reachable client to target another agent.
+`SetOperationContext` and `ClearOperationContext` remain disabled by default.
+They are enabled only when `control_auth` supplies a client CA and an explicit
+workload-identity allow list. The shared TLS listener uses
+`VerifyClientCertIfGiven`: Agents continue to use their bearer credentials and
+do not need client certificates, while every mutating control caller must present
+a verified certificate whose common name, DNS SAN, or URI SAN is allow-listed.
+An unauthenticated caller is rejected before request validation, so it cannot
+probe Agent connectivity or command state.
 
-The internal command-delivery machinery remains implemented and tested as a
-highly experimental foundation. It is not yet a supported control interface.
-It may be enabled only after the control API is moved to a private listener
-protected by workload authentication and authorization and the operations panel
-has an intentional command workflow. Unlike a telemetry ACK, a control command
-is not a response to a message received on a particular stream. It should target
-whichever stream is currently active.
+`SendAircraftCommand` uses the same authenticated control-mutation gate. ARM
+and DISARM target only the session active at admission, are not queued across a
+replacement, and are not automatically retried because they are immediate
+vehicle commands rather than durable operation-context mutations. Relay holds
+the session ownership lease through validation and stream delivery, releases it
+before waiting for the autopilot result, and aborts that pending wait if the
+session is retired. A disconnected Agent can therefore be replaced even when a
+control caller supplied no deadline.
+
+Within a session, Relay retains deterministic ARM/DISARM payload fingerprints
+and terminal correlation outcomes under the same bounded 24-hour/4096-entry
+policy used for operation-context commands. An exact retry observes the retained
+outcome without redelivery; reusing a command ID for another aircraft or command
+type is rejected. A new deliberate vehicle action therefore requires a new
+command ID.
+
+Unlike a telemetry ACK, an operation-context command is not a response to a
+message received on a particular stream. It targets the current admitted Agent
+session. If that session changes before the ACK is returned, the Relay reports
+`Aborted`; the caller can retry the same durable command ID and payload against
+the replacement. The Agent WAL is the cross-session and cross-process
+idempotency authority.
 
 The delivery path:
 
 1. Validates the agent ID and command ID.
 2. Resolves the current registered session.
-3. Adds a pending ACK channel keyed by command ID.
+3. Records a deterministic payload fingerprint and pending result keyed by
+   command ID.
 4. Sends through the captured session, which selects and locks that session's
    current stream binding.
 5. Waits for the matching command ACK or for the caller's context to end.
-6. Removes the pending entry when delivery fails, times out, is cancelled, or
-   receives an ACK.
+6. Retains the fingerprint and terminal outcome after delivery fails, times
+   out, is cancelled, or receives an ACK. Exact concurrent retries share the
+   pending outcome; exact retries of transient outcomes may redeliver, while a
+   conflicting payload is rejected.
 
 Waiting for the stream's send lock observes the control API context. If an
 already-started gRPC `Send` remains flow-controlled past the API deadline, the
-API request returns at its deadline while that send retains its binding's lock
-until gRPC completes. This preserves send serialization without allowing a
-wedged agent connection to accumulate blocked control handlers or prevent a
-replacement stream from attaching.
+Set/Clear API request and its session ownership lease remain held until that
+write returns, even after the deadline. Only then does the RPC observe context
+cancellation rather than waiting for the Agent ACK. This intentional
+through-write fence prevents registration from publishing a replacement while
+an operation-context mutation can still land on the old Agent stream. Aircraft
+commands use the same through-write session fence in their shared delivery task,
+but an individual caller may detach at its deadline and must treat that command
+outcome as uncertain while the started write finishes.
 
-Incoming operation-context ACKs are applied only when their command ID matches a
-pending request on the session captured by the receiving stream handler. The
-pending entry is consumed before an applied ACK may update active flight and
-intent state. Unsolicited and late ACKs are ignored. The relay does not look the
-session up again by agent ID because the same agent may have registered a
-replacement session while an old command ACK was in flight.
+Incoming operation-context ACKs and aircraft-command results are applied only
+when their command ID matches a pending request on the session captured by the
+receiving stream handler and that handler still owns the active stream binding.
+The pending entry is consumed before an applied ACK may update active flight and
+intent state. For `APPLIED` and `ALREADY_APPLIED`, the ACK's active context must
+exactly match the authoritative result derived from the API command. Relay
+updates attribution from that expected result, never from unchecked Agent data.
+Unsolicited and late ACKs without a current matching attempt are ignored. The
+relay does not look the session up again by agent ID because the same agent may
+have registered a replacement session while an old command ACK was in flight.
 
-Before this machinery becomes supported, the protocol must also define command
-idempotency explicitly. Reusing an ID with the same payload should mean retrying
-one logical command; reusing it with a different payload must be rejected; and a
-new logical command must receive a new ID. Concurrent duplicates, completed-ID
-retention, payload fingerprints, session binding, retry limits, and delayed ACKs
-must be covered by integration tests.
+Relay retains outcomes per session for up to 24 hours, capped at 4096 entries,
+and evicts the oldest completed outcome when the bound is reached. This bounds memory; the
+Agent's durable WAL retains each command ID and payload fingerprint across
+session replacement and process restart. Reusing an ID with the same payload is
+one logical command. Reusing it with a different command kind or payload is a
+terminal conflict and cannot mutate operation context.
 
 This creates an intentional routing distinction:
 
@@ -164,6 +211,20 @@ stream.
 After replacement:
 
 - New control commands target the replacement stream.
+- The active-binding swap waits for any already-started control-command write;
+  ordinary telemetry ACK sends remain isolated per binding and do not delay the
+  replacement.
+- Pending operation-context and aircraft-command waits whose write completed on
+  the superseded binding finish with `Aborted` at the active-binding swap. This
+  releases the serialized operation-context gate instead of waiting forever for
+  evidence that is no longer authoritative. An aircraft-command caller must
+  treat this result as outcome-uncertain because the old Agent may have passed
+  the command to the autopilot before reconnecting.
+- Command admission is fenced with its stream write. A command waiting behind
+  the swap is admitted only after the replacement becomes active, so Relay
+  cannot abort it and then deliver it on the new binding.
+- Operation-context ACKs and aircraft-command results from the superseded
+  binding are ignored, even though it shares the same session ID.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
   old stream while the shared session remains registered.
 - Sends remain serialized independently on each stream binding.
@@ -179,9 +240,13 @@ If the agent registers again instead of only replacing its stream, the new map
 entry has a different `DroneSession` pointer and session ID. The old handler's
 cleanup is rejected by the session pointer check. Frames from the old registration
 also fail the active-session-identity validation and receive their error ACK on
-the old stream. Delayed operation-command ACKs received by the old handler remain
-bound to the old session and cannot update the replacement session's context or
-pending commands.
+the old stream. Relay atomically copies the last API-authoritative acknowledged
+operation context into the replacement before publishing it, so reconnecting
+telemetry keeps its flight and intent attribution. Delayed operation-command
+ACKs received by the old handler remain bound to the old session and cannot
+update the replacement session's context or pending commands.
+If no prior in-process session exists, Relay does not infer an empty context:
+telemetry remains retryable until the API explicitly replays Set or Clear.
 
 ## 6. Disconnect and Cleanup
 
@@ -206,7 +271,7 @@ another telemetry stream.
 
 ## Synchronization and Ownership
 
-The stream lifecycle uses five locks with separate responsibilities:
+The stream lifecycle uses six locks with separate responsibilities:
 
 ![Ownership map of sessionsMu, sessionMu, ownershipMu, per-binding sendMu, and pendingMu with the state each lock protects](images/stream-synchronization-ownership.svg)
 
@@ -224,6 +289,11 @@ The important ownership invariants are:
 8. A command and its pending ACK are owned by the same captured session.
 9. A successful telemetry ACK requires admission by the official normalized
    telemetry consumer.
+10. `controlStreamMu` linearizes through-write control sends, active-binding
+    swaps, and command evidence so one command cannot cross stream generations.
+11. Stream replacement captures and later revalidates its session under
+    `sessionsMu`; it never waits for a per-session fence while holding the
+    Relay-wide map lock, so one blocked Agent cannot stall unrelated Agents.
 
 These rules prevent a replacement connection from receiving an unrelated ACK and
 prevent stale handler cleanup from tearing down the current connection.
@@ -236,6 +306,8 @@ and receive ACKs for its own frames while the shared session remains registered.
 It also means both handlers can temporarily submit valid telemetry for the same
 session. If the active replacement closes and removes the session, any surviving
 old handler returns permanent-error ACKs for later frames and does not route them.
+The drain allowance applies only to telemetry; command ACKs and results from a
+superseded binding never complete shared session command state.
 
 If the protocol later requires strict single-stream ingestion, replacement should
 also cancel the previous handler or cause stale generations to reject new frames.
@@ -264,6 +336,15 @@ ID.
 `TestTelemetryStream_ReplacementDoesNotWaitForBlockedOldSend` verifies that a
 blocked ACK on an old stream does not prevent a replacement stream from attaching
 and sending.
+
+`TestSameSessionReplacementWaitsForControlWriteAndRejectsOldEvidence` verifies
+that the active-binding swap waits for a blocked control write, aborts pending
+waiters, releases the operation-context gate, and ignores both operation-context
+and aircraft-command evidence from the superseded binding.
+
+`TestRegistryBackedStreamReplacementAbortsPendingCommandsAtCommit` verifies the
+same abort rule applies only when a Registry-backed replacement is successfully
+published and committed, not while it is merely a pending candidate.
 
 `TestTelemetryStream_ACKReflectsTelemetryAdmissionFailure` verifies that queue
 admission failures are retryable and deterministic normalization failures are

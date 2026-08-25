@@ -19,16 +19,29 @@ import (
 
 func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, *telemetryStreamBinding, error) {
 	r.sessionsMu.RLock()
-	defer r.sessionsMu.RUnlock()
-
 	session, ok := r.grpcSessions[agentID]
-	if !ok || session.SessionID != sessionID || session.retired {
+	valid := ok && session.SessionID == sessionID && !session.retired
+	r.sessionsMu.RUnlock()
+	if !valid {
 		return nil, nil, nil, ErrSessionNotFound
 	}
 
+	// Never wait for one Agent's stream fences while holding the Relay-wide map
+	// lock. Pin this session, then briefly revalidate map ownership before
+	// publishing a binding; unrelated Agent registration and cleanup stay live.
+	session.ownershipMu.RLock()
+	defer session.ownershipMu.RUnlock()
+	if r.registryReporter == nil {
+		session.controlStreamMu.Lock()
+		defer session.controlStreamMu.Unlock()
+	}
+	r.sessionsMu.RLock()
+	isCurrent := r.grpcSessions[agentID] == session && session.SessionID == sessionID && !session.retired
+	r.sessionsMu.RUnlock()
+	if !isCurrent {
+		return nil, nil, nil, ErrSessionNotFound
+	}
 	session.sessionMu.Lock()
-	defer session.sessionMu.Unlock()
-
 	previous := session.stream
 	session.streamGeneration++
 	binding := &telemetryStreamBinding{
@@ -39,6 +52,13 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 		session.stream = binding
 	} else {
 		session.pendingStream = binding
+	}
+	session.sessionMu.Unlock()
+	if r.registryReporter == nil && previous != nil && previous != binding {
+		// The old binding can no longer provide authoritative command evidence.
+		// Complete its pending waits while the control write fence still excludes
+		// both old evidence and new command admission.
+		session.abortPendingCommandsForStreamReplacement()
 	}
 
 	return session, binding, previous, nil
@@ -91,18 +111,28 @@ func (r *Relay) registerActiveAgent(
 		return err
 	}
 
+	// Publication may remain slow without blocking accepted telemetry. Only the
+	// final active-binding swap excludes command writes and command evidence.
+	expectedSession.controlStreamMu.Lock()
+	defer expectedSession.controlStreamMu.Unlock()
 	expectedSession.sessionMu.Lock()
-	defer expectedSession.sessionMu.Unlock()
 	if isActive {
+		expectedSession.sessionMu.Unlock()
 		return nil
 	}
 	if expectedSession.pendingStream != expectedStream || expectedStream.closed {
+		expectedSession.sessionMu.Unlock()
 		return ErrSessionNotFound
 	}
 	// The prior accepted binding stays current and can route telemetry throughout
 	// the Registry RPC. Commit the replacement only after publication succeeds.
+	previousStream := expectedSession.stream
 	expectedSession.stream = expectedStream
 	expectedSession.pendingStream = nil
+	expectedSession.sessionMu.Unlock()
+	if previousStream != nil && previousStream != expectedStream {
+		expectedSession.abortPendingCommandsForStreamReplacement()
+	}
 	return nil
 }
 
@@ -126,6 +156,7 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 	session.sessionMu.Unlock()
 	if isCurrentStream {
 		session.retired = true
+		session.abortPendingCommands()
 		delete(r.grpcSessions, agentID)
 		// Stop liveness before releasing the session-map lock. Otherwise a new
 		// registration could publish and activate a replacement stream between

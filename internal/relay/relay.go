@@ -59,6 +59,7 @@ type Relay struct {
 	registryReporter   agentRegistryReporter
 	registryLifecycle  registryLifecycle
 	agentAuthenticator func(context.Context, string) error
+	controlAuthorizer  controlPlaneAuthorizer
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
 }
@@ -93,12 +94,50 @@ type DroneSession struct {
 	FlightID         string
 	IntentID         string
 	IntentVersion    uint32
-	sessionMu        sync.RWMutex
-	pendingMu        sync.Mutex
-	pending          map[string]chan *agentv1.OperationContextCommandAck
-	ownershipMu      sync.RWMutex
-	publicationMu    sync.Mutex
-	retired          bool
+	// operationContextUnreconciled is set for the first Agent session seen by a
+	// Relay process with context control enabled. Telemetry remains retryable
+	// until the API replays an authoritative Set/Clear command; same-process
+	// replacements inherit the previous session's reconciled state.
+	operationContextUnreconciled bool
+	// emptyContextCommandID retains the one durable command permitted to assert
+	// an authoritative empty context, including exact retries after admission
+	// opens and same-process session replacement.
+	emptyContextCommandID string
+	sessionMu             sync.RWMutex
+	pendingMu             sync.Mutex
+	pending               map[string]chan *agentv1.OperationContextCommandAck
+	operationCommands     map[string]*operationCommandState
+	operationGate         chan struct{}
+	aircraftCommands      map[string]*aircraftCommandState
+	// controlStreamMu keeps command writes and command evidence on one active
+	// telemetry-stream binding. Same-session stream replacement takes the write
+	// side only for the binding swap, not for Registry publication or telemetry.
+	controlStreamMu sync.RWMutex
+	ownershipMu     sync.RWMutex
+	publicationMu   sync.Mutex
+	retired         bool
+}
+
+type operationCommandState struct {
+	fingerprint string
+	expected    *agentv1.OperationContext
+	done        chan struct{}
+	ack         *agentv1.OperationContextCommandAck
+	err         error
+	delivered   bool
+	completed   bool
+	completedAt time.Time
+}
+
+type aircraftCommandState struct {
+	fingerprint    string
+	done           chan struct{}
+	deliveryCancel context.CancelFunc
+	waiters        int
+	result         *agentv1.AircraftCommandResult
+	err            error
+	completed      bool
+	completedAt    time.Time
 }
 
 type telemetryStreamBinding struct {
@@ -157,6 +196,16 @@ var (
 		Name: "aero_relay_sink_errors_total",
 		Help: "Errors returned while forwarding telemetry to sinks.",
 	}, []string{"sink"})
+
+	relayAircraftCommandsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_aircraft_commands_total",
+		Help: "Immediate aircraft commands handled by the relay.",
+	}, []string{"command_type", "result"})
+
+	relayAircraftCommandDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "aero_relay_aircraft_command_duration_seconds",
+		Help: "Time from Relay command receipt to Agent result.",
+	}, []string{"command_type"})
 )
 
 // New validates Agent authentication requirements and constructs a Relay with
@@ -170,6 +219,9 @@ var (
 //   - relay: owns initialized outputs but is not yet serving.
 //   - error: reports authentication or output initialization failure.
 func New(cfg *config.Config) (*Relay, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("relay configuration is required")
+	}
 	authenticator, err := newAgentTokenAuthenticator(cfg.AgentAuth.Tokens)
 	if err != nil {
 		return nil, err
@@ -177,11 +229,16 @@ func New(cfg *config.Config) (*Relay, error) {
 	if cfg.Registry.Enabled && authenticator == nil {
 		return nil, fmt.Errorf("agent authentication is required when registry reporting is enabled")
 	}
+	controlAuthorizer, err := newControlPlaneAuthorizer(cfg.ControlAuth)
+	if err != nil {
+		return nil, fmt.Errorf("configure control-plane authentication: %w", err)
+	}
 	relay := &Relay{
 		config:             cfg,
 		sinks:              make([]sinks.Sink, 0),
 		grpcSessions:       make(map[string]*DroneSession),
 		agentAuthenticator: authenticator,
+		controlAuthorizer:  controlAuthorizer,
 	}
 
 	if err := relay.initializeOutputs(); err != nil {
@@ -220,7 +277,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	var creds credentials.TransportCredentials
 	var homeDir string
 
-	creds, err = credentials.NewServerTLSFromFile(r.config.TLSCertPath, r.config.TLSKeyPath)
+	creds, err = serverTransportCredentials(r.config, r.config.TLSCertPath, r.config.TLSKeyPath)
 	if r.config.Debug {
 		homeDir, err = os.UserHomeDir()
 		if err != nil {
@@ -230,7 +287,7 @@ func (r *Relay) Start(ctx context.Context) error {
 
 		certPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSCertPath)
 		keyPath := fmt.Sprintf("%s/%s", homeDir, DebugTLSKeyPath)
-		creds, err = credentials.NewServerTLSFromFile(certPath, keyPath)
+		creds, err = serverTransportCredentials(r.config, certPath, keyPath)
 	}
 
 	if err != nil {
