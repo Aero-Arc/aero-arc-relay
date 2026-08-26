@@ -97,6 +97,10 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Sequence = 1 },
 			code:   codes.InvalidArgument,
 		},
+		"dynamic current flag": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Current = true },
+			code:   codes.InvalidArgument,
+		},
 		"too many items": {
 			mutate: func(c *agentv1.DeployMissionCommand) {
 				c.Plan.Items = make([]*agentv1.MissionItem, maxMissionItems+1)

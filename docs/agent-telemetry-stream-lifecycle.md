@@ -151,8 +151,11 @@ command ID.
 `DeployMission` is the durable deployment path for a bounded canonical mission
 plan. Before delivery, Relay recomputes the plan's deterministic SHA-256 digest,
 rejects unsupported schema/frame/command values and more than 200 items, and
-requires every immutable binding field. The binding's operator and aircraft
-must match `telemetry.agent_mappings` for the routed Agent. Its aircraft,
+requires every immutable binding field. Schema-1 plans exclude autopilot HOME
+and export metadata, and every canonical item's reserved `current` flag must be
+false so autopilot execution/readback state cannot change the digest. The
+binding's operator and aircraft must match `telemetry.agent_mappings` for the
+routed Agent. Its aircraft,
 flight, intent, and intent version must also exactly match the session's
 reconciled operation context; a legacy context without `aircraft_id` or an
 unreconciled session cannot receive a mission. The mission route

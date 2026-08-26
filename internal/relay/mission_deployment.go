@@ -232,6 +232,9 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 		if item.GetSequence() != uint32(i) {
 			return status.Errorf(codes.InvalidArgument, "mission item %d has non-contiguous sequence", i)
 		}
+		if item.GetCurrent() {
+			return status.Errorf(codes.InvalidArgument, "mission item %d sets reserved current flag", i)
+		}
 		if !isSupportedMissionFrame(item.GetFrame()) {
 			return status.Errorf(codes.InvalidArgument, "mission item %d uses unsupported frame %d", i, item.GetFrame())
 		}
