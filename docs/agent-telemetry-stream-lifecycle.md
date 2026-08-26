@@ -148,6 +148,25 @@ outcome without redelivery; reusing a command ID for another aircraft or command
 type is rejected. A new deliberate vehicle action therefore requires a new
 command ID.
 
+`DeployMission` is the durable deployment path for a bounded canonical mission
+plan. Before delivery, Relay recomputes the plan's deterministic SHA-256 digest,
+rejects unsupported schema/frame/command values and more than 200 items, and
+requires every immutable binding field. The binding's operator and aircraft
+must match `telemetry.agent_mappings` for the routed Agent. Its aircraft,
+flight, intent, and intent version must also exactly match the session's
+reconciled operation context; a legacy context without `aircraft_id` or an
+unreconciled session cannot receive a mission. The mission route
+does not replace or reshape the operational intent.
+
+Mission command fingerprints cover the entire command, binding, and plan.
+Concurrent exact retries share one delivery and terminal outcomes are retained;
+reusing the command ID with another byte-level payload is rejected. Successful
+Agent evidence is accepted only when its full binding matches, its onboard
+digest matches the requested digest, and its uploaded item count matches the
+canonical plan. The Relay wait is capped at two minutes even when the caller
+does not provide a shorter deadline, and new commands must use a validity
+window no longer than five minutes.
+
 Unlike a telemetry ACK, an operation-context command is not a response to a
 message received on a particular stream. It targets the current admitted Agent
 session. If that session changes before the ACK is returned, the Relay reports
@@ -180,7 +199,8 @@ commands use the same through-write session fence in their shared delivery task,
 but an individual caller may detach at its deadline and must treat that command
 outcome as uncertain while the started write finishes.
 
-Incoming operation-context ACKs and aircraft-command results are applied only
+Incoming operation-context ACKs, aircraft-command results, and mission results
+are applied only
 when their command ID matches a pending request on the session captured by the
 receiving stream handler and that handler still owns the active stream binding.
 The pending entry is consumed before an applied ACK may update active flight and
@@ -220,11 +240,17 @@ After replacement:
   evidence that is no longer authoritative. An aircraft-command caller must
   treat this result as outcome-uncertain because the old Agent may have passed
   the command to the autopilot before reconnecting.
+- A delivered mission awaiting evidence completes as `OUTCOME_UNKNOWN` when its
+  exact stream is replaced. The retained command is not automatically sent on
+  the replacement binding, and evidence arriving on the superseded binding is
+  ignored. A send that was invoked but returned a transport error has the same
+  uncertainty because the Agent may have accepted it before the failure became
+  visible to Relay.
 - Command admission is fenced with its stream write. A command waiting behind
   the swap is admitted only after the replacement becomes active, so Relay
   cannot abort it and then deliver it on the new binding.
-- Operation-context ACKs and aircraft-command results from the superseded
-  binding are ignored, even though it shares the same session ID.
+- Operation-context ACKs, aircraft-command results, and mission results from the
+  superseded binding are ignored, even though it shares the same session ID.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
   old stream while the shared session remains registered.
 - Sends remain serialized independently on each stream binding.

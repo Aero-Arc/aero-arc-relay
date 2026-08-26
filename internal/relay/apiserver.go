@@ -718,6 +718,7 @@ func expectedContextAfterClear(session *DroneSession, flightID string, authorita
 		return nil
 	}
 	return &agentv1.OperationContext{
+		AircraftId:    session.AircraftID,
 		FlightId:      session.FlightID,
 		IntentId:      session.IntentID,
 		IntentVersion: session.IntentVersion,

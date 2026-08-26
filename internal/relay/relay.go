@@ -91,6 +91,7 @@ type DroneSession struct {
 	Attitude         *common.MessageAttitude
 	VfrHud           *common.MessageVfrHud
 	SystemStatus     *common.MessageSysStatus
+	AircraftID       string
 	FlightID         string
 	IntentID         string
 	IntentVersion    uint32
@@ -109,6 +110,7 @@ type DroneSession struct {
 	operationCommands     map[string]*operationCommandState
 	operationGate         chan struct{}
 	aircraftCommands      map[string]*aircraftCommandState
+	missionDeployments    map[string]*missionDeploymentState
 	// controlStreamMu keeps command writes and command evidence on one active
 	// telemetry-stream binding. Same-session stream replacement takes the write
 	// side only for the binding swap, not for Registry publication or telemetry.
@@ -136,6 +138,19 @@ type aircraftCommandState struct {
 	waiters        int
 	result         *agentv1.AircraftCommandResult
 	err            error
+	completed      bool
+	completedAt    time.Time
+}
+
+type missionDeploymentState struct {
+	fingerprint    string
+	command        *agentv1.DeployMissionCommand
+	done           chan struct{}
+	deliveryCancel context.CancelFunc
+	waiters        int
+	result         *agentv1.MissionDeploymentResult
+	err            error
+	delivered      bool
 	completed      bool
 	completedAt    time.Time
 }
@@ -206,6 +221,16 @@ var (
 		Name: "aero_relay_aircraft_command_duration_seconds",
 		Help: "Time from Relay command receipt to Agent result.",
 	}, []string{"command_type"})
+
+	relayMissionDeploymentsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_mission_deployments_total",
+		Help: "Mission deployment requests completed by the relay.",
+	}, []string{"result"})
+
+	relayMissionDeploymentDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name: "aero_relay_mission_deployment_duration_seconds",
+		Help: "Time from Relay mission deployment receipt to Agent result.",
+	})
 )
 
 // New validates Agent authentication requirements and constructs a Relay with

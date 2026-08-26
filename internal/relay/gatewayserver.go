@@ -81,6 +81,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		operationCommands:            make(map[string]*operationCommandState),
 		operationGate:                makeOperationGate(),
 		aircraftCommands:             make(map[string]*aircraftCommandState),
+		missionDeployments:           make(map[string]*missionDeploymentState),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -227,6 +228,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 		if commandResult := message.GetAircraftCommandResult(); commandResult != nil {
 			streamSession.handleAircraftCommandResultFrom(streamBinding, commandResult)
+			continue
+		}
+		if result := message.GetMissionDeploymentResult(); result != nil {
+			streamSession.handleMissionDeploymentResultFrom(streamBinding, result)
 			continue
 		}
 		frame := message.GetTelemetryFrame()
@@ -416,10 +421,12 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 		} else {
 			session.sessionMu.Lock()
 			if state.expected == nil {
+				session.AircraftID = ""
 				session.FlightID = ""
 				session.IntentID = ""
 				session.IntentVersion = 0
 			} else {
+				session.AircraftID = state.expected.AircraftId
 				session.FlightID = state.expected.FlightId
 				session.IntentID = state.expected.IntentId
 				session.IntentVersion = state.expected.IntentVersion
@@ -494,6 +501,44 @@ func (session *DroneSession) handleAircraftCommandResultFrom(binding *telemetryS
 	session.handleAircraftCommandResult(result)
 }
 
+func (session *DroneSession) handleMissionDeploymentResultFrom(binding *telemetryStreamBinding, result *agentv1.MissionDeploymentResult) {
+	if session == nil || binding == nil || result == nil {
+		return
+	}
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
+	session.sessionMu.RLock()
+	isCurrent := session.stream == binding && !binding.closed
+	session.sessionMu.RUnlock()
+	if !isCurrent {
+		return
+	}
+	session.handleMissionDeploymentResult(result)
+}
+
+func (session *DroneSession) handleMissionDeploymentResult(result *agentv1.MissionDeploymentResult) {
+	if session == nil || result == nil {
+		return
+	}
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	state := session.missionDeployments[result.GetCommandId()]
+	if state == nil || state.completed {
+		return
+	}
+	if err := validateMissionDeploymentResult(state.command, result); err != nil {
+		state.err = err
+	} else {
+		state.result = proto.Clone(result).(*agentv1.MissionDeploymentResult)
+	}
+	state.completed = true
+	state.completedAt = time.Now()
+	if state.deliveryCancel != nil {
+		state.deliveryCancel()
+	}
+	close(state.done)
+}
+
 func (session *DroneSession) abortPendingCommands() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
@@ -528,6 +573,9 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 		}
 		close(state.done)
 	}
+	for _, state := range session.missionDeployments {
+		completeMissionDeploymentForLostSessionLocked(state, now, "agent stream replaced after mission delivery")
+	}
 	if contextOutcomeUncertain {
 		// The old stream may have applied Set/Clear before its ACK was lost.
 		// Fence telemetry on the replacement until the API replays its current
@@ -543,6 +591,7 @@ func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *Dron
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	session.sessionMu.RLock()
+	replacement.AircraftID = session.AircraftID
 	replacement.FlightID = session.FlightID
 	replacement.IntentID = session.IntentID
 	replacement.IntentVersion = session.IntentVersion
@@ -617,6 +666,9 @@ func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
 		state.completedAt = now
 		state.deliveryCancel()
 		close(state.done)
+	}
+	for _, state := range session.missionDeployments {
+		completeMissionDeploymentForLostSessionLocked(state, now, "agent session retired while awaiting mission result")
 	}
 }
 
