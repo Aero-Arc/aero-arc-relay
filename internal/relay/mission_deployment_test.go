@@ -76,6 +76,81 @@ func TestDeployMissionDeliversOnceAndRetainsCorrelatedResult(t *testing.T) {
 	}
 }
 
+func TestDeployMissionTemporaryErrorRetryRedispatchesOnceThenApplies(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
+	}
+
+	first := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		first <- outcome{response: response, err: err}
+	}()
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("initial delivered command = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, Message: "fresh heartbeat required",
+		CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if got := <-first; got.err != nil || !proto.Equal(got.response.GetResult(), temporary) {
+		t.Fatalf("initial temporary result = %+v, %v", got.response, got.err)
+	}
+
+	retried := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			response, err := relay.DeployMission(context.Background(), request)
+			retried <- outcome{response: response, err: err}
+		}()
+	}
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("retry delivered command = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("concurrent exact retry redelivered: %+v", duplicate)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	uncorrelated := testAppliedMissionResult(command)
+	uncorrelated.CommandId = "another-command"
+	session.handleMissionDeploymentResult(uncorrelated)
+	select {
+	case got := <-retried:
+		t.Fatalf("uncorrelated result completed retry: %+v, %v", got.response, got.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	applied := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(applied)
+	for range 2 {
+		select {
+		case got := <-retried:
+			if got.err != nil || !proto.Equal(got.response.GetResult(), applied) {
+				t.Fatalf("retry result = %+v, %v", got.response, got.err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for coalesced mission retry")
+		}
+	}
+
+	replayed, err := relay.DeployMission(context.Background(), request)
+	if err != nil || !proto.Equal(replayed.GetResult(), applied) {
+		t.Fatalf("terminal replay = %+v, %v", replayed, err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("terminal replay redelivered: %+v", duplicate)
+	default:
+	}
+}
+
 func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 	valid := testMissionCommand(t)
 	tests := map[string]struct {
@@ -183,8 +258,8 @@ func TestDeployMissionRejectsUnsafeDeliveryWindow(t *testing.T) {
 	}
 }
 
-func TestDeployMissionCallerDeadlineRetainsOutcomeUnknown(t *testing.T) {
-	relay, _, stream := testMissionRelay(t)
+func TestDeployMissionCallerDeadlineRedispatchesOutcomeUnknownOnSameStream(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -197,14 +272,69 @@ func TestDeployMissionCallerDeadlineRetainsOutcomeUnknown(t *testing.T) {
 	if err := <-completed; status.Code(err) != codes.DeadlineExceeded {
 		t.Fatalf("DeployMission() = %v, want DeadlineExceeded", err)
 	}
-	retry, err := relay.DeployMission(context.Background(), &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command})
-	if err != nil || retry.GetResult().GetStatus() != agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN {
-		t.Fatalf("retry after waiter deadline = %+v, %v", retry, err)
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
 	}
+	retried := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command})
+		retried <- outcome{response: response, err: err}
+	}()
 	select {
 	case message := <-stream.sentAckChan:
-		t.Fatalf("deadline retry redelivered: %+v", message)
-	default:
+		if !proto.Equal(message.GetDeployMission(), command) {
+			t.Fatalf("deadline retry delivered = %+v, want %+v", message.GetDeployMission(), command)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline retry was not redelivered for Agent recovery")
+	}
+	applied := testAppliedMissionResult(command)
+	applied.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+	session.handleMissionDeploymentResult(applied)
+	got := <-retried
+	if got.err != nil || !proto.Equal(got.response.GetResult(), applied) {
+		t.Fatalf("retry after waiter deadline = %+v, %v", got.response, got.err)
+	}
+}
+
+func TestDeployMissionOutcomeUnknownRecoversAfterCommandExpiry(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	command.ExpiresAtUnixMs = time.Now().Add(50 * time.Millisecond).UnixMilli()
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		first <- outcome{response: response, err: err}
+	}()
+	<-stream.sentAckChan
+	unknown := uncertainMissionDeploymentResult(command, time.Now(), "upload outcome unknown")
+	session.handleMissionDeploymentResult(unknown)
+	if got := <-first; got.err != nil || got.response.GetResult().GetStatus() != agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN {
+		t.Fatalf("initial unknown result = %+v, %v", got.response, got.err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	retried := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		retried <- outcome{response: response, err: err}
+	}()
+	select {
+	case <-stream.sentAckChan:
+	case <-time.After(time.Second):
+		t.Fatal("expired uncertain command was not redelivered for readback recovery")
+	}
+	reconciled := testAppliedMissionResult(command)
+	reconciled.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+	session.handleMissionDeploymentResult(reconciled)
+	got := <-retried
+	if got.err != nil || !proto.Equal(got.response.GetResult(), reconciled) {
+		t.Fatalf("expired outcome recovery = %+v, %v", got.response, got.err)
 	}
 }
 

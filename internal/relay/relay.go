@@ -145,6 +145,7 @@ type aircraftCommandState struct {
 type missionDeploymentState struct {
 	fingerprint    string
 	command        *agentv1.DeployMissionCommand
+	deliveryStream *telemetryStreamBinding
 	done           chan struct{}
 	deliveryCancel context.CancelFunc
 	waiters        int

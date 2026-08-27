@@ -70,8 +70,10 @@ func isPositiveZero(value float64) bool {
 // DeployMission authenticates a control-plane caller and delivers one bounded,
 // immutable mission to the exact Agent session active at admission. It refuses
 // delivery unless the configured Agent mapping and reconciled operation context
-// exactly match the mission binding. Exact retries coalesce; a command ID may
-// never identify a different payload.
+// exactly match the mission binding. Concurrent exact attempts coalesce,
+// terminal results replay, and retryable Agent outcomes may start one new
+// delivery on the original stream binding. A command ID may never identify a
+// different payload.
 func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest) (*pb.DeployMissionResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -292,19 +294,26 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 		session.missionDeployments = make(map[string]*missionDeploymentState)
 	}
 	expireMissionDeploymentsLocked(session, time.Now())
+	session.sessionMu.RLock()
+	currentStream := session.stream
+	session.sessionMu.RUnlock()
+	var recoveringOutcome bool
 	if existing := session.missionDeployments[command.GetCommandId()]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			session.pendingMu.Unlock()
 			session.controlStreamMu.RUnlock()
 			return nil, false, status.Error(codes.AlreadyExists, "mission command ID was already used with a different payload")
 		}
-		existing.waiters++
-		session.pendingMu.Unlock()
-		session.controlStreamMu.RUnlock()
-		return existing, false, nil
+		if !existing.completed || !retryableMissionDeployment(existing) || existing.deliveryStream != currentStream {
+			existing.waiters++
+			session.pendingMu.Unlock()
+			session.controlStreamMu.RUnlock()
+			return existing, false, nil
+		}
+		recoveringOutcome = existing.result.GetStatus() == agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN
 	}
 	now := time.Now()
-	if now.UnixMilli() >= command.GetExpiresAtUnixMs() {
+	if now.UnixMilli() >= command.GetExpiresAtUnixMs() && !recoveringOutcome {
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()
 		return nil, false, status.Error(codes.DeadlineExceeded, "mission command has expired")
@@ -319,8 +328,11 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 		session.controlStreamMu.RUnlock()
 		return nil, false, status.Error(codes.InvalidArgument, "mission command validity window is too long")
 	}
-	makeMissionDeploymentRoomLocked(session)
-	if len(session.missionDeployments) >= maxOperationCommands {
+	_, replacing := session.missionDeployments[command.GetCommandId()]
+	if !replacing {
+		makeMissionDeploymentRoomLocked(session)
+	}
+	if !replacing && len(session.missionDeployments) >= maxOperationCommands {
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()
 		return nil, false, status.Error(codes.ResourceExhausted, "mission deployment retention is full")
@@ -328,7 +340,7 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 	deliveryCtx, deliveryCancel := context.WithCancel(context.Background())
 	cloned := proto.Clone(command).(*agentv1.DeployMissionCommand)
 	state := &missionDeploymentState{
-		fingerprint: fingerprint, command: cloned, done: make(chan struct{}),
+		fingerprint: fingerprint, command: cloned, deliveryStream: currentStream, done: make(chan struct{}),
 		deliveryCancel: deliveryCancel, waiters: 1,
 	}
 	session.missionDeployments[command.GetCommandId()] = state
@@ -355,6 +367,19 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 		}
 	}()
 	return state, true, nil
+}
+
+func retryableMissionDeployment(state *missionDeploymentState) bool {
+	if state == nil || !state.completed || state.err != nil || state.result == nil {
+		return false
+	}
+	switch state.result.GetStatus() {
+	case agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR,
+		agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateMissionDeploymentResult(command *agentv1.DeployMissionCommand, result *agentv1.MissionDeploymentResult) error {
