@@ -154,9 +154,11 @@ rejects unsupported schema/frame/command values and more than 200 items, and
 requires every immutable binding field. Schema-1 plans exclude autopilot HOME
 and export metadata, and every canonical item's reserved `current` flag must be
 false so autopilot execution/readback state cannot change the digest. The
-binding's operator and aircraft must match `telemetry.agent_mappings` for the
-routed Agent. Its aircraft,
-flight, intent, and intent version must also exactly match the session's
+canonical form also requires positive-zero params 1–3, positive-zero param 4
+for waypoint/takeoff, and exactly `+1` param 4 for `NAV_LAND`, matching stable
+ArduPilot readback. The binding's operator and aircraft must match
+`telemetry.agent_mappings` for the routed Agent. Its aircraft, flight, intent,
+and intent version must also exactly match the session's
 reconciled operation context; a legacy context without `aircraft_id` or an
 unreconciled session cannot receive a mission. The mission route
 does not replace or reshape the operational intent.

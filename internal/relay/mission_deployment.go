@@ -63,6 +63,10 @@ func isSupportedMissionCommand(value uint32) bool {
 	}
 }
 
+func isPositiveZero(value float64) bool {
+	return math.Float64bits(value) == 0
+}
+
 // DeployMission authenticates a control-plane caller and delivers one bounded,
 // immutable mission to the exact Agent session active at admission. It refuses
 // delivery unless the configured Agent mapping and reconciled operation context
@@ -235,11 +239,24 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 		if item.GetCurrent() {
 			return status.Errorf(codes.InvalidArgument, "mission item %d sets reserved current flag", i)
 		}
+		if !isPositiveZero(item.GetParam1()) || !isPositiveZero(item.GetParam2()) || !isPositiveZero(item.GetParam3()) {
+			return status.Errorf(codes.InvalidArgument, "mission item %d params 1 through 3 must be positive zero", i)
+		}
 		if !isSupportedMissionFrame(item.GetFrame()) {
 			return status.Errorf(codes.InvalidArgument, "mission item %d uses unsupported frame %d", i, item.GetFrame())
 		}
 		if !isSupportedMissionCommand(item.GetCommand()) {
 			return status.Errorf(codes.InvalidArgument, "mission item %d uses unsupported command %d", i, item.GetCommand())
+		}
+		switch item.GetCommand() {
+		case uint32(common.MAV_CMD_NAV_WAYPOINT), uint32(common.MAV_CMD_NAV_TAKEOFF):
+			if !isPositiveZero(item.GetParam4()) {
+				return status.Errorf(codes.InvalidArgument, "mission item %d param4 must be positive zero for command %d", i, item.GetCommand())
+			}
+		case uint32(common.MAV_CMD_NAV_LAND):
+			if item.GetParam4() != 1 {
+				return status.Errorf(codes.InvalidArgument, "mission item %d param4 must be +1 for NAV_LAND", i)
+			}
 		}
 		if item.GetLatitudeE7() < -900000000 || item.GetLatitudeE7() > 900000000 || item.GetLongitudeE7() < -1800000000 || item.GetLongitudeE7() > 1800000000 {
 			return status.Errorf(codes.InvalidArgument, "mission item %d has invalid coordinates", i)

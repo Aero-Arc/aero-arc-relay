@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,22 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 		},
 		"dynamic current flag": {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Current = true },
+			code:   codes.InvalidArgument,
+		},
+		"nonzero param1": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Param1 = 1 },
+			code:   codes.InvalidArgument,
+		},
+		"negative zero param2": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Param2 = math.Copysign(0, -1) },
+			code:   codes.InvalidArgument,
+		},
+		"waypoint param4": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[1].Param4 = 1 },
+			code:   codes.InvalidArgument,
+		},
+		"land param4 zero": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[2].Param4 = 0 },
 			code:   codes.InvalidArgument,
 		},
 		"too many items": {
@@ -360,6 +377,7 @@ func testMissionCommand(t *testing.T) *agentv1.DeployMissionCommand {
 	plan := &agentv1.MissionPlan{SchemaVersion: 1, Items: []*agentv1.MissionItem{
 		{Sequence: 0, Frame: 3, Command: 22, Autocontinue: true, LatitudeE7: 389000000, LongitudeE7: -770000000, AltitudeM: 20},
 		{Sequence: 1, Frame: 3, Command: 16, Autocontinue: true, LatitudeE7: 389001000, LongitudeE7: -770001000, AltitudeM: 30},
+		{Sequence: 2, Frame: 3, Command: 21, Autocontinue: true, Param4: 1, LatitudeE7: 389000000, LongitudeE7: -770000000},
 	}}
 	digest, err := missionPlanDigest(plan)
 	if err != nil {
