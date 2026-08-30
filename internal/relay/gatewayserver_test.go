@@ -1927,6 +1927,40 @@ func TestRegisterAfterDisconnectFencesUncertainOperationContext(t *testing.T) {
 	}
 }
 
+func TestRegisterAfterDisconnectRestoresAcknowledgedEmptyOperationContext(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+	const agentID = "agent-1"
+	binding := &telemetryStreamBinding{generation: 1}
+	old := &DroneSession{
+		agentID: agentID, SessionID: "old-session", stream: binding, streamGeneration: 1,
+		pending:            make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands:  make(map[string]*operationCommandState),
+		aircraftCommands:   make(map[string]*aircraftCommandState),
+		missionDeployments: make(map[string]*missionDeploymentState),
+	}
+	relay.grpcSessions[agentID] = old
+
+	relay.deleteStream(agentID, old, binding)
+	if _, retained := relay.disconnectedOperationContexts[agentID]; !retained {
+		t.Fatal("authenticated disconnect discarded acknowledged empty operation context")
+	}
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if replacement.requiresOperationContextReconciliation() {
+		t.Fatal("authenticated reconnect lost acknowledged empty operation context")
+	}
+	if got := droneStatus(replacement); got.GetFlightId() != "" || got.GetIntentId() != "" || got.GetIntentVersion() != 0 {
+		t.Fatalf("restored empty context = %#v", got)
+	}
+}
+
 func TestRegisterAfterDisconnectDoesNotRestoreContextWithoutAgentAuthentication(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
 	relay.controlAuthorizer = func(context.Context) error { return nil }
@@ -1970,19 +2004,14 @@ func TestDisconnectedOperationContextCacheIsBoundedAndExpiring(t *testing.T) {
 		aircraftID: "aircraft-1", flightID: "flight-1", intentID: "intent-1", intentVersion: 7,
 	}
 
-	t.Run("empty reconciled context is omitted", func(t *testing.T) {
+	t.Run("empty reconciled context retains authoritative presence", func(t *testing.T) {
 		relay := &Relay{}
 		relay.retainDisconnectedOperationContextLocked("agent-empty", operationContextSnapshot{}, base)
-		if len(relay.disconnectedOperationContexts) != 0 {
-			t.Fatalf("empty cache size = %d, want 0", len(relay.disconnectedOperationContexts))
-		}
-		relay.retainDisconnectedOperationContextLocked(
-			"agent-unreconciled",
-			operationContextSnapshot{unreconciled: true},
-			base,
-		)
 		if len(relay.disconnectedOperationContexts) != 1 {
-			t.Fatal("empty but unreconciled context was discarded")
+			t.Fatalf("empty cache size = %d, want 1", len(relay.disconnectedOperationContexts))
+		}
+		if restored, ok := relay.takeDisconnectedOperationContextLocked("agent-empty", base); !ok || restored != (operationContextSnapshot{}) {
+			t.Fatalf("empty authoritative context = (%+v, %t), want retained empty snapshot", restored, ok)
 		}
 	})
 

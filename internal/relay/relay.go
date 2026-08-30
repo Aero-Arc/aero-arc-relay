@@ -97,18 +97,9 @@ func (snapshot operationContextSnapshot) restoreInto(session *DroneSession) {
 	session.emptyContextCommandID = snapshot.emptyContextCommandID
 }
 
-func (snapshot operationContextSnapshot) isEmptyAndReconciled() bool {
-	return snapshot.aircraftID == "" && snapshot.flightID == "" && snapshot.intentID == "" &&
-		snapshot.intentVersion == 0 && !snapshot.unreconciled && snapshot.emptyContextCommandID == ""
-}
-
 // retainDisconnectedOperationContextLocked stores bounded, short-lived
 // reconnect state. The caller must hold sessionsMu for writing.
 func (r *Relay) retainDisconnectedOperationContextLocked(agentID string, snapshot operationContextSnapshot, now time.Time) {
-	if snapshot.isEmptyAndReconciled() {
-		delete(r.disconnectedOperationContexts, agentID)
-		return
-	}
 	if r.disconnectedOperationContexts == nil {
 		r.disconnectedOperationContexts = make(map[string]retainedOperationContext)
 	}

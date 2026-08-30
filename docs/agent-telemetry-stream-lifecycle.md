@@ -56,9 +56,10 @@ If a delivered Set or Clear lost its acknowledgement during disconnect, the
 cached state is marked unreconciled instead, and telemetry remains retryable
 until the API replays its durable authority. Entries expire after five minutes,
 the cache is hard-capped at 1,024 agents with deterministic oldest-entry
-eviction, and a fully empty reconciled context is not retained. The cache does
-not survive Relay restart, so the fresh-process reconciliation rule above
-remains the fail-closed backstop.
+eviction. A reconciled empty context is retained as an authoritative presence
+marker so an authenticated reconnect preserves the API's acknowledged decision
+that no operation is active. The cache does not survive Relay restart, so the
+fresh-process reconciliation rule above remains the fail-closed backstop.
 
 ## 2. Attaching a Telemetry Stream
 
