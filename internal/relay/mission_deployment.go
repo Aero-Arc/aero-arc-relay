@@ -372,10 +372,14 @@ func attachMissionDeployment(waitCtx context.Context, session *DroneSession, com
 		// cross-operation gate. Concurrent exact retries attach to this shared
 		// state even if the next Agent result arrives before the gate is released.
 		cloned := proto.Clone(command).(*agentv1.DeployMissionCommand)
+		admission, registered := newMissionAdmission(waitCtx)
+		if !registered {
+			return nil, false, false, status.FromContextError(waitCtx.Err()).Err()
+		}
 		reserved := &missionDeploymentState{
 			fingerprint: fingerprint, command: cloned, deliveryStream: currentStream,
 			done: make(chan struct{}), waiters: 1, reserved: true,
-			admission: newMissionAdmission(waitCtx),
+			admission: admission,
 		}
 		session.missionDeployments[command.GetCommandId()] = reserved
 		return reserved, false, true, nil
@@ -387,11 +391,14 @@ func attachMissionDeployment(waitCtx context.Context, session *DroneSession, com
 	return existing, true, false, nil
 }
 
-func newMissionAdmission(waiterCtx context.Context) *missionAdmission {
-	ctx, cancel := context.WithTimeout(context.Background(), maxMissionDeploymentWait)
+func newMissionAdmission(waiterCtx context.Context) (*missionAdmission, bool) {
+	ctx, cancel := context.WithCancel(context.Background())
 	admission := &missionAdmission{ctx: ctx, cancel: cancel}
-	admission.add(waiterCtx)
-	return admission
+	if !admission.add(waiterCtx) {
+		cancel()
+		return nil, false
+	}
+	return admission, true
 }
 
 func (a *missionAdmission) add(waiterCtx context.Context) bool {

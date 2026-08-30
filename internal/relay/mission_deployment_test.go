@@ -425,6 +425,69 @@ func TestDeployMissionFailedRetryReservationCanBeRetried(t *testing.T) {
 	}
 }
 
+func TestDeployMissionRejectsCanceledRetryReservation(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := relay.DeployMission(ctx, request)
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("canceled retry reservation = %v, want Canceled", err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("canceled retry reservation delivered a mission: %+v", duplicate)
+	default:
+	}
+	session.pendingMu.Lock()
+	state := session.missionDeployments[command.GetCommandId()]
+	stillRetained := state != nil && state.completed && !state.reserved && proto.Equal(state.result, temporary)
+	session.pendingMu.Unlock()
+	if !stillRetained {
+		t.Fatal("canceled retry replaced the retained retryable result")
+	}
+}
+
+func TestMissionAdmissionUsesEveryWaiterWindow(t *testing.T) {
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	admission, registered := newMissionAdmission(firstCtx)
+	if !registered {
+		t.Fatal("first live waiter was not registered")
+	}
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	if !admission.add(secondCtx) {
+		t.Fatal("second live waiter was not registered")
+	}
+	cancelFirst()
+	select {
+	case <-admission.ctx.Done():
+		t.Fatal("first waiter cancellation ended the later waiter's admission window")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelSecond()
+	select {
+	case <-admission.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("admission remained live after its last waiter ended")
+	}
+}
+
 func TestDeployMissionRetryReservationSurvivesOneCallerDeadline(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)

@@ -186,7 +186,9 @@ for the gate; concurrent callers attach to that reservation, so even another
 immediate retryable Agent result produces only one stream write. A
 generation-scoped admission task takes the gate while any waiter remains, so
 one caller's shorter deadline detaches only that caller and cannot cancel other
-coalesced waiters. The last waiter ending cancels pre-effect admission. A
+coalesced waiters. Every caller retains its own capped admission window, so a
+later exact retry contributes its full remaining window rather than inheriting
+the first caller's deadline. The last waiter ending cancels pre-effect admission. A
 retryable outcome may be redispatched only while the session still has the exact
 mission binding; otherwise Relay fails the active-context precondition without
 writing to the Agent stream. Successful Agent evidence is accepted only when its
