@@ -42,10 +42,13 @@ Registering the same agent ID again replaces the map entry with a new
 `DroneSession` and a new session ID. The old stream handler can still be running,
 but it no longer owns the active registered session.
 
-When an admitted stream disconnects, Relay removes its live session but retains
-the last API-authoritative operation context in a process-local reconnect cache.
-The next registration for that exact agent ID that passes any configured
-authentication inherits the cached context before its new session is published.
+When an authenticated admitted stream disconnects, Relay removes its live
+session but retains the last API-authoritative operation context in a
+process-local reconnect cache. The next authenticated registration for that
+exact agent ID inherits the cached context before its new session is published.
+When Agent authentication is not configured, Relay neither retains nor restores
+reconnect context; every new session remains unreconciled until the API replays
+its durable authority.
 If a delivered Set or Clear lost its acknowledgement during disconnect, the
 cached state is marked unreconciled instead, and telemetry remains retryable
 until the API replays its durable authority. Entries expire after five minutes,
@@ -199,8 +202,10 @@ immediate retryable Agent result produces only one stream write. A
 generation-scoped admission task takes the gate while any waiter remains, so
 one caller's shorter deadline detaches only that caller and cannot cancel other
 coalesced waiters. Relay ignores delayed results from the preceding delivery
-while the next generation is still reserved; only an admitted generation may
-consume Agent evidence. Every caller retains its own capped admission window,
+while the next generation is reserved or waiting to begin its stream write;
+Relay keeps the fence closed through the serialized Send call and admits Agent
+evidence only after that delivery attempt returns. Every caller retains its own
+capped admission window,
 so a later exact retry contributes its full remaining window rather than
 inheriting the first caller's deadline. The last waiter ending cancels
 pre-effect admission. A retryable outcome may be redispatched only while the

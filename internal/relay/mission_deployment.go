@@ -668,9 +668,15 @@ func beginMissionDeployment(ctx context.Context, session *DroneSession, command 
 	go func() {
 		defer session.ownershipMu.RUnlock()
 		defer session.controlStreamMu.RUnlock()
-		attempted, sendErr := sendToSessionWithWritePolicy(deliveryCtx, session, &agentv1.RelayStreamMessage{
+		attempted, sendErr := sendToSessionWithWritePolicyAndFinish(deliveryCtx, session, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_DeployMission{DeployMission: cloned},
-		}, true)
+		}, true, func() {
+			session.pendingMu.Lock()
+			if session.missionDeployments[cloned.GetCommandId()] == state && !state.completed {
+				state.resultAdmissionOpen = true
+			}
+			session.pendingMu.Unlock()
+		})
 		session.pendingMu.Lock()
 		if session.missionDeployments[cloned.GetCommandId()] == state && !state.completed {
 			// Any invoked Send is outcome-uncertain: the peer can apply the

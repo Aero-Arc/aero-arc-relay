@@ -1770,6 +1770,7 @@ func TestRegisterAfterDisconnectRestoresAcknowledgedOperationContext(t *testing.
 	mockSink := mock.NewMockSink()
 	relay := relayWithSinks(mockSink)
 	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
 	relay.grpcSessions = make(map[string]*DroneSession)
 	const agentID = "agent-1"
 	oldBinding := &telemetryStreamBinding{generation: 1}
@@ -1838,6 +1839,7 @@ func TestRegisterAfterDisconnectRestoresAcknowledgedOperationContext(t *testing.
 func TestRegisterAfterDisconnectFencesUncertainOperationContext(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
 	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
 	relay.grpcSessions = make(map[string]*DroneSession)
 	const agentID = "agent-1"
 	binding := &telemetryStreamBinding{generation: 1}
@@ -1871,6 +1873,43 @@ func TestRegisterAfterDisconnectFencesUncertainOperationContext(t *testing.T) {
 	relay.sessionsMu.RUnlock()
 	if !replacement.requiresOperationContextReconciliation() {
 		t.Fatal("reconnect trusted context after a delivered mutation lost its ACK")
+	}
+}
+
+func TestRegisterAfterDisconnectDoesNotRestoreContextWithoutAgentAuthentication(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+	const agentID = "agent-1"
+	binding := &telemetryStreamBinding{generation: 1}
+	old := &DroneSession{
+		agentID: agentID, SessionID: "old-session", stream: binding, streamGeneration: 1,
+		AircraftID: "aircraft-1", FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		pending:            make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands:  make(map[string]*operationCommandState),
+		aircraftCommands:   make(map[string]*aircraftCommandState),
+		missionDeployments: make(map[string]*missionDeploymentState),
+	}
+	relay.grpcSessions[agentID] = old
+
+	relay.deleteStream(agentID, old, binding)
+	if len(relay.disconnectedOperationContexts) != 0 {
+		t.Fatal("authentication-free disconnect retained transferable operation context")
+	}
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	replacement.sessionMu.RLock()
+	aircraftID, flightID, intentID, intentVersion := replacement.AircraftID, replacement.FlightID, replacement.IntentID, replacement.IntentVersion
+	replacement.sessionMu.RUnlock()
+	if aircraftID != "" || flightID != "" || intentID != "" || intentVersion != 0 {
+		t.Fatalf("authentication-free reconnect inherited context: aircraft=%q flight=%q intent=%q v%d", aircraftID, flightID, intentID, intentVersion)
+	}
+	if !replacement.requiresOperationContextReconciliation() {
+		t.Fatal("authentication-free reconnect bypassed API context reconciliation")
 	}
 }
 

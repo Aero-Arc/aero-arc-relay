@@ -158,7 +158,7 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 	if isCurrentStream {
 		session.retired = true
 		retainedContext := session.snapshotContextAndAbortPending()
-		if r.controlAuthorizer != nil {
+		if r.controlAuthorizer != nil && r.agentAuthenticator != nil {
 			r.retainDisconnectedOperationContextLocked(agentID, retainedContext, time.Now())
 		}
 		delete(r.grpcSessions, agentID)

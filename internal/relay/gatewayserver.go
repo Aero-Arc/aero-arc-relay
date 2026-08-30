@@ -127,8 +127,11 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
-		} else if retained, ok := r.takeDisconnectedOperationContextLocked(agentID, time.Now()); ok {
-			retained.restoreInto(newSession)
+		} else if r.agentAuthenticator != nil {
+			retained, ok := r.takeDisconnectedOperationContextLocked(agentID, time.Now())
+			if ok {
+				retained.restoreInto(newSession)
+			}
 		}
 		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
@@ -344,6 +347,14 @@ func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, messa
 // was invoked. Once invoked, either a nil or error result is delivery-uncertain:
 // the peer may have applied the message before Relay observed the outcome.
 func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) (bool, error) {
+	return sendToSessionWithWritePolicyAndFinish(ctx, session, message, waitThroughWrite, nil)
+}
+
+// sendToSessionWithWritePolicyAndFinish invokes onFinish inside the serialized
+// stream-write task after Send returns but before releasing the binding lock.
+// Callers use it when result admission must remain closed for the entire
+// pre-Send and in-Send interval.
+func sendToSessionWithWritePolicyAndFinish(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool, onFinish func()) (bool, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, status.FromContextError(err).Err()
@@ -371,12 +382,18 @@ func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, me
 		}
 		if waitThroughWrite {
 			err := binding.stream.Send(message)
+			if onFinish != nil {
+				onFinish()
+			}
 			binding.sendMu.Unlock()
 			return true, err
 		}
 		sent := make(chan error, 1)
 		go func() {
 			err := binding.stream.Send(message)
+			if onFinish != nil {
+				onFinish()
+			}
 			binding.sendMu.Unlock()
 			sent <- err
 		}()
@@ -530,7 +547,7 @@ func (session *DroneSession) handleMissionDeploymentResult(result *agentv1.Missi
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	state := session.missionDeployments[result.GetCommandId()]
-	if state == nil || state.completed || state.reserved {
+	if state == nil || state.completed || !state.resultAdmissionOpen {
 		return
 	}
 	if err := validateMissionDeploymentResult(state.command, result); err != nil {

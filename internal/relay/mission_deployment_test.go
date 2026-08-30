@@ -373,7 +373,7 @@ func testDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t *testing.T
 	}
 }
 
-func TestDeployMissionIgnoresPriorAttemptResultWhileRetryIsReserved(t *testing.T) {
+func TestDeployMissionIgnoresPriorAttemptResultUntilRetrySendReturns(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
 	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
@@ -442,9 +442,67 @@ func TestDeployMissionIgnoresPriorAttemptResultWhileRetryIsReserved(t *testing.T
 	default:
 	}
 
+	session.sessionMu.RLock()
+	deliveryStream := session.stream
+	session.sessionMu.RUnlock()
+	if err := deliveryStream.sendMu.Lock(context.Background()); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	sendLocked := true
+	defer func() {
+		if sendLocked {
+			deliveryStream.sendMu.Unlock()
+		}
+	}()
 	release()
+
+	deadline = time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state = session.missionDeployments[command.GetCommandId()]
+		waitingForSend := state != nil && !state.reserved && !state.resultAdmissionOpen && !state.completed
+		session.pendingMu.Unlock()
+		if waitingForSend {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retry did not activate while its stream send remained blocked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	session.handleMissionDeploymentResult(stale)
+	session.pendingMu.Lock()
+	state = session.missionDeployments[command.GetCommandId()]
+	ignored = state != nil && !state.resultAdmissionOpen && !state.completed && state.result == nil
+	session.pendingMu.Unlock()
+	if !ignored {
+		t.Fatal("prior-attempt result completed the retry before its stream Send returned")
+	}
+	select {
+	case got := <-retried:
+		t.Fatalf("pre-send retry completed from prior-attempt evidence: %+v, %v", got.response, got.err)
+	default:
+	}
+
+	deliveryStream.sendMu.Unlock()
+	sendLocked = false
 	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
 		t.Fatalf("admitted retry delivered = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state = session.missionDeployments[command.GetCommandId()]
+		deliveryFinished := state != nil && state.resultAdmissionOpen && !state.completed
+		session.pendingMu.Unlock()
+		if deliveryFinished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retry stream Send did not finish")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	fresh := testAppliedMissionResult(command)
 	fresh.Message = "fresh generation"
