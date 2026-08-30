@@ -180,16 +180,19 @@ gate. They therefore remain recoverable while another operation is waiting for
 Agent evidence, and one caller ending its wait cannot turn a coalesced in-flight
 deployment into an unnecessary uncertain redelivery. An exact retained terminal
 outcome remains replayable after the session operation context advances because
-replay cannot cause another vehicle effect. Only a request that may initiate a
-new stream delivery takes the gate. A retryable outcome may be redispatched only
-while the session still has the exact mission binding; otherwise Relay fails the
-active-context precondition without writing to the Agent stream. Successful
-Agent evidence is accepted only when its full binding matches, its onboard
-digest matches the requested digest, and its uploaded item count matches the
-canonical plan. The Relay wait is capped at two minutes across any required
-serialized command-gate admission and result correlation, even when the caller
-does not provide a shorter deadline. New commands must use a validity window no
-longer than five minutes.
+replay cannot cause another vehicle effect. For a retained retryable outcome,
+the first exact retry reserves one pending delivery generation before waiting
+for the gate; concurrent callers attach to that reservation, so even another
+immediate retryable Agent result produces only one stream write. Only the owner
+of a generation that may initiate a new stream delivery takes the gate. A
+retryable outcome may be redispatched only while the session still has the exact
+mission binding; otherwise Relay fails the active-context precondition without
+writing to the Agent stream. Successful Agent evidence is accepted only when its
+full binding matches, its onboard digest matches the requested digest, and its
+uploaded item count matches the canonical plan. The Relay wait is capped at two
+minutes across any required serialized command-gate admission and result
+correlation, even when the caller does not provide a shorter deadline. New
+commands must use a validity window no longer than five minutes.
 
 Relay deliberately forwards an expired exact command to the current Agent. Its
 in-memory command retention cannot distinguish a first expired request from

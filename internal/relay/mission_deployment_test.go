@@ -290,6 +290,141 @@ func TestDeployMissionTemporaryErrorRetryRedispatchesOnceThenApplies(t *testing.
 	}
 }
 
+func TestDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t *testing.T) {
+	tests := map[string]agentv1.MissionDeploymentResult_Status{
+		"temporary error": agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR,
+		"outcome unknown": agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN,
+	}
+	for name, resultStatus := range tests {
+		t.Run(name, func(t *testing.T) {
+			testDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t, resultStatus)
+		})
+	}
+}
+
+func testDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t *testing.T, resultStatus agentv1.MissionDeploymentResult_Status) {
+	t.Helper()
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
+	}
+
+	first := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		first <- outcome{response: response, err: err}
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: resultStatus, Message: "retry together",
+		CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if got := <-first; got.err != nil || !proto.Equal(got.response.GetResult(), temporary) {
+		t.Fatalf("initial temporary result = %+v, %v", got.response, got.err)
+	}
+
+	release, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			response, err := relay.DeployMission(context.Background(), request)
+			retried <- outcome{response: response, err: err}
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state := session.missionDeployments[command.GetCommandId()]
+		reservedTogether := state != nil && state.reserved && state.waiters == 2
+		session.pendingMu.Unlock()
+		if reservedTogether {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("concurrent exact retries did not share one pending generation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("retry generation delivered = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	session.handleMissionDeploymentResult(temporary)
+	for range 2 {
+		got := <-retried
+		if got.err != nil || !proto.Equal(got.response.GetResult(), temporary) {
+			t.Fatalf("coalesced retryable generation = %+v, %v", got.response, got.err)
+		}
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("concurrent retryable generation redelivered sequentially: %+v", duplicate)
+	default:
+	}
+}
+
+func TestDeployMissionFailedRetryReservationCanBeRetried(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = relay.DeployMission(ctx, request)
+	if status.Code(err) != codes.DeadlineExceeded {
+		release()
+		t.Fatalf("reserved retry behind busy gate = %v, want DeadlineExceeded", err)
+	}
+	release()
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("failed retry reservation delivered a mission: %+v", duplicate)
+	default:
+	}
+
+	retried := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		retried <- err
+	}()
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("retry after failed reservation delivered = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	applied := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(applied)
+	if err := <-retried; err != nil {
+		t.Fatalf("retry after failed reservation = %v", err)
+	}
+}
+
 func TestDeployMissionRetryableResultRequiresCurrentContextBeforeRedispatch(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
@@ -471,7 +606,7 @@ func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
 			case retainedMissionDeployment:
 				command := testMissionCommand(t)
 				command.CommandId = commandID
-				_, _, err = beginMissionDeployment(context.Background(), session, command)
+				_, _, err = beginMissionDeployment(context.Background(), session, command, nil)
 			}
 			if status.Code(err) != codes.AlreadyExists {
 				t.Fatalf("cross-kind admission error = %v, want AlreadyExists", err)
@@ -486,7 +621,7 @@ func TestBeginMissionDeploymentRejectsCanceledAdmission(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	state, owner, err := beginMissionDeployment(ctx, session, command)
+	state, owner, err := beginMissionDeployment(ctx, session, command, nil)
 	if status.Code(err) != codes.Canceled || state != nil || owner {
 		t.Fatalf("canceled admission = (%+v, %v, %v), want (nil, false, Canceled)", state, owner, err)
 	}

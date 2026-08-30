@@ -143,17 +143,19 @@ type aircraftCommandState struct {
 }
 
 type missionDeploymentState struct {
-	fingerprint    string
-	command        *agentv1.DeployMissionCommand
-	deliveryStream *telemetryStreamBinding
-	done           chan struct{}
-	deliveryCancel context.CancelFunc
-	waiters        int
-	result         *agentv1.MissionDeploymentResult
-	err            error
-	delivered      bool
-	completed      bool
-	completedAt    time.Time
+	fingerprint     string
+	command         *agentv1.DeployMissionCommand
+	deliveryStream  *telemetryStreamBinding
+	done            chan struct{}
+	deliveryCancel  context.CancelFunc
+	reserved        bool
+	admissionFailed bool
+	waiters         int
+	result          *agentv1.MissionDeploymentResult
+	err             error
+	delivered       bool
+	completed       bool
+	completedAt     time.Time
 }
 
 type telemetryStreamBinding struct {
