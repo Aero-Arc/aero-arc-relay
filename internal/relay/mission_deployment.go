@@ -77,10 +77,10 @@ func isPositiveZero(value float64) bool {
 //     retryable, and outcome-unknown application statuses.
 //   - error: reports authorization or canonical-plan validation failure, mapping
 //     or operation-context mismatch, missing/replaced session, command-ID payload
-//     conflict, retention exhaustion, stream delivery failure, malformed Agent
-//     evidence, or caller/Relay wait timeout. An RPC error after admission leaves
-//     the effect uncertain and requires an exact retry with the same command ID
-//     and payload.
+//     or kind conflict, retention exhaustion, stream delivery failure, malformed
+//     Agent evidence, or caller/Relay wait timeout. An RPC error after admission
+//     leaves the effect uncertain and requires an exact retry with the same
+//     command ID and payload.
 func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest) (*pb.DeployMissionResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -240,10 +240,9 @@ func attachMissionDeployment(session *DroneSession, command *agentv1.DeployMissi
 	defer session.controlStreamMu.RUnlock()
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
-	if session.missionDeployments == nil {
-		return nil, false, nil
+	if err := prepareCommandIDAdmissionLocked(session, command.GetCommandId(), retainedMissionDeployment, time.Now()); err != nil {
+		return nil, false, err
 	}
-	expireMissionDeploymentsLocked(session, time.Now())
 	existing := session.missionDeployments[command.GetCommandId()]
 	if existing == nil {
 		return nil, false, nil
@@ -338,13 +337,13 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 				return status.Errorf(codes.InvalidArgument, "mission item %d contains a non-finite value", i)
 			}
 		}
-		altitudeCM := math.Round(float64(item.GetAltitudeM()) * 100)
+		altitudeCM := item.GetAltitudeM() * float32(100)
 		if altitudeCM < -8388608 || altitudeCM > 8388607 {
-			return status.Errorf(codes.InvalidArgument, "mission item %d altitude must round-trip through ArduPilot signed-centimeter storage", i)
+			return status.Errorf(codes.InvalidArgument, "mission item %d altitude exceeds ArduPilot signed-centimeter storage", i)
 		}
-		altitudeReadback := float32(int32(altitudeCM)) / 100
+		altitudeReadback := float32(int32(altitudeCM)) * float32(0.01)
 		if math.Float32bits(altitudeReadback) != math.Float32bits(item.GetAltitudeM()) {
-			return status.Errorf(codes.InvalidArgument, "mission item %d altitude must round-trip through ArduPilot signed-centimeter storage", i)
+			return status.Errorf(codes.InvalidArgument, "mission item %d altitude must round-trip through ArduPilot truncating signed-centimeter storage", i)
 		}
 	}
 	digest, err := missionPlanDigest(plan)
@@ -365,10 +364,14 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 
 	session.controlStreamMu.RLock()
 	session.pendingMu.Lock()
+	if err := prepareCommandIDAdmissionLocked(session, command.GetCommandId(), retainedMissionDeployment, time.Now()); err != nil {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		return nil, false, err
+	}
 	if session.missionDeployments == nil {
 		session.missionDeployments = make(map[string]*missionDeploymentState)
 	}
-	expireMissionDeploymentsLocked(session, time.Now())
 	session.sessionMu.RLock()
 	currentStream := session.stream
 	session.sessionMu.RUnlock()

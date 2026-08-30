@@ -160,7 +160,8 @@ autopilot execution/readback state cannot change the digest; and carry exact
 `MISSION_ITEM_INT` E7 coordinates without a legacy float-coordinate constraint.
 The canonical form also requires positive-zero params 1–3, positive-zero param
 4 for waypoint/takeoff, exactly `+1` param 4 for `NAV_LAND`, and finite float32
-altitude that round-trips through ArduPilot's signed-centimeter storage. The
+altitude that round-trips through ArduPilot's float32 multiply, truncating
+signed-centimeter storage, and float32 readback conversion. The
 digest bytes use the `aeroarc-mission-plan-v1\0` domain prefix, a big-endian
 item count, and fixed-width big-endian item fields; protobuf wire bytes are not
 part of the digest. The binding's operator and aircraft must match
@@ -172,16 +173,16 @@ does not replace or reshape the operational intent.
 
 Mission command fingerprints cover the entire command, binding, and plan.
 Concurrent exact retries share one delivery and terminal outcomes are retained;
-reusing the command ID with another byte-level payload is rejected. An exact
-retained terminal outcome remains replayable after the session operation context
-advances because replay cannot cause another vehicle effect. A retryable outcome
-may be redispatched only while the session still has the exact mission binding;
-otherwise Relay fails the active-context precondition without writing to the
-Agent stream. Successful Agent evidence is accepted only when its full binding
-matches, its onboard digest matches the requested digest, and its uploaded item
-count matches the canonical plan. The Relay wait is capped at two minutes even
-when the caller does not provide a shorter deadline, and new commands must use a
-validity window no longer than five minutes.
+reusing the command ID with another byte-level payload or retained command kind
+is rejected. An exact retained terminal outcome remains replayable after the
+session operation context advances because replay cannot cause another vehicle
+effect. A retryable outcome may be redispatched only while the session still has
+the exact mission binding; otherwise Relay fails the active-context precondition
+without writing to the Agent stream. Successful Agent evidence is accepted only
+when its full binding matches, its onboard digest matches the requested digest,
+and its uploaded item count matches the canonical plan. The Relay wait is capped
+at two minutes even when the caller does not provide a shorter deadline, and new
+commands must use a validity window no longer than five minutes.
 
 Relay deliberately forwards an expired exact command to the current Agent. Its
 in-memory command retention cannot distinguish a first expired request from

@@ -298,6 +298,10 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = math.Float32frombits(0x3f800001) },
 			code:   codes.InvalidArgument,
 		},
+		"altitude changed by ArduPilot truncation": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = 16.8 },
+			code:   codes.InvalidArgument,
+		},
 		"negative zero altitude": {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = math.Float32frombits(0x80000000) },
 			code:   codes.InvalidArgument,
@@ -333,6 +337,53 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 			}
 			if err := validateDeployMissionCommand(command); status.Code(err) != tt.code {
 				t.Fatalf("validateDeployMissionCommand() = %v, want %v", err, tt.code)
+			}
+		})
+	}
+}
+
+func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
+	const commandID = "cross-kind-command"
+	tests := []struct {
+		name     string
+		retained retainedCommandKind
+		admit    retainedCommandKind
+	}{
+		{name: "mission after operation context", retained: retainedOperationCommand, admit: retainedMissionDeployment},
+		{name: "mission after aircraft", retained: retainedAircraftCommand, admit: retainedMissionDeployment},
+		{name: "aircraft after operation context", retained: retainedOperationCommand, admit: retainedAircraftCommand},
+		{name: "aircraft after mission", retained: retainedMissionDeployment, admit: retainedAircraftCommand},
+		{name: "operation context after aircraft", retained: retainedAircraftCommand, admit: retainedOperationCommand},
+		{name: "operation context after mission", retained: retainedMissionDeployment, admit: retainedOperationCommand},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := &DroneSession{}
+			switch tt.retained {
+			case retainedOperationCommand:
+				session.operationCommands = map[string]*operationCommandState{commandID: {}}
+			case retainedAircraftCommand:
+				session.aircraftCommands = map[string]*aircraftCommandState{commandID: {}}
+			case retainedMissionDeployment:
+				session.missionDeployments = map[string]*missionDeploymentState{commandID: {}}
+			}
+
+			var err error
+			switch tt.admit {
+			case retainedOperationCommand:
+				_, _, err = beginOperationCommand(session, commandID, "new-operation-fingerprint", nil)
+			case retainedAircraftCommand:
+				_, _, err = beginAircraftCommandDelivery(session, &agentv1.AircraftCommand{
+					CommandId: commandID, AircraftId: "aircraft-1",
+					Type: agentv1.AircraftCommandType_AIRCRAFT_COMMAND_TYPE_ARM,
+				})
+			case retainedMissionDeployment:
+				command := testMissionCommand(t)
+				command.CommandId = commandID
+				_, _, err = beginMissionDeployment(session, command)
+			}
+			if status.Code(err) != codes.AlreadyExists {
+				t.Fatalf("cross-kind admission error = %v, want AlreadyExists", err)
 			}
 		})
 	}
