@@ -159,7 +159,7 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 			session.ownershipMu.RUnlock()
 			return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
 		}
-		state, owner, err = beginMissionDeployment(session, command)
+		state, owner, err = beginMissionDeployment(ctx, session, command)
 		if err != nil {
 			session.ownershipMu.RUnlock()
 			relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
@@ -356,7 +356,7 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 	return nil
 }
 
-func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, error) {
+func beginMissionDeployment(ctx context.Context, session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, error) {
 	fingerprint, err := missionDeploymentFingerprint(command)
 	if err != nil {
 		return nil, false, err
@@ -388,6 +388,11 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 			return existing, false, nil
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		return nil, false, status.FromContextError(err).Err()
+	}
 	now := time.Now()
 	if command.GetIssuedAtUnixMs() > now.Add(maxMissionClockSkew).UnixMilli() {
 		session.pendingMu.Unlock()
@@ -407,6 +412,11 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()
 		return nil, false, status.Error(codes.ResourceExhausted, "mission deployment retention is full")
+	}
+	if err := ctx.Err(); err != nil {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		return nil, false, status.FromContextError(err).Err()
 	}
 	deliveryCtx, deliveryCancel := context.WithCancel(context.Background())
 	cloned := proto.Clone(command).(*agentv1.DeployMissionCommand)

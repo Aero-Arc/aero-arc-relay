@@ -380,12 +380,32 @@ func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
 			case retainedMissionDeployment:
 				command := testMissionCommand(t)
 				command.CommandId = commandID
-				_, _, err = beginMissionDeployment(session, command)
+				_, _, err = beginMissionDeployment(context.Background(), session, command)
 			}
 			if status.Code(err) != codes.AlreadyExists {
 				t.Fatalf("cross-kind admission error = %v, want AlreadyExists", err)
 			}
 		})
+	}
+}
+
+func TestBeginMissionDeploymentRejectsCanceledAdmission(t *testing.T) {
+	_, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	state, owner, err := beginMissionDeployment(ctx, session, command)
+	if status.Code(err) != codes.Canceled || state != nil || owner {
+		t.Fatalf("canceled admission = (%+v, %v, %v), want (nil, false, Canceled)", state, owner, err)
+	}
+	if session.missionDeployments[command.GetCommandId()] != nil {
+		t.Fatal("canceled request retained a mission deployment state")
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("canceled request delivered a mission: %+v", message)
+	default:
 	}
 }
 
