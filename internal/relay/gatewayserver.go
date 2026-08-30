@@ -158,9 +158,11 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 //
 // A successfully published binding owns Registry liveness until cleanup. A
 // replacement aborts old-binding command waiters and fences uncertain operation
-// context before it can admit telemetry. Operation-context ACKs and aircraft
-// results are handled ahead of telemetry routing and remain bound to the stream
-// that received them. Cleanup removes only this binding, so a superseding stream
+// context before it can admit telemetry. Operation-context ACKs,
+// aircraft-command results, and mission-deployment results are handled ahead of
+// telemetry routing. Each result is correlated by command ID only against the
+// pending request on this exact active binding; evidence from a superseded
+// binding is ignored. Cleanup removes only this binding, so a superseding stream
 // remains active.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
 	ctx := stream.Context()

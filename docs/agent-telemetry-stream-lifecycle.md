@@ -149,7 +149,8 @@ type is rejected. A new deliberate vehicle action therefore requires a new
 command ID.
 
 `DeployMission` is the durable deployment path for a bounded canonical mission
-plan. Before delivery, Relay recomputes the plan's deterministic SHA-256 digest,
+plan. Before delivery, Relay recomputes the plan's schema-one canonical-byte
+SHA-256 digest,
 rejects unsupported schema/frame/command values and more than 200 items, and
 requires every immutable binding field. Schema-1 plans use only
 `MAV_FRAME_GLOBAL` (0) and `NAV_WAYPOINT` (16), `NAV_LAND` (21), or
@@ -160,7 +161,9 @@ autopilot execution/readback state cannot change the digest; and carry exact
 The canonical form also requires positive-zero params 1–3, positive-zero param
 4 for waypoint/takeoff, exactly `+1` param 4 for `NAV_LAND`, and finite float32
 altitude that round-trips through ArduPilot's signed-centimeter storage. The
-binding's operator and aircraft must match
+digest bytes use the `aeroarc-mission-plan-v1\0` domain prefix, a big-endian
+item count, and fixed-width big-endian item fields; protobuf wire bytes are not
+part of the digest. The binding's operator and aircraft must match
 `telemetry.agent_mappings` for the routed Agent. Its aircraft, flight, intent,
 and intent version must also exactly match the session's
 reconciled operation context; a legacy context without `aircraft_id` or an

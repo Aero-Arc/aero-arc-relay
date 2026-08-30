@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/hex"
 	"math"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"github.com/aero-arc/aero-arc-protos/missiondigest"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"google.golang.org/grpc/codes"
@@ -240,7 +242,7 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			command := proto.Clone(valid).(*agentv1.DeployMissionCommand)
 			tt.mutate(command)
-			if name != "digest mismatch" {
+			if name != "digest mismatch" && name != "too many items" {
 				digest, err := missionPlanDigest(command.GetPlan())
 				if err != nil {
 					t.Fatal(err)
@@ -251,6 +253,25 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 				t.Fatalf("validateDeployMissionCommand() = %v, want %v", err, tt.code)
 			}
 		})
+	}
+}
+
+func TestMissionPlanCanonicalV1MatchesContractGoldenVector(t *testing.T) {
+	plan := &agentv1.MissionPlan{SchemaVersion: 1, Items: []*agentv1.MissionItem{{
+		Sequence: 0, Frame: 0, Command: 16, Current: false, Autocontinue: true,
+		LatitudeE7: -353632620, LongitudeE7: 1491652370, AltitudeM: 20.1,
+	}}}
+	canonical, err := missiondigest.CanonicalBytes(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantCanonicalHex = "6165726f6172632d6d697373696f6e2d706c616e2d7631000000000100000000000000000000001000010000000000000000000000000000000000000000000000000000000000000000eaebfe9458e8cf1241a0cccd"
+	if got := hex.EncodeToString(canonical); got != wantCanonicalHex {
+		t.Fatalf("canonical bytes = %q, want %q", got, wantCanonicalHex)
+	}
+	const wantDigest = "6efa96b36af29a800d53ee7d7baf57d4b24f00d9ce2b408327281e74824acf4f"
+	if got, err := missionPlanDigest(plan); err != nil || got != wantDigest {
+		t.Fatalf("missionPlanDigest() = %q, %v, want %q", got, err, wantDigest)
 	}
 }
 

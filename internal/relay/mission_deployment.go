@@ -12,7 +12,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	pb "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"github.com/aero-arc/aero-arc-protos/missiondigest"
 	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -524,10 +524,5 @@ func makeMissionDeploymentRoomLocked(session *DroneSession) {
 }
 
 func missionPlanDigest(plan *agentv1.MissionPlan) (string, error) {
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(plan)
-	if err != nil {
-		return "", fmt.Errorf("marshal mission plan: %w", err)
-	}
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), nil
+	return missiondigest.Digest(plan)
 }
