@@ -42,16 +42,18 @@ Registering the same authenticated agent ID again replaces the map entry with a
 new `DroneSession` and a new session ID. The old stream handler can still be
 running, but it no longer owns the active registered session. Without Agent
 authentication, replacement still aborts the old session and pending commands,
-but the new session inherits no operation context and remains unreconciled for
-API replay.
+but it does not inherit operation context. When context control is enabled, the
+new session remains unreconciled for API replay; when control is disabled, the
+Relay continues its context-free behavior.
 
 When an authenticated admitted stream disconnects, Relay removes its live
 session but retains the last API-authoritative operation context in a
 process-local reconnect cache. The next authenticated registration for that
 exact agent ID inherits the cached context before its new session is published.
 When Agent authentication is not configured, Relay neither retains nor restores
-reconnect context; every new session remains unreconciled until the API replays
-its durable authority.
+reconnect context. With context control enabled, every new session remains
+unreconciled until the API replays its durable authority; control-disabled
+sessions do not require that replay.
 If a delivered Set or Clear lost its acknowledgement during disconnect, the
 cached state is marked unreconciled instead, and telemetry remains retryable
 until the API replays its durable authority. Entries expire after five minutes,
@@ -341,13 +343,16 @@ If the agent registers again instead of only replacing its stream, the new map
 entry has a different `DroneSession` pointer and session ID. The old handler's
 cleanup is rejected by the session pointer check. Frames from the old registration
 also fail the active-session-identity validation and receive their error ACK on
-the old stream. Relay atomically copies the last API-authoritative acknowledged
-operation context into the replacement before publishing it, so reconnecting
-telemetry keeps its flight and intent attribution. Delayed operation-command
-ACKs received by the old handler remain bound to the old session and cannot
-update the replacement session's context or pending commands.
-If no prior in-process session exists, Relay does not infer an empty context:
-telemetry remains retryable until the API explicitly replays Set or Clear.
+the old stream. For an authenticated Agent, Relay atomically copies the last
+API-authoritative acknowledged operation context into the replacement before
+publishing it, so reconnecting telemetry keeps its flight and intent
+attribution. Without Agent authentication, Relay copies no context; when context
+control is enabled, replacement telemetry remains retryable until the API
+explicitly replays Set or Clear. Delayed operation-command ACKs received by the
+old handler remain bound to the old session and cannot update the replacement
+session's context or pending commands. If no prior in-process session exists,
+control-enabled Relay does not infer an empty context and applies the same API
+replay fence.
 
 ## 6. Disconnect and Cleanup
 
