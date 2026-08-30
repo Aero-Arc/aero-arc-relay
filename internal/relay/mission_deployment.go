@@ -35,26 +35,12 @@ const (
 )
 
 func isSupportedMissionFrame(value uint32) bool {
-	switch value {
-	case uint32(common.MAV_FRAME_GLOBAL),
-		uint32(common.MAV_FRAME_GLOBAL_RELATIVE_ALT),
-		uint32(common.MAV_FRAME_GLOBAL_INT),
-		uint32(common.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT),
-		uint32(common.MAV_FRAME_GLOBAL_TERRAIN_ALT),
-		uint32(common.MAV_FRAME_GLOBAL_TERRAIN_ALT_INT):
-		return true
-	default:
-		return false
-	}
+	return value == uint32(common.MAV_FRAME_GLOBAL)
 }
 
 func isSupportedMissionCommand(value uint32) bool {
 	switch value {
 	case uint32(common.MAV_CMD_NAV_WAYPOINT),
-		uint32(common.MAV_CMD_NAV_LOITER_UNLIM),
-		uint32(common.MAV_CMD_NAV_LOITER_TURNS),
-		uint32(common.MAV_CMD_NAV_LOITER_TIME),
-		uint32(common.MAV_CMD_NAV_RETURN_TO_LAUNCH),
 		uint32(common.MAV_CMD_NAV_LAND),
 		uint32(common.MAV_CMD_NAV_TAKEOFF):
 		return true
@@ -73,7 +59,27 @@ func isPositiveZero(value float64) bool {
 // exactly match the mission binding. Concurrent exact attempts coalesce,
 // terminal results replay, and retryable Agent outcomes may start one new
 // delivery on the original stream binding. A command ID may never identify a
-// different payload.
+// different payload. Relay forwards an expired command because its in-memory
+// retention may have been lost during restart; only an Agent with a matching
+// durable uncertain record may reconcile it by readback. The Agent must reject
+// a first expired effect and must not replace an expired mission after a
+// mismatching recovery readback.
+//
+// Parameters:
+//   - ctx: authenticates the control caller, bounds admission and result waiting,
+//     and may detach without canceling an already admitted stream delivery.
+//   - req: identifies the connected Agent and carries the immutable, bound
+//     command. Relay clones the command before asynchronous delivery.
+//
+// Returns:
+//   - *pb.DeployMissionResponse: the correlated Agent result, including terminal,
+//     retryable, and outcome-unknown application statuses.
+//   - error: reports authorization or canonical-plan validation failure, mapping
+//     or operation-context mismatch, missing/replaced session, command-ID payload
+//     conflict, retention exhaustion, stream delivery failure, malformed Agent
+//     evidence, or caller/Relay wait timeout. An RPC error after admission leaves
+//     the effect uncertain and requires an exact retry with the same command ID
+//     and payload.
 func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest) (*pb.DeployMissionResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -241,6 +247,9 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 		if item.GetCurrent() {
 			return status.Errorf(codes.InvalidArgument, "mission item %d sets reserved current flag", i)
 		}
+		if !item.GetAutocontinue() {
+			return status.Errorf(codes.InvalidArgument, "mission item %d must enable autocontinue", i)
+		}
 		if !isPositiveZero(item.GetParam1()) || !isPositiveZero(item.GetParam2()) || !isPositiveZero(item.GetParam3()) {
 			return status.Errorf(codes.InvalidArgument, "mission item %d params 1 through 3 must be positive zero", i)
 		}
@@ -263,11 +272,19 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 		if item.GetLatitudeE7() < -900000000 || item.GetLatitudeE7() > 900000000 || item.GetLongitudeE7() < -1800000000 || item.GetLongitudeE7() > 1800000000 {
 			return status.Errorf(codes.InvalidArgument, "mission item %d has invalid coordinates", i)
 		}
-		values := []float64{item.GetParam1(), item.GetParam2(), item.GetParam3(), item.GetParam4(), item.GetAltitudeM()}
+		values := []float64{item.GetParam1(), item.GetParam2(), item.GetParam3(), item.GetParam4(), float64(item.GetAltitudeM())}
 		for _, value := range values {
 			if math.IsNaN(value) || math.IsInf(value, 0) {
 				return status.Errorf(codes.InvalidArgument, "mission item %d contains a non-finite value", i)
 			}
+		}
+		altitudeCM := math.Round(float64(item.GetAltitudeM()) * 100)
+		if altitudeCM < -8388608 || altitudeCM > 8388607 {
+			return status.Errorf(codes.InvalidArgument, "mission item %d altitude must round-trip through ArduPilot signed-centimeter storage", i)
+		}
+		altitudeReadback := float32(int32(altitudeCM)) / 100
+		if math.Float32bits(altitudeReadback) != math.Float32bits(item.GetAltitudeM()) {
+			return status.Errorf(codes.InvalidArgument, "mission item %d altitude must round-trip through ArduPilot signed-centimeter storage", i)
 		}
 	}
 	digest, err := missionPlanDigest(plan)
@@ -297,7 +314,6 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 	session.sessionMu.RLock()
 	currentStream := session.stream
 	session.sessionMu.RUnlock()
-	var recoveringOutcome bool
 	if existing := session.missionDeployments[command.GetCommandId()]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			session.pendingMu.Unlock()
@@ -310,14 +326,8 @@ func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissio
 			session.controlStreamMu.RUnlock()
 			return existing, false, nil
 		}
-		recoveringOutcome = existing.result.GetStatus() == agentv1.MissionDeploymentResult_STATUS_OUTCOME_UNKNOWN
 	}
 	now := time.Now()
-	if now.UnixMilli() >= command.GetExpiresAtUnixMs() && !recoveringOutcome {
-		session.pendingMu.Unlock()
-		session.controlStreamMu.RUnlock()
-		return nil, false, status.Error(codes.DeadlineExceeded, "mission command has expired")
-	}
 	if command.GetIssuedAtUnixMs() > now.Add(maxMissionClockSkew).UnixMilli() {
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()

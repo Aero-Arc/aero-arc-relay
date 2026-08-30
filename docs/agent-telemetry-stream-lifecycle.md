@@ -151,12 +151,16 @@ command ID.
 `DeployMission` is the durable deployment path for a bounded canonical mission
 plan. Before delivery, Relay recomputes the plan's deterministic SHA-256 digest,
 rejects unsupported schema/frame/command values and more than 200 items, and
-requires every immutable binding field. Schema-1 plans exclude autopilot HOME
-and export metadata, and every canonical item's reserved `current` flag must be
-false so autopilot execution/readback state cannot change the digest. The
-canonical form also requires positive-zero params 1–3, positive-zero param 4
-for waypoint/takeoff, and exactly `+1` param 4 for `NAV_LAND`, matching stable
-ArduPilot readback. The binding's operator and aircraft must match
+requires every immutable binding field. Schema-1 plans use only
+`MAV_FRAME_GLOBAL` (0) and `NAV_WAYPOINT` (16), `NAV_LAND` (21), or
+`NAV_TAKEOFF` (22). They exclude autopilot HOME and export metadata; require
+contiguous sequences, `autocontinue=true`, and the reserved `current=false` so
+autopilot execution/readback state cannot change the digest; and carry exact
+`MISSION_ITEM_INT` E7 coordinates without a legacy float-coordinate constraint.
+The canonical form also requires positive-zero params 1–3, positive-zero param
+4 for waypoint/takeoff, exactly `+1` param 4 for `NAV_LAND`, and finite float32
+altitude that round-trips through ArduPilot's signed-centimeter storage. The
+binding's operator and aircraft must match
 `telemetry.agent_mappings` for the routed Agent. Its aircraft, flight, intent,
 and intent version must also exactly match the session's
 reconciled operation context; a legacy context without `aircraft_id` or an
@@ -171,6 +175,17 @@ digest matches the requested digest, and its uploaded item count matches the
 canonical plan. The Relay wait is capped at two minutes even when the caller
 does not provide a shorter deadline, and new commands must use a validity
 window no longer than five minutes.
+
+Relay deliberately forwards an expired exact command to the current Agent. Its
+in-memory command retention cannot distinguish a first expired request from
+reconciliation after a Relay restart. The Agent's durable journal is therefore
+the final effect fence: it may use an expired command only to read back an
+already uncertain effect under the same command ID and payload, and must reject
+a first expired effect before touching MAVLink. A matching readback may produce
+`ALREADY_APPLIED`; a complete mismatch must be terminal and must not authorize a
+replacement upload after expiry. Roll out an Agent implementing both durable
+expiry fences before enabling this Relay/API path. This forwarding does not
+extend the API reconciliation deadline.
 
 Unlike a telemetry ACK, an operation-context command is not a response to a
 message received on a particular stream. It targets the current admitted Agent

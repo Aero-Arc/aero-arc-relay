@@ -9,6 +9,7 @@ import (
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"github.com/bluenviron/gomavlib/v2/pkg/dialects/common"
 	"github.com/makinje/aero-arc-relay/internal/config"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -177,6 +178,10 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Current = true },
 			code:   codes.InvalidArgument,
 		},
+		"autocontinue disabled": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Autocontinue = false },
+			code:   codes.InvalidArgument,
+		},
 		"nonzero param1": {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].Param1 = 1 },
 			code:   codes.InvalidArgument,
@@ -193,6 +198,34 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[2].Param4 = 0 },
 			code:   codes.InvalidArgument,
 		},
+		"relative altitude frame": {
+			mutate: func(c *agentv1.DeployMissionCommand) {
+				c.Plan.Items[0].Frame = uint32(common.MAV_FRAME_GLOBAL_RELATIVE_ALT)
+			},
+			code: codes.InvalidArgument,
+		},
+		"loiter command": {
+			mutate: func(c *agentv1.DeployMissionCommand) {
+				c.Plan.Items[0].Command = uint32(common.MAV_CMD_NAV_LOITER_TIME)
+			},
+			code: codes.InvalidArgument,
+		},
+		"altitude not centimeter stable": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = math.Float32frombits(0x3f800001) },
+			code:   codes.InvalidArgument,
+		},
+		"negative zero altitude": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = math.Float32frombits(0x80000000) },
+			code:   codes.InvalidArgument,
+		},
+		"non-finite altitude": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = float32(math.Inf(1)) },
+			code:   codes.InvalidArgument,
+		},
+		"altitude outside ArduPilot signed centimeter range": {
+			mutate: func(c *agentv1.DeployMissionCommand) { c.Plan.Items[0].AltitudeM = 83887 },
+			code:   codes.InvalidArgument,
+		},
 		"too many items": {
 			mutate: func(c *agentv1.DeployMissionCommand) {
 				c.Plan.Items = make([]*agentv1.MissionItem, maxMissionItems+1)
@@ -207,6 +240,13 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			command := proto.Clone(valid).(*agentv1.DeployMissionCommand)
 			tt.mutate(command)
+			if name != "digest mismatch" {
+				digest, err := missionPlanDigest(command.GetPlan())
+				if err != nil {
+					t.Fatal(err)
+				}
+				command.Binding.MissionDigest = digest
+			}
 			if err := validateDeployMissionCommand(command); status.Code(err) != tt.code {
 				t.Fatalf("validateDeployMissionCommand() = %v, want %v", err, tt.code)
 			}
@@ -214,19 +254,37 @@ func TestDeployMissionValidatesCanonicalPlanAndBinding(t *testing.T) {
 	}
 }
 
-func TestDeployMissionRejectsExpiredInitialDelivery(t *testing.T) {
-	relay, _, stream := testMissionRelay(t)
+func TestDeployMissionForwardsExpiredCommandToAgentDurableFence(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
 	command.IssuedAtUnixMs = time.Now().Add(-2 * time.Second).UnixMilli()
 	command.ExpiresAtUnixMs = time.Now().Add(-time.Second).UnixMilli()
-	_, err := relay.DeployMission(context.Background(), &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command})
-	if status.Code(err) != codes.DeadlineExceeded {
-		t.Fatalf("DeployMission() = %v, want DeadlineExceeded", err)
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
 	}
+	completed := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command})
+		completed <- outcome{response: response, err: err}
+	}()
 	select {
 	case message := <-stream.sentAckChan:
-		t.Fatalf("expired mission was delivered: %+v", message)
-	default:
+		if !proto.Equal(message.GetDeployMission(), command) {
+			t.Fatalf("expired reconciliation command = %+v, want %+v", message.GetDeployMission(), command)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expired command was not forwarded to the Agent's durable reconciliation fence")
+	}
+	rejected := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_REJECTED, Message: "first effect expired",
+		CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(rejected)
+	got := <-completed
+	if got.err != nil || !proto.Equal(got.response.GetResult(), rejected) {
+		t.Fatalf("DeployMission() = %+v, %v, want Agent expiry rejection", got.response, got.err)
 	}
 }
 
@@ -505,16 +563,16 @@ func testMissionRelay(t *testing.T) (*Relay, *DroneSession, *mockTelemetryStream
 func testMissionCommand(t *testing.T) *agentv1.DeployMissionCommand {
 	t.Helper()
 	plan := &agentv1.MissionPlan{SchemaVersion: 1, Items: []*agentv1.MissionItem{
-		{Sequence: 0, Frame: 3, Command: 22, Autocontinue: true, LatitudeE7: 389000000, LongitudeE7: -770000000, AltitudeM: 20},
-		{Sequence: 1, Frame: 3, Command: 16, Autocontinue: true, LatitudeE7: 389001000, LongitudeE7: -770001000, AltitudeM: 30},
-		{Sequence: 2, Frame: 3, Command: 21, Autocontinue: true, Param4: 1, LatitudeE7: 389000000, LongitudeE7: -770000000},
+		{Sequence: 0, Frame: 0, Command: 22, Autocontinue: true, LatitudeE7: 389000000, LongitudeE7: -770000000, AltitudeM: 20},
+		{Sequence: 1, Frame: 0, Command: 16, Autocontinue: true, LatitudeE7: 389001000, LongitudeE7: -770001000, AltitudeM: 30},
+		{Sequence: 2, Frame: 0, Command: 21, Autocontinue: true, Param4: 1, LatitudeE7: 389000000, LongitudeE7: -770000000},
 	}}
 	digest, err := missionPlanDigest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	return &agentv1.DeployMissionCommand{
+	command := &agentv1.DeployMissionCommand{
 		CommandId: "deploy-command-1",
 		Binding: &agentv1.MissionBinding{
 			MissionId: "mission-1", MissionVersion: 2, MissionDigest: digest, DeploymentId: "deployment-1",
@@ -522,6 +580,10 @@ func testMissionCommand(t *testing.T) *agentv1.DeployMissionCommand {
 		},
 		Plan: plan, IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Minute).UnixMilli(),
 	}
+	if err := validateDeployMissionCommand(command); err != nil {
+		t.Fatalf("test mission command is invalid: %v", err)
+	}
+	return command
 }
 
 func testAppliedMissionResult(command *agentv1.DeployMissionCommand) *agentv1.MissionDeploymentResult {
