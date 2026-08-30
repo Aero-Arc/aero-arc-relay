@@ -198,13 +198,16 @@ for the gate; concurrent callers attach to that reservation, so even another
 immediate retryable Agent result produces only one stream write. A
 generation-scoped admission task takes the gate while any waiter remains, so
 one caller's shorter deadline detaches only that caller and cannot cancel other
-coalesced waiters. Every caller retains its own capped admission window, so a
-later exact retry contributes its full remaining window rather than inheriting
-the first caller's deadline. The last waiter ending cancels pre-effect admission. A
-retryable outcome may be redispatched only while the session still has the exact
-mission binding; otherwise Relay fails the active-context precondition without
-writing to the Agent stream. Successful Agent evidence is accepted only when its
-full binding and onboard digest match the requested mission. `APPLIED` proves a
+coalesced waiters. Relay ignores delayed results from the preceding delivery
+while the next generation is still reserved; only an admitted generation may
+consume Agent evidence. Every caller retains its own capped admission window,
+so a later exact retry contributes its full remaining window rather than
+inheriting the first caller's deadline. The last waiter ending cancels
+pre-effect admission. A retryable outcome may be redispatched only while the
+session still has the exact mission binding; otherwise Relay fails the
+active-context precondition without writing to the Agent stream. Successful
+Agent evidence is accepted only when its full binding and onboard digest match
+the requested mission. `APPLIED` proves a
 new upload and must report the canonical plan's exact item count;
 `ALREADY_APPLIED` proves readback-only recovery and must report zero newly
 uploaded items. A nonzero `ALREADY_APPLIED` count is rejected as ambiguous. The

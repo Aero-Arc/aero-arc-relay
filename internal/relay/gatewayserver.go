@@ -530,7 +530,7 @@ func (session *DroneSession) handleMissionDeploymentResult(result *agentv1.Missi
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	state := session.missionDeployments[result.GetCommandId()]
-	if state == nil || state.completed {
+	if state == nil || state.completed || state.reserved {
 		return
 	}
 	if err := validateMissionDeploymentResult(state.command, result); err != nil {

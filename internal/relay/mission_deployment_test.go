@@ -373,6 +373,87 @@ func testDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t *testing.T
 	}
 }
 
+func TestDeployMissionIgnoresPriorAttemptResultWhileRetryIsReserved(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
+	}
+
+	initial := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		initial <- outcome{response: response, err: err}
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if got := <-initial; got.err != nil || !proto.Equal(got.response.GetResult(), temporary) {
+		t.Fatalf("initial temporary result = %+v, %v", got.response, got.err)
+	}
+
+	release, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		retried <- outcome{response: response, err: err}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state := session.missionDeployments[command.GetCommandId()]
+		reserved := state != nil && state.reserved && !state.completed
+		session.pendingMu.Unlock()
+		if reserved {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("exact retry did not reserve a generation behind the busy gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// A delayed terminal result from the preceding attempt is valid for the
+	// same command ID, but it must not complete a generation that has not yet
+	// passed retry admission or been delivered.
+	stale := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(stale)
+	session.pendingMu.Lock()
+	state := session.missionDeployments[command.GetCommandId()]
+	ignored := state != nil && state.reserved && !state.completed && state.result == nil
+	session.pendingMu.Unlock()
+	if !ignored {
+		release()
+		t.Fatal("prior-attempt result completed the reserved retry generation")
+	}
+	select {
+	case got := <-retried:
+		release()
+		t.Fatalf("reserved retry completed from prior-attempt evidence: %+v, %v", got.response, got.err)
+	default:
+	}
+
+	release()
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("admitted retry delivered = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	fresh := testAppliedMissionResult(command)
+	fresh.Message = "fresh generation"
+	session.handleMissionDeploymentResult(fresh)
+	if got := <-retried; got.err != nil || !proto.Equal(got.response.GetResult(), fresh) {
+		t.Fatalf("admitted retry result = %+v, %v", got.response, got.err)
+	}
+}
+
 func TestDeployMissionFailedRetryReservationCanBeRetried(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
