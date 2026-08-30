@@ -34,10 +34,13 @@ import (
 // Register authenticates an Agent identity and publishes a fresh logical
 // session generation for its next TelemetryStream. A first session starts with
 // operation context unreconciled when control mutations are enabled. Replacing
-// an existing generation takes that session's ownership lease, copies its last
-// API-authoritative context and reconciliation state, aborts its pending
-// operation, aircraft, and mission commands, stops its Registry liveness, and
-// atomically installs the replacement before releasing the old session. A
+// an existing generation takes that session's ownership lease, aborts its
+// pending operation, aircraft, and mission commands, stops its Registry
+// liveness, and atomically installs the replacement before releasing the old
+// session. Only when Agent authentication is configured does the replacement
+// inherit the prior generation's last API-authoritative context and
+// reconciliation state. Without Agent authentication, the replacement remains
+// unreconciled and must receive an authoritative context replay from the API. A
 // mission whose stream write may have started completes with retained
 // OUTCOME_UNKNOWN evidence; a mission still reserved before admission completes
 // with Aborted and cannot cause a vehicle effect on the replacement.
