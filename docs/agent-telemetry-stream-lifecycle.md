@@ -42,6 +42,15 @@ Registering the same agent ID again replaces the map entry with a new
 `DroneSession` and a new session ID. The old stream handler can still be running,
 but it no longer owns the active registered session.
 
+When an admitted stream disconnects, Relay removes its live session but retains
+the last API-authoritative operation context in a process-local reconnect cache.
+The next successfully authenticated registration for that exact agent ID
+inherits the cached context before its new session is published. If a delivered
+Set or Clear lost its acknowledgement during disconnect, the cached state is
+marked unreconciled instead, and telemetry remains retryable until the API
+replays its durable authority. This cache does not survive Relay restart, so the
+fresh-process reconciliation rule above remains the fail-closed backstop.
+
 ## 2. Attaching a Telemetry Stream
 
 The agent opens the bidirectional `TelemetryStream` RPC and supplies its agent
@@ -325,17 +334,22 @@ holding the session map lock:
 1. The map still contains the exact `DroneSession` captured by this handler.
 2. The captured stream generation is still the session's active generation.
 
-The relay removes the session only when both conditions hold. Consequently:
+The relay removes the live session only when both conditions hold. Consequently:
 
 - An old registration cannot delete a newly registered session.
 - An old stream generation cannot delete a replacement stream in the same
   session.
-- Closing the currently active stream removes its session from the active map.
+- Closing the currently active stream removes its session from the active map,
+  stops Registry liveness, aborts pending control waits, and retains only its
+  operation-context snapshot for an authenticated same-Relay reconnect.
 - Any older handler that remains alive after active-session removal rejects new
   telemetry instead of routing it.
 
 Once the active session is removed, the agent must register again before opening
-another telemetry stream.
+another telemetry stream. A successful same-agent registration consumes the
+cached snapshot and receives a fresh session ID. Cache loss on Relay restart, or
+an outcome-uncertain operation-context mutation at disconnect, keeps telemetry
+gated until explicit API reconciliation.
 
 ## Synchronization and Ownership
 

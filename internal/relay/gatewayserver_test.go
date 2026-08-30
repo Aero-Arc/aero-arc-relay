@@ -1765,6 +1765,114 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	}
 }
 
+func TestRegisterAfterDisconnectRestoresAcknowledgedOperationContext(t *testing.T) {
+	mockSink := mock.NewMockSink()
+	relay := relayWithSinks(mockSink)
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+	const agentID = "agent-1"
+	oldBinding := &telemetryStreamBinding{generation: 1}
+	old := &DroneSession{
+		agentID: agentID, SessionID: "old-session", stream: oldBinding, streamGeneration: 1,
+		AircraftID: "aircraft-1", FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		pending:            make(map[string]chan *agentv1.OperationContextCommandAck),
+		operationCommands:  make(map[string]*operationCommandState),
+		aircraftCommands:   make(map[string]*aircraftCommandState),
+		missionDeployments: make(map[string]*missionDeploymentState),
+	}
+	relay.grpcSessions[agentID] = old
+
+	relay.deleteStream(agentID, old, oldBinding)
+	relay.sessionsMu.RLock()
+	_, connected := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if connected || !old.retired || !oldBinding.closed {
+		t.Fatalf("disconnect state: connected=%t retired=%t binding_closed=%t", connected, old.retired, oldBinding.closed)
+	}
+
+	registration, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if replacement == old {
+		t.Fatal("reconnect did not create a fresh session")
+	}
+	replacement.sessionMu.RLock()
+	aircraftID := replacement.AircraftID
+	replacement.sessionMu.RUnlock()
+	if got := droneStatus(replacement); aircraftID != "aircraft-1" || got.GetFlightId() != "flight-1" ||
+		got.GetIntentId() != "intent-1" || got.GetIntentVersion() != 7 {
+		t.Fatalf("reconnected context = aircraft %q, status %#v", aircraftID, got)
+	}
+	if replacement.requiresOperationContextReconciliation() {
+		t.Fatal("authenticated same-Relay reconnect lost reconciled operation context")
+	}
+
+	stream, cancel := newAgentTelemetryStream(agentID, registration.GetSessionId())
+	defer cancel()
+	streamErr := make(chan error, 1)
+	go func() { streamErr <- relay.TelemetryStream(stream) }()
+	stream.recvChan <- telemetryStreamMessage(&agentv1.TelemetryFrame{
+		AgentId: agentID, SessionId: registration.GetSessionId(), Seq: 22415,
+		MsgName: "Heartbeat", WalId: testWALGenerationID, SentAtUnixNs: time.Now().UnixNano(),
+	})
+	message := <-stream.sentAckChan
+	if ack := message.GetTelemetryAck(); ack == nil || ack.GetStatus() != agentv1.TelemetryAck_STATUS_OK {
+		t.Fatalf("replayed telemetry ACK = %#v, want OK", ack)
+	}
+	messages := mockSink.GetMessages()
+	if len(messages) != 1 || messages[0].FlightID != "flight-1" || messages[0].IntentID != "intent-1" ||
+		messages[0].IntentVersion != 7 {
+		t.Fatalf("replayed telemetry attribution = %#v", messages)
+	}
+	close(stream.recvChan)
+	if err := <-streamErr; err != nil {
+		t.Fatalf("TelemetryStream() error = %v", err)
+	}
+}
+
+func TestRegisterAfterDisconnectFencesUncertainOperationContext(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+	const agentID = "agent-1"
+	binding := &telemetryStreamBinding{generation: 1}
+	state := &operationCommandState{delivered: true, done: make(chan struct{})}
+	old := &DroneSession{
+		agentID: agentID, SessionID: "old-session", stream: binding, streamGeneration: 1,
+		AircraftID: "aircraft-1", FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		pending: map[string]chan *agentv1.OperationContextCommandAck{
+			"context-command": make(chan *agentv1.OperationContextCommandAck, 1),
+		},
+		operationCommands:  map[string]*operationCommandState{"context-command": state},
+		aircraftCommands:   make(map[string]*aircraftCommandState),
+		missionDeployments: make(map[string]*missionDeploymentState),
+	}
+	relay.grpcSessions[agentID] = old
+
+	relay.deleteStream(agentID, old, binding)
+	select {
+	case <-state.done:
+		if status.Code(state.err) != codes.Aborted {
+			t.Fatalf("disconnected operation error = %v, want Aborted", state.err)
+		}
+	default:
+		t.Fatal("disconnect did not abort the pending operation command")
+	}
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[agentID]
+	relay.sessionsMu.RUnlock()
+	if !replacement.requiresOperationContextReconciliation() {
+		t.Fatal("reconnect trusted context after a delivered mutation lost its ACK")
+	}
+}
+
 func TestRegisterReplacementDropsCompletedEmptyReconciliationReservation(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
 	relay.grpcSessions = make(map[string]*DroneSession)

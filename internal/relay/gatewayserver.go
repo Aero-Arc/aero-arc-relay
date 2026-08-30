@@ -127,7 +127,10 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
+		} else if retained, ok := r.disconnectedOperationContexts[agentID]; ok {
+			retained.restoreInto(newSession)
 		}
+		delete(r.disconnectedOperationContexts, agentID)
 		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
 		if previous != nil {
@@ -593,35 +596,43 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 }
 
 func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *DroneSession) {
+	snapshot := session.snapshotContextAndAbortPending()
+	snapshot.restoreInto(replacement)
+}
+
+func (session *DroneSession) snapshotContextAndAbortPending() operationContextSnapshot {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	session.sessionMu.RLock()
-	replacement.AircraftID = session.AircraftID
-	replacement.FlightID = session.FlightID
-	replacement.IntentID = session.IntentID
-	replacement.IntentVersion = session.IntentVersion
-	replacement.operationContextUnreconciled = session.operationContextUnreconciled
-	replacement.emptyContextCommandID = session.emptyContextCommandID
+	snapshot := operationContextSnapshot{
+		aircraftID:            session.AircraftID,
+		flightID:              session.FlightID,
+		intentID:              session.IntentID,
+		intentVersion:         session.IntentVersion,
+		unreconciled:          session.operationContextUnreconciled,
+		emptyContextCommandID: session.emptyContextCommandID,
+	}
 	for _, state := range session.operationCommands {
 		if !state.completed && state.delivered {
 			// The retiring Agent may have applied this mutation even though Relay
 			// never received its ACK. The replacement must not inherit the prior
 			// attribution as if the outcome were known.
-			replacement.operationContextUnreconciled = true
+			snapshot.unreconciled = true
 			break
 		}
 	}
-	if replacement.operationContextUnreconciled && replacement.emptyContextCommandID != "" {
-		state := session.operationCommands[replacement.emptyContextCommandID]
+	if snapshot.unreconciled && snapshot.emptyContextCommandID != "" {
+		state := session.operationCommands[snapshot.emptyContextCommandID]
 		if state == nil || state.completed {
 			// A failed or not-yet-admitted attempt has no in-flight outcome to
 			// protect. Its caller may not have run deferred reservation cleanup yet,
 			// so do not copy that transient reservation into the replacement.
-			replacement.emptyContextCommandID = ""
+			snapshot.emptyContextCommandID = ""
 		}
 	}
 	session.sessionMu.RUnlock()
 	session.abortPendingCommandsLocked(time.Now())
+	return snapshot
 }
 
 func (session *DroneSession) requiresOperationContextReconciliation() bool {

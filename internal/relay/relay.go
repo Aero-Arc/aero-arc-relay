@@ -53,15 +53,37 @@ type Relay struct {
 	outputsInitialized bool
 	grpcServer         *grpc.Server
 	grpcSessions       map[string]*DroneSession
-	sessionsMu         sync.RWMutex
-	closeOnce          sync.Once
-	closeErr           error
-	registryReporter   agentRegistryReporter
-	registryLifecycle  registryLifecycle
-	agentAuthenticator func(context.Context, string) error
-	controlAuthorizer  controlPlaneAuthorizer
+	// disconnectedOperationContexts retains the last API-authoritative context
+	// for an authenticated Agent whose active stream disconnected. The cache is
+	// process-local: a Relay restart still requires an explicit API replay.
+	disconnectedOperationContexts map[string]operationContextSnapshot
+	sessionsMu                    sync.RWMutex
+	closeOnce                     sync.Once
+	closeErr                      error
+	registryReporter              agentRegistryReporter
+	registryLifecycle             registryLifecycle
+	agentAuthenticator            func(context.Context, string) error
+	controlAuthorizer             controlPlaneAuthorizer
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
+}
+
+type operationContextSnapshot struct {
+	aircraftID            string
+	flightID              string
+	intentID              string
+	intentVersion         uint32
+	unreconciled          bool
+	emptyContextCommandID string
+}
+
+func (snapshot operationContextSnapshot) restoreInto(session *DroneSession) {
+	session.AircraftID = snapshot.aircraftID
+	session.FlightID = snapshot.flightID
+	session.IntentID = snapshot.intentID
+	session.IntentVersion = snapshot.intentVersion
+	session.operationContextUnreconciled = snapshot.unreconciled
+	session.emptyContextCommandID = snapshot.emptyContextCommandID
 }
 
 type agentRegistryReporter interface {
