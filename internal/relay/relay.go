@@ -173,7 +173,7 @@ type DroneSession struct {
 	// Relay process with context control enabled. Telemetry remains retryable
 	// until the API replays an authoritative Set/Clear command. Authenticated
 	// same-process replacements inherit the previous session's reconciled state;
-	// authentication-free replacements remain unreconciled.
+	// control-enabled authentication-free replacements remain unreconciled.
 	operationContextUnreconciled bool
 	// emptyContextCommandID retains the one durable command permitted to assert
 	// an authoritative empty context, including exact retries after admission

@@ -39,9 +39,10 @@ import (
 // liveness, and atomically installs the replacement before releasing the old
 // session. Only when Agent authentication is configured does the replacement
 // inherit the prior generation's last API-authoritative context and
-// reconciliation state. Without Agent authentication, the replacement remains
-// unreconciled and must receive an authoritative context replay from the API. A
-// mission whose stream write may have started completes with retained
+// reconciliation state. When control mutations are enabled without Agent
+// authentication, the replacement remains unreconciled and must receive an
+// authoritative context replay from the API. A mission whose stream write may
+// have started completes with retained
 // OUTCOME_UNKNOWN evidence; a mission still reserved before admission completes
 // with Aborted and cannot cause a vehicle effect on the replacement.
 //
