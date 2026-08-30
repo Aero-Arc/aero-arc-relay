@@ -57,8 +57,9 @@ func isPositiveZero(value float64) bool {
 // immutable mission to the exact Agent session active at admission. It refuses
 // delivery unless the configured Agent mapping and reconciled operation context
 // exactly match the mission binding. Concurrent exact attempts coalesce,
-// terminal results replay, and retryable Agent outcomes may start one new
-// delivery on the original stream binding. A command ID may never identify a
+// terminal results replay even after operation context advances, and retryable
+// Agent outcomes may start one new delivery on the original stream binding only
+// while the exact context still matches. A command ID may never identify a
 // different payload. Relay forwards an expired command because its in-memory
 // retention may have been lost during restart; only an Agent with a matching
 // durable uncertain record may reconcile it by readback. The Agent must reject
@@ -127,34 +128,48 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	session.sessionMu.RLock()
 	connected := session.stream != nil
 	sessionID := session.SessionID
-	unreconciled := session.operationContextUnreconciled
-	contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
-		session.FlightID == binding.GetFlightId() &&
-		session.IntentID == binding.GetIntentId() && session.IntentVersion == binding.GetIntentVersion()
 	session.sessionMu.RUnlock()
 	if !connected {
 		session.ownershipMu.RUnlock()
 		return nil, status.Error(codes.NotFound, "agent stream is not connected")
 	}
-	if unreconciled {
-		session.ownershipMu.RUnlock()
-		return nil, status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
-	}
-	if !contextMatches {
-		session.ownershipMu.RUnlock()
-		return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
-	}
 
 	startedAt := time.Now()
-	state, owner, err := beginMissionDeployment(session, command)
+	state, attached, err := attachMissionDeployment(session, command)
 	if err != nil {
 		session.ownershipMu.RUnlock()
 		relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
 		return nil, err
 	}
-	if !owner {
+	owner := false
+	if attached {
 		session.ownershipMu.RUnlock()
 	} else {
+		session.sessionMu.RLock()
+		unreconciled := session.operationContextUnreconciled
+		contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
+			session.FlightID == binding.GetFlightId() &&
+			session.IntentID == binding.GetIntentId() && session.IntentVersion == binding.GetIntentVersion()
+		session.sessionMu.RUnlock()
+		if unreconciled {
+			session.ownershipMu.RUnlock()
+			return nil, status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
+		}
+		if !contextMatches {
+			session.ownershipMu.RUnlock()
+			return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
+		}
+		state, owner, err = beginMissionDeployment(session, command)
+		if err != nil {
+			session.ownershipMu.RUnlock()
+			relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
+			return nil, err
+		}
+		if !owner {
+			session.ownershipMu.RUnlock()
+		}
+	}
+	if owner {
 		slog.LogAttrs(ctx, slog.LevelInfo, "mission_deployment_started",
 			slog.String("command_id", command.GetCommandId()),
 			slog.String("deployment_id", binding.GetDeploymentId()),
@@ -199,6 +214,51 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 		relayMissionDeploymentsTotal.WithLabelValues("wait_ended").Inc()
 		return nil, requestErr
 	}
+}
+
+func missionDeploymentFingerprint(command *agentv1.DeployMissionCommand) (string, error) {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "fingerprint mission command: %v", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// attachMissionDeployment attaches to an existing attempt when doing so cannot
+// initiate a new stream delivery. This makes retained terminal evidence and an
+// already-running attempt replayable after operation context advances, while a
+// retryable result on the current stream still passes the active-context fence
+// before beginMissionDeployment replaces it.
+func attachMissionDeployment(session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, error) {
+	fingerprint, err := missionDeploymentFingerprint(command)
+	if err != nil {
+		return nil, false, err
+	}
+
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	if session.missionDeployments == nil {
+		return nil, false, nil
+	}
+	expireMissionDeploymentsLocked(session, time.Now())
+	existing := session.missionDeployments[command.GetCommandId()]
+	if existing == nil {
+		return nil, false, nil
+	}
+	if existing.fingerprint != fingerprint {
+		return nil, false, status.Error(codes.AlreadyExists, "mission command ID was already used with a different payload")
+	}
+	session.sessionMu.RLock()
+	currentStream := session.stream
+	session.sessionMu.RUnlock()
+	if existing.completed && retryableMissionDeployment(existing) && existing.deliveryStream == currentStream {
+		return nil, false, nil
+	}
+	existing.waiters++
+	return existing, true, nil
 }
 
 func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
@@ -298,12 +358,10 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 }
 
 func beginMissionDeployment(session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, error) {
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	fingerprint, err := missionDeploymentFingerprint(command)
 	if err != nil {
-		return nil, false, status.Errorf(codes.Internal, "fingerprint mission command: %v", err)
+		return nil, false, err
 	}
-	digest := sha256.Sum256(encoded)
-	fingerprint := hex.EncodeToString(digest[:])
 
 	session.controlStreamMu.RLock()
 	session.pendingMu.Lock()

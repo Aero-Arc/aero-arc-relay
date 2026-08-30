@@ -79,6 +79,51 @@ func TestDeployMissionDeliversOnceAndRetainsCorrelatedResult(t *testing.T) {
 	}
 }
 
+func TestDeployMissionReplaysRetainedTerminalResultAfterContextAdvances(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	result := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(result)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	session.sessionMu.Lock()
+	session.FlightID = "flight-2"
+	session.IntentID = "intent-2"
+	session.IntentVersion = 4
+	session.sessionMu.Unlock()
+
+	replayed, err := relay.DeployMission(context.Background(), request)
+	if err != nil || !proto.Equal(replayed.GetResult(), result) {
+		t.Fatalf("retained replay after context advance = %+v, %v", replayed, err)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("retained replay redelivered after context advance: %+v", message)
+	default:
+	}
+
+	newCommand := proto.Clone(command).(*agentv1.DeployMissionCommand)
+	newCommand.CommandId = "deploy-command-2"
+	_, err = relay.DeployMission(context.Background(), &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: newCommand})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("new delivery with stale context error = %v, want FailedPrecondition", err)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("new delivery bypassed active-context fence: %+v", message)
+	default:
+	}
+}
+
 func TestDeployMissionTemporaryErrorRetryRedispatchesOnceThenApplies(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
@@ -150,6 +195,43 @@ func TestDeployMissionTemporaryErrorRetryRedispatchesOnceThenApplies(t *testing.
 	select {
 	case duplicate := <-stream.sentAckChan:
 		t.Fatalf("terminal replay redelivered: %+v", duplicate)
+	default:
+	}
+}
+
+func TestDeployMissionRetryableResultRequiresCurrentContextBeforeRedispatch(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, Message: "retry later",
+		CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	session.sessionMu.Lock()
+	session.FlightID = "flight-2"
+	session.IntentID = "intent-2"
+	session.IntentVersion = 4
+	session.sessionMu.Unlock()
+
+	_, err := relay.DeployMission(context.Background(), request)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("retryable redispatch with stale context error = %v, want FailedPrecondition", err)
+	}
+	select {
+	case message := <-stream.sentAckChan:
+		t.Fatalf("retryable result was redispatched with stale context: %+v", message)
 	default:
 	}
 }
