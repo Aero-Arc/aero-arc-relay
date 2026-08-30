@@ -350,9 +350,9 @@ attribution. Without Agent authentication, Relay copies no context; when context
 control is enabled, replacement telemetry remains retryable until the API
 explicitly replays Set or Clear. Delayed operation-command ACKs received by the
 old handler remain bound to the old session and cannot update the replacement
-session's context or pending commands. If no prior in-process session exists,
-control-enabled Relay does not infer an empty context and applies the same API
-replay fence.
+session's context or pending commands. For an authenticated Agent, if neither a
+prior live session nor a retained reconnect snapshot exists, control-enabled
+Relay does not infer an empty context and applies the same API replay fence.
 
 ## 6. Disconnect and Cleanup
 
