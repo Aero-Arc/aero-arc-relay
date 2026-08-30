@@ -44,12 +44,15 @@ but it no longer owns the active registered session.
 
 When an admitted stream disconnects, Relay removes its live session but retains
 the last API-authoritative operation context in a process-local reconnect cache.
-The next successfully authenticated registration for that exact agent ID
-inherits the cached context before its new session is published. If a delivered
-Set or Clear lost its acknowledgement during disconnect, the cached state is
-marked unreconciled instead, and telemetry remains retryable until the API
-replays its durable authority. This cache does not survive Relay restart, so the
-fresh-process reconciliation rule above remains the fail-closed backstop.
+The next registration for that exact agent ID that passes any configured
+authentication inherits the cached context before its new session is published.
+If a delivered Set or Clear lost its acknowledgement during disconnect, the
+cached state is marked unreconciled instead, and telemetry remains retryable
+until the API replays its durable authority. Entries expire after five minutes,
+the cache is hard-capped at 1,024 agents with deterministic oldest-entry
+eviction, and a fully empty reconciled context is not retained. The cache does
+not survive Relay restart, so the fresh-process reconciliation rule above
+remains the fail-closed backstop.
 
 ## 2. Attaching a Telemetry Stream
 
@@ -348,8 +351,8 @@ The relay removes the live session only when both conditions hold. Consequently:
 Once the active session is removed, the agent must register again before opening
 another telemetry stream. A successful same-agent registration consumes the
 cached snapshot and receives a fresh session ID. Cache loss on Relay restart, or
-an outcome-uncertain operation-context mutation at disconnect, keeps telemetry
-gated until explicit API reconciliation.
+after expiry or capacity eviction, and an outcome-uncertain operation-context
+mutation at disconnect keep telemetry gated until explicit API reconciliation.
 
 ## Synchronization and Ownership
 

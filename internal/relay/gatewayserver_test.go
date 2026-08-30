@@ -14,6 +14,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -1871,6 +1872,60 @@ func TestRegisterAfterDisconnectFencesUncertainOperationContext(t *testing.T) {
 	if !replacement.requiresOperationContextReconciliation() {
 		t.Fatal("reconnect trusted context after a delivered mutation lost its ACK")
 	}
+}
+
+func TestDisconnectedOperationContextCacheIsBoundedAndExpiring(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	valuable := operationContextSnapshot{
+		aircraftID: "aircraft-1", flightID: "flight-1", intentID: "intent-1", intentVersion: 7,
+	}
+
+	t.Run("empty reconciled context is omitted", func(t *testing.T) {
+		relay := &Relay{}
+		relay.retainDisconnectedOperationContextLocked("agent-empty", operationContextSnapshot{}, base)
+		if len(relay.disconnectedOperationContexts) != 0 {
+			t.Fatalf("empty cache size = %d, want 0", len(relay.disconnectedOperationContexts))
+		}
+		relay.retainDisconnectedOperationContextLocked(
+			"agent-unreconciled",
+			operationContextSnapshot{unreconciled: true},
+			base,
+		)
+		if len(relay.disconnectedOperationContexts) != 1 {
+			t.Fatal("empty but unreconciled context was discarded")
+		}
+	})
+
+	t.Run("entry expires", func(t *testing.T) {
+		relay := &Relay{}
+		relay.retainDisconnectedOperationContextLocked("agent-1", valuable, base)
+		if _, ok := relay.takeDisconnectedOperationContextLocked(
+			"agent-1",
+			base.Add(disconnectedOperationContextTTL),
+		); ok {
+			t.Fatal("entry remained available at its expiration boundary")
+		}
+		if len(relay.disconnectedOperationContexts) != 0 {
+			t.Fatal("expired entry was not removed when consumed")
+		}
+	})
+
+	t.Run("oldest entry is deterministically evicted at capacity", func(t *testing.T) {
+		relay := &Relay{}
+		for i := 0; i < maxDisconnectedOperationContextCount; i++ {
+			relay.retainDisconnectedOperationContextLocked(fmt.Sprintf("agent-%04d", i), valuable, base)
+		}
+		relay.retainDisconnectedOperationContextLocked("agent-extra", valuable, base)
+		if got := len(relay.disconnectedOperationContexts); got != maxDisconnectedOperationContextCount {
+			t.Fatalf("cache size = %d, want %d", got, maxDisconnectedOperationContextCount)
+		}
+		if _, ok := relay.disconnectedOperationContexts["agent-0000"]; ok {
+			t.Fatal("lexically first equally-old entry was not evicted")
+		}
+		if _, ok := relay.disconnectedOperationContexts["agent-extra"]; !ok {
+			t.Fatal("new entry was not retained at capacity")
+		}
+	})
 }
 
 func TestRegisterReplacementDropsCompletedEmptyReconciliationReservation(t *testing.T) {

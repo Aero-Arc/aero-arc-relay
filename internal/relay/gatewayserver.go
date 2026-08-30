@@ -127,10 +127,9 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
-		} else if retained, ok := r.disconnectedOperationContexts[agentID]; ok {
+		} else if retained, ok := r.takeDisconnectedOperationContextLocked(agentID, time.Now()); ok {
 			retained.restoreInto(newSession)
 		}
-		delete(r.disconnectedOperationContexts, agentID)
 		r.grpcSessions[agentID] = newSession
 		r.sessionsMu.Unlock()
 		if previous != nil {

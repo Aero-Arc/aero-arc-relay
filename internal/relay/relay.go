@@ -44,6 +44,11 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+const (
+	disconnectedOperationContextTTL      = 5 * time.Minute
+	maxDisconnectedOperationContextCount = 1024
+)
+
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
 	config             *config.Config
@@ -54,9 +59,10 @@ type Relay struct {
 	grpcServer         *grpc.Server
 	grpcSessions       map[string]*DroneSession
 	// disconnectedOperationContexts retains the last API-authoritative context
-	// for an authenticated Agent whose active stream disconnected. The cache is
-	// process-local: a Relay restart still requires an explicit API replay.
-	disconnectedOperationContexts map[string]operationContextSnapshot
+	// for an Agent whose active stream disconnected. Registration must pass any
+	// configured authentication before consuming it. The cache is process-local:
+	// a Relay restart still requires an explicit API replay.
+	disconnectedOperationContexts map[string]retainedOperationContext
 	sessionsMu                    sync.RWMutex
 	closeOnce                     sync.Once
 	closeErr                      error
@@ -77,6 +83,11 @@ type operationContextSnapshot struct {
 	emptyContextCommandID string
 }
 
+type retainedOperationContext struct {
+	snapshot  operationContextSnapshot
+	expiresAt time.Time
+}
+
 func (snapshot operationContextSnapshot) restoreInto(session *DroneSession) {
 	session.AircraftID = snapshot.aircraftID
 	session.FlightID = snapshot.flightID
@@ -84,6 +95,56 @@ func (snapshot operationContextSnapshot) restoreInto(session *DroneSession) {
 	session.IntentVersion = snapshot.intentVersion
 	session.operationContextUnreconciled = snapshot.unreconciled
 	session.emptyContextCommandID = snapshot.emptyContextCommandID
+}
+
+func (snapshot operationContextSnapshot) isEmptyAndReconciled() bool {
+	return snapshot.aircraftID == "" && snapshot.flightID == "" && snapshot.intentID == "" &&
+		snapshot.intentVersion == 0 && !snapshot.unreconciled && snapshot.emptyContextCommandID == ""
+}
+
+// retainDisconnectedOperationContextLocked stores bounded, short-lived
+// reconnect state. The caller must hold sessionsMu for writing.
+func (r *Relay) retainDisconnectedOperationContextLocked(agentID string, snapshot operationContextSnapshot, now time.Time) {
+	if snapshot.isEmptyAndReconciled() {
+		delete(r.disconnectedOperationContexts, agentID)
+		return
+	}
+	if r.disconnectedOperationContexts == nil {
+		r.disconnectedOperationContexts = make(map[string]retainedOperationContext)
+	}
+	for retainedAgentID, retained := range r.disconnectedOperationContexts {
+		if !now.Before(retained.expiresAt) {
+			delete(r.disconnectedOperationContexts, retainedAgentID)
+		}
+	}
+	if _, exists := r.disconnectedOperationContexts[agentID]; !exists &&
+		len(r.disconnectedOperationContexts) >= maxDisconnectedOperationContextCount {
+		var evictedAgentID string
+		var oldestExpiry time.Time
+		for retainedAgentID, retained := range r.disconnectedOperationContexts {
+			if evictedAgentID == "" || retained.expiresAt.Before(oldestExpiry) ||
+				(retained.expiresAt.Equal(oldestExpiry) && retainedAgentID < evictedAgentID) {
+				evictedAgentID = retainedAgentID
+				oldestExpiry = retained.expiresAt
+			}
+		}
+		delete(r.disconnectedOperationContexts, evictedAgentID)
+	}
+	r.disconnectedOperationContexts[agentID] = retainedOperationContext{
+		snapshot:  snapshot,
+		expiresAt: now.Add(disconnectedOperationContextTTL),
+	}
+}
+
+// takeDisconnectedOperationContextLocked consumes reconnect state exactly once.
+// The caller must hold sessionsMu for writing.
+func (r *Relay) takeDisconnectedOperationContextLocked(agentID string, now time.Time) (operationContextSnapshot, bool) {
+	retained, ok := r.disconnectedOperationContexts[agentID]
+	delete(r.disconnectedOperationContexts, agentID)
+	if !ok || !now.Before(retained.expiresAt) {
+		return operationContextSnapshot{}, false
+	}
+	return retained.snapshot, true
 }
 
 type agentRegistryReporter interface {

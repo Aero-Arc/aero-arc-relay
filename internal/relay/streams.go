@@ -13,6 +13,7 @@ package relay
 
 import (
 	"context"
+	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 )
@@ -158,10 +159,7 @@ func (r *Relay) deleteStream(agentID string, expectedSession *DroneSession, expe
 		session.retired = true
 		retainedContext := session.snapshotContextAndAbortPending()
 		if r.controlAuthorizer != nil {
-			if r.disconnectedOperationContexts == nil {
-				r.disconnectedOperationContexts = make(map[string]operationContextSnapshot)
-			}
-			r.disconnectedOperationContexts[agentID] = retainedContext
+			r.retainDisconnectedOperationContextLocked(agentID, retainedContext, time.Now())
 		}
 		delete(r.grpcSessions, agentID)
 		// Stop liveness before releasing the session-map lock. Otherwise a new
