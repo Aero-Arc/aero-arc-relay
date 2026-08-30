@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go/bigquery v1.71.0
 	cloud.google.com/go/storage v1.57.0
 	github.com/InfluxCommunity/influxdb3-go/v2 v2.10.0
-	github.com/aero-arc/aero-arc-protos v0.0.0-20260830124910-d3b38f2bb04e
+	github.com/aero-arc/aero-arc-protos v0.0.0-20260830131659-8cbf71853746
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bluenviron/gomavlib/v2 v2.2.0
 	github.com/elastic/go-elasticsearch/v8 v8.15.0

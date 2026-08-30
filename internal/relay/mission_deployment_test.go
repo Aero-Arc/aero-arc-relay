@@ -950,6 +950,7 @@ func TestDeployMissionCallerDeadlineRedispatchesOutcomeUnknownOnSameStream(t *te
 	}
 	applied := testAppliedMissionResult(command)
 	applied.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+	applied.UploadedItemCount = 0
 	session.handleMissionDeploymentResult(applied)
 	got := <-retried
 	if got.err != nil || !proto.Equal(got.response.GetResult(), applied) {
@@ -990,6 +991,7 @@ func TestDeployMissionOutcomeUnknownRecoversAfterCommandExpiry(t *testing.T) {
 	}
 	reconciled := testAppliedMissionResult(command)
 	reconciled.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+	reconciled.UploadedItemCount = 0
 	session.handleMissionDeploymentResult(reconciled)
 	got := <-retried
 	if got.err != nil || !proto.Equal(got.response.GetResult(), reconciled) {
@@ -1192,5 +1194,51 @@ func testAppliedMissionResult(command *agentv1.DeployMissionCommand) *agentv1.Mi
 		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
 		Status: agentv1.MissionDeploymentResult_STATUS_APPLIED, UploadedItemCount: uint32(len(command.GetPlan().GetItems())),
 		OnboardMissionDigest: command.GetBinding().GetMissionDigest(), CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+}
+
+func TestValidateMissionDeploymentSuccessEvidence(t *testing.T) {
+	command := testMissionCommand(t)
+	tests := map[string]struct {
+		mutate  func(*agentv1.MissionDeploymentResult)
+		wantErr bool
+	}{
+		"applied exact upload count": {},
+		"applied zero upload count": {
+			mutate:  func(result *agentv1.MissionDeploymentResult) { result.UploadedItemCount = 0 },
+			wantErr: true,
+		},
+		"already applied readback only": {
+			mutate: func(result *agentv1.MissionDeploymentResult) {
+				result.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+				result.UploadedItemCount = 0
+			},
+		},
+		"already applied with ambiguous upload count": {
+			mutate: func(result *agentv1.MissionDeploymentResult) {
+				result.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+			},
+			wantErr: true,
+		},
+		"already applied with mismatched digest": {
+			mutate: func(result *agentv1.MissionDeploymentResult) {
+				result.Status = agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED
+				result.UploadedItemCount = 0
+				result.OnboardMissionDigest = strings.Repeat("f", 64)
+			},
+			wantErr: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := testAppliedMissionResult(command)
+			if test.mutate != nil {
+				test.mutate(result)
+			}
+			err := validateMissionDeploymentResult(command, result)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateMissionDeploymentResult() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
 	}
 }

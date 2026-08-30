@@ -730,8 +730,18 @@ func validateMissionDeploymentResult(command *agentv1.DeployMissionCommand, resu
 		return status.Error(codes.Internal, "agent returned a mission result without completion time")
 	}
 	if result.GetStatus() == agentv1.MissionDeploymentResult_STATUS_APPLIED || result.GetStatus() == agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED {
-		if result.GetOnboardMissionDigest() != command.GetBinding().GetMissionDigest() || int(result.GetUploadedItemCount()) != len(command.GetPlan().GetItems()) {
+		if result.GetOnboardMissionDigest() != command.GetBinding().GetMissionDigest() {
 			return status.Error(codes.Internal, "agent success result does not prove the expected onboard mission")
+		}
+	}
+	switch result.GetStatus() {
+	case agentv1.MissionDeploymentResult_STATUS_APPLIED:
+		if int(result.GetUploadedItemCount()) != len(command.GetPlan().GetItems()) {
+			return status.Error(codes.Internal, "agent applied result does not report the canonical uploaded item count")
+		}
+	case agentv1.MissionDeploymentResult_STATUS_ALREADY_APPLIED:
+		if result.GetUploadedItemCount() != 0 {
+			return status.Error(codes.Internal, "agent already-applied result ambiguously reports newly uploaded items")
 		}
 	}
 	return nil
