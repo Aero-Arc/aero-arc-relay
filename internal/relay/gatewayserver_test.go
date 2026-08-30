@@ -873,6 +873,7 @@ type mockTelemetryStream struct {
 	sendStarted chan struct{}
 	sendBlock   chan struct{}
 	sendErr     error
+	sendHook    func(*agentv1.RelayStreamMessage)
 }
 
 func (m *mockTelemetryStream) Context() context.Context {
@@ -894,6 +895,9 @@ func (m *mockTelemetryStream) Recv() (*agentv1.AgentStreamMessage, error) {
 }
 
 func (m *mockTelemetryStream) Send(ack *agentv1.RelayStreamMessage) error {
+	if m.sendHook != nil {
+		m.sendHook(ack)
+	}
 	if m.sendStarted != nil {
 		select {
 		case m.sendStarted <- struct{}{}:
@@ -1613,6 +1617,7 @@ func TestTelemetryStream_RejectsOldStreamAfterActiveReplacementCloses(t *testing
 
 func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
 	relay.grpcSessions = make(map[string]*DroneSession)
 	agentID := "reconnecting-agent"
 	oldPending := make(chan *agentv1.OperationContextCommandAck, 1)
@@ -1738,6 +1743,7 @@ func TestTelemetryStream_CommandACKStaysBoundToReceivingSession(t *testing.T) {
 
 func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
 	relay.grpcSessions = make(map[string]*DroneSession)
 	old := &DroneSession{
 		agentID: "agent-1", SessionID: "old-session",
@@ -1763,6 +1769,51 @@ func TestRegisterReplacementRestoresAcknowledgedOperationContext(t *testing.T) {
 	}
 	if !replacement.reserveEmptyContextReconciliation("reconcile-empty") || replacement.reserveEmptyContextReconciliation("different-empty") {
 		t.Fatal("same-process replacement lost the retained empty-context command identity")
+	}
+}
+
+func TestRegisterLiveReplacementDoesNotTransferContextWithoutAgentAuthentication(t *testing.T) {
+	relay := relayWithSinks(mock.NewMockSink())
+	relay.controlAuthorizer = func(context.Context) error { return nil }
+	relay.grpcSessions = make(map[string]*DroneSession)
+	state := &operationCommandState{done: make(chan struct{}), delivered: true}
+	old := &DroneSession{
+		agentID: "agent-1", SessionID: "old-session",
+		AircraftID: "aircraft-1", FlightID: "flight-1", IntentID: "intent-1", IntentVersion: 7,
+		pending: map[string]chan *agentv1.OperationContextCommandAck{
+			"pending-command": make(chan *agentv1.OperationContextCommandAck, 1),
+		},
+		operationCommands:  map[string]*operationCommandState{"pending-command": state},
+		aircraftCommands:   make(map[string]*aircraftCommandState),
+		missionDeployments: make(map[string]*missionDeploymentState),
+	}
+	relay.grpcSessions[old.agentID] = old
+
+	if _, err := relay.Register(context.Background(), &agentv1.RegisterRequest{AgentId: old.agentID}); err != nil {
+		t.Fatal(err)
+	}
+	relay.sessionsMu.RLock()
+	replacement := relay.grpcSessions[old.agentID]
+	relay.sessionsMu.RUnlock()
+	if replacement == old || !old.retired {
+		t.Fatal("authentication-free registration did not retire the claimed live session")
+	}
+	select {
+	case <-state.done:
+		if status.Code(state.err) != codes.Aborted {
+			t.Fatalf("retired pending command error = %v, want Aborted", state.err)
+		}
+	default:
+		t.Fatal("authentication-free replacement did not abort old pending commands")
+	}
+	replacement.sessionMu.RLock()
+	aircraftID, flightID, intentID, intentVersion := replacement.AircraftID, replacement.FlightID, replacement.IntentID, replacement.IntentVersion
+	replacement.sessionMu.RUnlock()
+	if aircraftID != "" || flightID != "" || intentID != "" || intentVersion != 0 {
+		t.Fatalf("authentication-free live takeover inherited context: aircraft=%q flight=%q intent=%q v%d", aircraftID, flightID, intentID, intentVersion)
+	}
+	if !replacement.requiresOperationContextReconciliation() {
+		t.Fatal("authentication-free live takeover bypassed API context reconciliation")
 	}
 }
 
@@ -1969,6 +2020,7 @@ func TestDisconnectedOperationContextCacheIsBoundedAndExpiring(t *testing.T) {
 
 func TestRegisterReplacementDropsCompletedEmptyReconciliationReservation(t *testing.T) {
 	relay := relayWithSinks(mock.NewMockSink())
+	relay.agentAuthenticator = func(context.Context, string) error { return nil }
 	relay.grpcSessions = make(map[string]*DroneSession)
 	old := &DroneSession{
 		agentID: "agent-1", SessionID: "old-session",

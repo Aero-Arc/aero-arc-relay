@@ -373,7 +373,7 @@ func testDeployMissionConcurrentRetryableGenerationRedispatchesOnce(t *testing.T
 	}
 }
 
-func TestDeployMissionIgnoresPriorAttemptResultUntilRetrySendReturns(t *testing.T) {
+func TestDeployMissionCommitsSendBeforeAcceptingRetryResults(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
 	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
@@ -477,7 +477,7 @@ func TestDeployMissionIgnoresPriorAttemptResultUntilRetrySendReturns(t *testing.
 	ignored = state != nil && !state.resultAdmissionOpen && !state.completed && state.result == nil
 	session.pendingMu.Unlock()
 	if !ignored {
-		t.Fatal("prior-attempt result completed the retry before its stream Send returned")
+		t.Fatal("prior-attempt result completed the retry before effect-start commit")
 	}
 	select {
 	case got := <-retried:
@@ -485,30 +485,36 @@ func TestDeployMissionIgnoresPriorAttemptResultUntilRetrySendReturns(t *testing.
 	default:
 	}
 
+	// Simulate an Agent that responds from inside Send. Effect-start commit has
+	// already opened command-level evidence, but completing the state cancels
+	// deliveryCtx. Send must still run to completion exactly once.
+	fresh := testAppliedMissionResult(command)
+	fresh.Message = "fast current generation"
+	resultHandledDuringSend := make(chan struct{}, 1)
+	stream.sendHook = func(message *agentv1.RelayStreamMessage) {
+		if message.GetDeployMission() == nil {
+			return
+		}
+		session.handleMissionDeploymentResult(fresh)
+		resultHandledDuringSend <- struct{}{}
+	}
 	deliveryStream.sendMu.Unlock()
 	sendLocked = false
 	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
 		t.Fatalf("admitted retry delivered = %+v, want %+v", message.GetDeployMission(), command)
 	}
-	deadline = time.Now().Add(time.Second)
-	for {
-		session.pendingMu.Lock()
-		state = session.missionDeployments[command.GetCommandId()]
-		deliveryFinished := state != nil && state.resultAdmissionOpen && !state.completed
-		session.pendingMu.Unlock()
-		if deliveryFinished {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("retry stream Send did not finish")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-resultHandledDuringSend:
+	default:
+		t.Fatal("fast current result was not accepted at command effect start")
 	}
-	fresh := testAppliedMissionResult(command)
-	fresh.Message = "fresh generation"
-	session.handleMissionDeploymentResult(fresh)
 	if got := <-retried; got.err != nil || !proto.Equal(got.response.GetResult(), fresh) {
 		t.Fatalf("admitted retry result = %+v, %v", got.response, got.err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("effect-start result caused an extra delivery: %+v", duplicate)
+	default:
 	}
 }
 

@@ -668,14 +668,16 @@ func beginMissionDeployment(ctx context.Context, session *DroneSession, command 
 	go func() {
 		defer session.ownershipMu.RUnlock()
 		defer session.controlStreamMu.RUnlock()
-		attempted, sendErr := sendToSessionWithWritePolicyAndFinish(deliveryCtx, session, &agentv1.RelayStreamMessage{
+		attempted, sendErr := sendToSessionWithWritePolicyAndCommit(deliveryCtx, session, &agentv1.RelayStreamMessage{
 			Payload: &agentv1.RelayStreamMessage_DeployMission{DeployMission: cloned},
-		}, true, func() {
+		}, true, func() bool {
 			session.pendingMu.Lock()
-			if session.missionDeployments[cloned.GetCommandId()] == state && !state.completed {
-				state.resultAdmissionOpen = true
+			defer session.pendingMu.Unlock()
+			if session.missionDeployments[cloned.GetCommandId()] != state || state.completed {
+				return false
 			}
-			session.pendingMu.Unlock()
+			state.resultAdmissionOpen = true
+			return true
 		})
 		session.pendingMu.Lock()
 		if session.missionDeployments[cloned.GetCommandId()] == state && !state.completed {

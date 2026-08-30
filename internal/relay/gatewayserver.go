@@ -123,7 +123,10 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
-			previous.restoreContextIntoAndAbortPending(newSession)
+			snapshot := previous.snapshotContextAndAbortPending()
+			if r.agentAuthenticator != nil {
+				snapshot.restoreInto(newSession)
+			}
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
 			}
@@ -347,14 +350,17 @@ func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, messa
 // was invoked. Once invoked, either a nil or error result is delivery-uncertain:
 // the peer may have applied the message before Relay observed the outcome.
 func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) (bool, error) {
-	return sendToSessionWithWritePolicyAndFinish(ctx, session, message, waitThroughWrite, nil)
+	return sendToSessionWithWritePolicyAndCommit(ctx, session, message, waitThroughWrite, nil)
 }
 
-// sendToSessionWithWritePolicyAndFinish invokes onFinish inside the serialized
-// stream-write task after Send returns but before releasing the binding lock.
-// Callers use it when result admission must remain closed for the entire
-// pre-Send and in-Send interval.
-func sendToSessionWithWritePolicyAndFinish(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool, onFinish func()) (bool, error) {
+// sendToSessionWithWritePolicyAndCommit invokes commit immediately before the
+// active binding's Send method. Once commit succeeds, Send is invoked without a
+// later context or state check, so correlated command-level evidence cannot
+// complete the state and suppress the committed delivery.
+func sendToSessionWithWritePolicyAndCommit(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool, commit func() bool) (bool, error) {
+	if !waitThroughWrite && commit != nil {
+		return false, status.Error(codes.Internal, "stream delivery commit requires wait-through-write policy")
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, status.FromContextError(err).Err()
@@ -381,19 +387,17 @@ func sendToSessionWithWritePolicyAndFinish(ctx context.Context, session *DroneSe
 			return false, status.FromContextError(err).Err()
 		}
 		if waitThroughWrite {
-			err := binding.stream.Send(message)
-			if onFinish != nil {
-				onFinish()
+			if commit != nil && !commit() {
+				binding.sendMu.Unlock()
+				return false, status.Error(codes.Canceled, "stream delivery state ended before effect-start commit")
 			}
+			err := binding.stream.Send(message)
 			binding.sendMu.Unlock()
 			return true, err
 		}
 		sent := make(chan error, 1)
 		go func() {
 			err := binding.stream.Send(message)
-			if onFinish != nil {
-				onFinish()
-			}
 			binding.sendMu.Unlock()
 			sent <- err
 		}()
@@ -609,11 +613,6 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 		session.operationContextUnreconciled = true
 		session.sessionMu.Unlock()
 	}
-}
-
-func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *DroneSession) {
-	snapshot := session.snapshotContextAndAbortPending()
-	snapshot.restoreInto(replacement)
 }
 
 func (session *DroneSession) snapshotContextAndAbortPending() operationContextSnapshot {

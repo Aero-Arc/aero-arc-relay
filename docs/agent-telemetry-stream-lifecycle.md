@@ -38,9 +38,12 @@ flight and intent. This is required after Relay restart; Registry discovery and
 stream admission provide the API-to-Relay replay path. Relays with context
 control disabled preserve their context-free telemetry behavior.
 
-Registering the same agent ID again replaces the map entry with a new
-`DroneSession` and a new session ID. The old stream handler can still be running,
-but it no longer owns the active registered session.
+Registering the same authenticated agent ID again replaces the map entry with a
+new `DroneSession` and a new session ID. The old stream handler can still be
+running, but it no longer owns the active registered session. Without Agent
+authentication, replacement still aborts the old session and pending commands,
+but the new session inherits no operation context and remains unreconciled for
+API replay.
 
 When an authenticated admitted stream disconnects, Relay removes its live
 session but retains the last API-authoritative operation context in a
@@ -203,9 +206,15 @@ generation-scoped admission task takes the gate while any waiter remains, so
 one caller's shorter deadline detaches only that caller and cannot cancel other
 coalesced waiters. Relay ignores delayed results from the preceding delivery
 while the next generation is reserved or waiting to begin its stream write;
-Relay keeps the fence closed through the serialized Send call and admits Agent
-evidence only after that delivery attempt returns. Every caller retains its own
-capped admission window,
+immediately before Send, Relay atomically commits that exact immutable command
+to effect start and opens command-level result admission. After this point Send
+is invoked unconditionally, even if correlated evidence completes the shared
+state or the last caller ends its wait. Evidence before commit is ignored;
+evidence after commit is authoritative for the exact command ID and payload.
+The protocol does not claim per-attempt provenance: a delayed retryable result
+can cause another exact idempotent delivery, while delayed terminal evidence
+proves the command-level effect and cannot suppress the already-committed Send.
+Every caller retains its own capped admission window,
 so a later exact retry contributes its full remaining window rather than
 inheriting the first caller's deadline. The last waiter ending cancels
 pre-effect admission. A retryable outcome may be redispatched only while the
