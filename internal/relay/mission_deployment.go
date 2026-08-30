@@ -113,30 +113,11 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, maxMissionDeploymentWait)
 	defer cancel()
-	release, err := acquireOperationCommandSlot(waitCtx, session)
+	startedAt := time.Now()
+	sessionID, err := s.lockCurrentMissionSession(agentID, session)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-
-	session.ownershipMu.RLock()
-	s.sessionsMu.RLock()
-	current := s.grpcSessions[agentID] == session && !session.retired
-	s.sessionsMu.RUnlock()
-	if !current {
-		session.ownershipMu.RUnlock()
-		return nil, status.Error(codes.NotFound, "agent session is no longer active")
-	}
-	session.sessionMu.RLock()
-	connected := session.stream != nil
-	sessionID := session.SessionID
-	session.sessionMu.RUnlock()
-	if !connected {
-		session.ownershipMu.RUnlock()
-		return nil, status.Error(codes.NotFound, "agent stream is not connected")
-	}
-
-	startedAt := time.Now()
 	state, attached, err := attachMissionDeployment(session, command)
 	if err != nil {
 		session.ownershipMu.RUnlock()
@@ -147,28 +128,62 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	if attached {
 		session.ownershipMu.RUnlock()
 	} else {
-		session.sessionMu.RLock()
-		unreconciled := session.operationContextUnreconciled
-		contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
-			session.FlightID == binding.GetFlightId() &&
-			session.IntentID == binding.GetIntentId() && session.IntentVersion == binding.GetIntentVersion()
-		session.sessionMu.RUnlock()
-		if unreconciled {
-			session.ownershipMu.RUnlock()
-			return nil, status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
+		// Exact retries of running or retained deployments never contend for the
+		// cross-operation gate. Only a request that may initiate a stream write
+		// waits here. Do not hold the ownership lease while waiting: session
+		// retirement and replacement must remain able to make progress.
+		session.ownershipMu.RUnlock()
+		release, acquireErr := acquireOperationCommandSlot(waitCtx, session)
+		if acquireErr != nil {
+			return nil, acquireErr
 		}
-		if !contextMatches {
-			session.ownershipMu.RUnlock()
-			return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
+		gateRelease := release
+		defer func() {
+			if gateRelease != nil {
+				gateRelease()
+			}
+		}()
+
+		sessionID, err = s.lockCurrentMissionSession(agentID, session)
+		if err != nil {
+			return nil, err
 		}
-		state, owner, err = beginMissionDeployment(waitCtx, session, command)
+		// Another caller may have admitted this exact deployment while this
+		// request waited for the gate. Reattach instead of redelivering it.
+		state, attached, err = attachMissionDeployment(session, command)
 		if err != nil {
 			session.ownershipMu.RUnlock()
 			relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
 			return nil, err
 		}
-		if !owner {
+		if attached {
 			session.ownershipMu.RUnlock()
+			gateRelease()
+			gateRelease = nil
+		} else {
+			session.sessionMu.RLock()
+			unreconciled := session.operationContextUnreconciled
+			contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
+				session.FlightID == binding.GetFlightId() &&
+				session.IntentID == binding.GetIntentId() && session.IntentVersion == binding.GetIntentVersion()
+			session.sessionMu.RUnlock()
+			if unreconciled {
+				session.ownershipMu.RUnlock()
+				return nil, status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
+			}
+			if !contextMatches {
+				session.ownershipMu.RUnlock()
+				return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
+			}
+			state, owner, err = beginMissionDeployment(waitCtx, session, command)
+			if err != nil {
+				session.ownershipMu.RUnlock()
+				relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
+				return nil, err
+			}
+			if !owner {
+				session.ownershipMu.RUnlock()
+			}
 		}
 	}
 	if owner {
@@ -214,6 +229,29 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 		relayMissionDeploymentsTotal.WithLabelValues("wait_ended").Inc()
 		return nil, requestErr
 	}
+}
+
+// lockCurrentMissionSession pins session as the active, connected session for
+// agentID. On success the caller owns session.ownershipMu's read lease and must
+// release it, or transfer it to an admitted asynchronous delivery.
+func (s *Relay) lockCurrentMissionSession(agentID string, session *DroneSession) (string, error) {
+	session.ownershipMu.RLock()
+	s.sessionsMu.RLock()
+	current := s.grpcSessions[agentID] == session && !session.retired
+	s.sessionsMu.RUnlock()
+	if !current {
+		session.ownershipMu.RUnlock()
+		return "", status.Error(codes.NotFound, "agent session is no longer active")
+	}
+	session.sessionMu.RLock()
+	connected := session.stream != nil
+	sessionID := session.SessionID
+	session.sessionMu.RUnlock()
+	if !connected {
+		session.ownershipMu.RUnlock()
+		return "", status.Error(codes.NotFound, "agent stream is not connected")
+	}
+	return sessionID, nil
 }
 
 func missionDeploymentFingerprint(command *agentv1.DeployMissionCommand) (string, error) {

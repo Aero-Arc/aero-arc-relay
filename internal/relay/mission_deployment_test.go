@@ -79,6 +79,97 @@ func TestDeployMissionDeliversOnceAndRetainsCorrelatedResult(t *testing.T) {
 	}
 }
 
+func TestDeployMissionExactRetryAttachesBeforeOperationGate(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	type outcome struct {
+		response *relayv1.DeployMissionResponse
+		err      error
+	}
+
+	originalCtx, cancelOriginal := context.WithCancel(context.Background())
+	defer cancelOriginal()
+	original := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(originalCtx, request)
+		original <- outcome{response: response, err: err}
+	}()
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("initial delivered command = %+v, want %+v", message.GetDeployMission(), command)
+	}
+
+	retry := make(chan outcome, 1)
+	go func() {
+		response, err := relay.DeployMission(context.Background(), request)
+		retry <- outcome{response: response, err: err}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state := session.missionDeployments[command.GetCommandId()]
+		attached := state != nil && state.waiters == 2
+		session.pendingMu.Unlock()
+		if attached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("exact retry did not attach while the original held the operation gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancelOriginal()
+	if got := <-original; status.Code(got.err) != codes.Canceled {
+		t.Fatalf("original DeployMission() = %+v, %v, want Canceled", got.response, got.err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("attached retry redelivered after original caller canceled: %+v", duplicate)
+	default:
+	}
+
+	applied := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(applied)
+	if got := <-retry; got.err != nil || !proto.Equal(got.response.GetResult(), applied) {
+		t.Fatalf("attached retry = %+v, %v", got.response, got.err)
+	}
+}
+
+func TestDeployMissionRetainedRetryBypassesBusyOperationGate(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	result := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(result)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	replayed, err := relay.DeployMission(ctx, request)
+	if err != nil || !proto.Equal(replayed.GetResult(), result) {
+		t.Fatalf("retained retry behind busy operation gate = %+v, %v", replayed, err)
+	}
+	select {
+	case duplicate := <-stream.sentAckChan:
+		t.Fatalf("retained retry redelivered behind busy operation gate: %+v", duplicate)
+	default:
+	}
+}
+
 func TestDeployMissionReplaysRetainedTerminalResultAfterContextAdvances(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)

@@ -174,16 +174,22 @@ does not replace or reshape the operational intent.
 Mission command fingerprints cover the entire command, binding, and plan.
 Concurrent exact retries share one delivery and terminal outcomes are retained;
 reusing the command ID with another byte-level payload or retained command kind
-is rejected. An exact retained terminal outcome remains replayable after the
-session operation context advances because replay cannot cause another vehicle
-effect. A retryable outcome may be redispatched only while the session still has
-the exact mission binding; otherwise Relay fails the active-context precondition
-without writing to the Agent stream. Successful Agent evidence is accepted only
-when its full binding matches, its onboard digest matches the requested digest,
-and its uploaded item count matches the canonical plan. The Relay wait is capped
-at two minutes across serialized command-gate admission and result correlation,
-even when the caller does not provide a shorter deadline. New commands must use
-a validity window no longer than five minutes.
+is rejected. Exact retries attach to an already-running deployment or replay a
+retained terminal outcome before contending for the serialized cross-operation
+gate. They therefore remain recoverable while another operation is waiting for
+Agent evidence, and one caller ending its wait cannot turn a coalesced in-flight
+deployment into an unnecessary uncertain redelivery. An exact retained terminal
+outcome remains replayable after the session operation context advances because
+replay cannot cause another vehicle effect. Only a request that may initiate a
+new stream delivery takes the gate. A retryable outcome may be redispatched only
+while the session still has the exact mission binding; otherwise Relay fails the
+active-context precondition without writing to the Agent stream. Successful
+Agent evidence is accepted only when its full binding matches, its onboard
+digest matches the requested digest, and its uploaded item count matches the
+canonical plan. The Relay wait is capped at two minutes across any required
+serialized command-gate admission and result correlation, even when the caller
+does not provide a shorter deadline. New commands must use a validity window no
+longer than five minutes.
 
 Relay deliberately forwards an expired exact command to the current Agent. Its
 in-memory command retention cannot distinguish a first expired request from
