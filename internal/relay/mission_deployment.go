@@ -111,7 +111,9 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	if session == nil {
 		return nil, status.Error(codes.NotFound, "agent is not connected")
 	}
-	release, err := acquireOperationCommandSlot(ctx, session)
+	waitCtx, cancel := context.WithTimeout(ctx, maxMissionDeploymentWait)
+	defer cancel()
+	release, err := acquireOperationCommandSlot(waitCtx, session)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +161,7 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 			session.ownershipMu.RUnlock()
 			return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
 		}
-		state, owner, err = beginMissionDeployment(ctx, session, command)
+		state, owner, err = beginMissionDeployment(waitCtx, session, command)
 		if err != nil {
 			session.ownershipMu.RUnlock()
 			relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
@@ -183,8 +185,6 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 		)
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, maxMissionDeploymentWait)
-	defer cancel()
 	select {
 	case <-state.done:
 		result, err := takeMissionDeploymentResult(session, state)

@@ -181,8 +181,9 @@ the exact mission binding; otherwise Relay fails the active-context precondition
 without writing to the Agent stream. Successful Agent evidence is accepted only
 when its full binding matches, its onboard digest matches the requested digest,
 and its uploaded item count matches the canonical plan. The Relay wait is capped
-at two minutes even when the caller does not provide a shorter deadline, and new
-commands must use a validity window no longer than five minutes.
+at two minutes across serialized command-gate admission and result correlation,
+even when the caller does not provide a shorter deadline. New commands must use
+a validity window no longer than five minutes.
 
 Relay deliberately forwards an expired exact command to the current Agent. Its
 in-memory command retention cannot distinguish a first expired request from
