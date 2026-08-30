@@ -118,7 +118,7 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	if err != nil {
 		return nil, err
 	}
-	state, attached, reservationOwner, err := attachMissionDeployment(session, command)
+	state, attached, reservationOwner, err := attachMissionDeployment(waitCtx, session, command)
 	if err != nil {
 		session.ownershipMu.RUnlock()
 		relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
@@ -127,6 +127,9 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	owner := false
 	if attached {
 		session.ownershipMu.RUnlock()
+	} else if reservationOwner {
+		session.ownershipMu.RUnlock()
+		s.startMissionDeploymentReservation(agentID, session, state)
 	} else {
 		// Exact retries of running or retained deployments never contend for the
 		// cross-operation gate. Only a request that may initiate a stream write
@@ -135,9 +138,6 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 		session.ownershipMu.RUnlock()
 		release, acquireErr := acquireOperationCommandSlot(waitCtx, session)
 		if acquireErr != nil {
-			if reservationOwner {
-				failMissionDeploymentReservation(session, command.GetCommandId(), state, acquireErr)
-			}
 			return nil, acquireErr
 		}
 		gateRelease := release
@@ -149,32 +149,28 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 
 		sessionID, err = s.lockCurrentMissionSession(agentID, session)
 		if err != nil {
-			if reservationOwner {
-				failMissionDeploymentReservation(session, command.GetCommandId(), state, err)
-			}
 			return nil, err
 		}
-		if reservationOwner && missionDeploymentCompleted(session, state) {
+		// Another caller may have admitted this exact deployment while this
+		// request waited for the gate. Reattach instead of redelivering it.
+		state, attached, reservationOwner, err = attachMissionDeployment(waitCtx, session, command)
+		if err != nil {
+			session.ownershipMu.RUnlock()
+			relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
+			return nil, err
+		}
+		if attached {
 			session.ownershipMu.RUnlock()
 			gateRelease()
 			gateRelease = nil
+			goto waitForMissionResult
+		}
+		if reservationOwner {
+			session.ownershipMu.RUnlock()
+			gateRelease()
+			gateRelease = nil
+			s.startMissionDeploymentReservation(agentID, session, state)
 		} else {
-			if !reservationOwner {
-				// Another caller may have admitted this exact deployment while this
-				// request waited for the gate. Reattach instead of redelivering it.
-				state, attached, reservationOwner, err = attachMissionDeployment(session, command)
-				if err != nil {
-					session.ownershipMu.RUnlock()
-					relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
-					return nil, err
-				}
-				if attached {
-					session.ownershipMu.RUnlock()
-					gateRelease()
-					gateRelease = nil
-					goto waitForMissionResult
-				}
-			}
 			session.sessionMu.RLock()
 			unreconciled := session.operationContextUnreconciled
 			contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
@@ -183,30 +179,15 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 			session.sessionMu.RUnlock()
 			if unreconciled {
 				session.ownershipMu.RUnlock()
-				preconditionErr := status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
-				if reservationOwner && !failMissionDeploymentReservation(session, command.GetCommandId(), state, preconditionErr) {
-					gateRelease()
-					gateRelease = nil
-					goto waitForMissionResult
-				}
-				return nil, preconditionErr
+				return nil, status.Error(codes.FailedPrecondition, "operation context must be reconciled before mission deployment")
 			}
 			if !contextMatches {
 				session.ownershipMu.RUnlock()
-				preconditionErr := status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
-				if reservationOwner && !failMissionDeploymentReservation(session, command.GetCommandId(), state, preconditionErr) {
-					gateRelease()
-					gateRelease = nil
-					goto waitForMissionResult
-				}
-				return nil, preconditionErr
+				return nil, status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context")
 			}
-			state, owner, err = beginMissionDeployment(waitCtx, session, command, state)
+			state, owner, err = beginMissionDeployment(waitCtx, session, command, nil)
 			if err != nil {
 				session.ownershipMu.RUnlock()
-				if reservationOwner {
-					failMissionDeploymentReservation(session, command.GetCommandId(), state, err)
-				}
 				relayMissionDeploymentsTotal.WithLabelValues("delivery_failed").Inc()
 				return nil, err
 			}
@@ -262,6 +243,68 @@ waitForMissionResult:
 	}
 }
 
+func (s *Relay) startMissionDeploymentReservation(agentID string, session *DroneSession, state *missionDeploymentState) {
+	go func() {
+		ctx := state.admission.ctx
+		defer state.admission.cancel()
+		release, err := acquireOperationCommandSlot(ctx, session)
+		if err != nil {
+			failMissionDeploymentReservation(session, state.command.GetCommandId(), state, err)
+			return
+		}
+		defer release()
+
+		sessionID, err := s.lockCurrentMissionSession(agentID, session)
+		if err != nil {
+			failMissionDeploymentReservation(session, state.command.GetCommandId(), state, err)
+			return
+		}
+		if missionDeploymentCompleted(session, state) {
+			session.ownershipMu.RUnlock()
+			return
+		}
+		binding := state.command.GetBinding()
+		session.sessionMu.RLock()
+		unreconciled := session.operationContextUnreconciled
+		contextMatches := session.AircraftID != "" && session.AircraftID == binding.GetAircraftId() &&
+			session.FlightID == binding.GetFlightId() &&
+			session.IntentID == binding.GetIntentId() && session.IntentVersion == binding.GetIntentVersion()
+		session.sessionMu.RUnlock()
+		if unreconciled || !contextMatches {
+			session.ownershipMu.RUnlock()
+			failMissionDeploymentReservation(session, state.command.GetCommandId(), state,
+				status.Error(codes.FailedPrecondition, "mission binding does not match the reconciled Agent operation context"))
+			return
+		}
+		command := proto.Clone(state.command).(*agentv1.DeployMissionCommand)
+		_, owner, err := beginMissionDeployment(ctx, session, command, state)
+		if err != nil {
+			session.ownershipMu.RUnlock()
+			failMissionDeploymentReservation(session, command.GetCommandId(), state, err)
+			return
+		}
+		if !owner {
+			session.ownershipMu.RUnlock()
+			return
+		}
+		slog.LogAttrs(ctx, slog.LevelInfo, "mission_deployment_started",
+			slog.String("command_id", command.GetCommandId()),
+			slog.String("deployment_id", binding.GetDeploymentId()),
+			slog.String("mission_id", binding.GetMissionId()),
+			slog.String("aircraft_id", binding.GetAircraftId()),
+			slog.String("flight_id", binding.GetFlightId()),
+			slog.String("intent_id", binding.GetIntentId()),
+			slog.Uint64("intent_version", uint64(binding.GetIntentVersion())),
+			slog.String("agent_id", agentID),
+			slog.String("session_id", sessionID),
+		)
+		select {
+		case <-state.done:
+		case <-ctx.Done():
+		}
+	}()
+}
+
 // lockCurrentMissionSession pins session as the active, connected session for
 // agentID. On success the caller owns session.ownershipMu's read lease and must
 // release it, or transfer it to an admitted asynchronous delivery.
@@ -300,7 +343,7 @@ func missionDeploymentFingerprint(command *agentv1.DeployMissionCommand) (string
 // This keeps retained evidence and running attempts replayable after operation
 // context advances while every new delivery still passes the active-context
 // fence before beginMissionDeployment activates its reservation.
-func attachMissionDeployment(session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, bool, error) {
+func attachMissionDeployment(waitCtx context.Context, session *DroneSession, command *agentv1.DeployMissionCommand) (*missionDeploymentState, bool, bool, error) {
 	fingerprint, err := missionDeploymentFingerprint(command)
 	if err != nil {
 		return nil, false, false, err
@@ -332,12 +375,54 @@ func attachMissionDeployment(session *DroneSession, command *agentv1.DeployMissi
 		reserved := &missionDeploymentState{
 			fingerprint: fingerprint, command: cloned, deliveryStream: currentStream,
 			done: make(chan struct{}), waiters: 1, reserved: true,
+			admission: newMissionAdmission(waitCtx),
 		}
 		session.missionDeployments[command.GetCommandId()] = reserved
 		return reserved, false, true, nil
 	}
+	if existing.reserved && existing.admission != nil {
+		existing.admission.add(waitCtx)
+	}
 	existing.waiters++
 	return existing, true, false, nil
+}
+
+func newMissionAdmission(waiterCtx context.Context) *missionAdmission {
+	ctx, cancel := context.WithTimeout(context.Background(), maxMissionDeploymentWait)
+	admission := &missionAdmission{ctx: ctx, cancel: cancel}
+	admission.add(waiterCtx)
+	return admission
+}
+
+func (a *missionAdmission) add(waiterCtx context.Context) bool {
+	a.mu.Lock()
+	if a.closed || a.ctx.Err() != nil || waiterCtx.Err() != nil {
+		a.mu.Unlock()
+		return false
+	}
+	a.active++
+	a.mu.Unlock()
+	go func() {
+		select {
+		case <-waiterCtx.Done():
+			a.remove()
+		case <-a.ctx.Done():
+		}
+	}()
+	return true
+}
+
+func (a *missionAdmission) remove() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.active == 0 {
+		return
+	}
+	a.active--
+	if a.active == 0 {
+		a.closed = true
+		a.cancel()
+	}
 }
 
 func missionDeploymentCompleted(session *DroneSession, state *missionDeploymentState) bool {
@@ -356,6 +441,7 @@ func failMissionDeploymentReservation(session *DroneSession, commandID string, s
 	state.admissionFailed = true
 	state.completed = true
 	state.completedAt = time.Now()
+	state.admission.cancel()
 	close(state.done)
 	return true
 }
@@ -642,6 +728,9 @@ func completeMissionDeploymentForLostSessionLocked(state *missionDeploymentState
 	}
 	state.completed = true
 	state.completedAt = now
+	if state.admission != nil {
+		state.admission.cancel()
+	}
 	if state.deliveryCancel != nil {
 		state.deliveryCancel()
 	}
@@ -677,6 +766,15 @@ func cancelMissionDeploymentWaiter(session *DroneSession, commandID string, stat
 		state.waiters--
 	}
 	if state.waiters != 0 || state.completed {
+		return
+	}
+	if state.reserved {
+		state.err = status.Error(codes.Canceled, "all mission retry waiters ended before admission")
+		state.admissionFailed = true
+		state.completed = true
+		state.completedAt = time.Now()
+		state.admission.cancel()
+		close(state.done)
 		return
 	}
 	// Admission and stream delivery run independently of an individual waiter.

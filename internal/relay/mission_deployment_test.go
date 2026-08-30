@@ -425,6 +425,80 @@ func TestDeployMissionFailedRetryReservationCanBeRetried(t *testing.T) {
 	}
 }
 
+func TestDeployMissionRetryReservationSurvivesOneCallerDeadline(t *testing.T) {
+	relay, session, stream := testMissionRelay(t)
+	command := testMissionCommand(t)
+	request := &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command}
+	completed := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		completed <- err
+	}()
+	<-stream.sentAckChan
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	session.handleMissionDeploymentResult(temporary)
+	if err := <-completed; err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireOperationCommandSlot(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortCtx, cancelShort := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelShort()
+	short := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(shortCtx, request)
+		short <- err
+	}()
+	long := make(chan error, 1)
+	go func() {
+		_, err := relay.DeployMission(context.Background(), request)
+		long <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		state := session.missionDeployments[command.GetCommandId()]
+		coalesced := state != nil && state.reserved && state.waiters == 2
+		session.pendingMu.Unlock()
+		if coalesced {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("retry callers did not coalesce on the shared reservation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := <-short; status.Code(err) != codes.DeadlineExceeded {
+		release()
+		t.Fatalf("short retry = %v, want DeadlineExceeded", err)
+	}
+	session.pendingMu.Lock()
+	state := session.missionDeployments[command.GetCommandId()]
+	stillPending := state != nil && state.reserved && !state.completed && state.waiters == 1
+	session.pendingMu.Unlock()
+	if !stillPending {
+		release()
+		t.Fatal("short caller deadline canceled the live shared reservation")
+	}
+	release()
+
+	if message := <-stream.sentAckChan; !proto.Equal(message.GetDeployMission(), command) {
+		t.Fatalf("surviving reservation delivered = %+v, want %+v", message.GetDeployMission(), command)
+	}
+	applied := testAppliedMissionResult(command)
+	session.handleMissionDeploymentResult(applied)
+	if err := <-long; err != nil {
+		t.Fatalf("surviving retry = %v", err)
+	}
+}
+
 func TestDeployMissionRetryableResultRequiresCurrentContextBeforeRedispatch(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)

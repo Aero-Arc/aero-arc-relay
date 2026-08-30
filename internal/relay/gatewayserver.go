@@ -36,8 +36,11 @@ import (
 // operation context unreconciled when control mutations are enabled. Replacing
 // an existing generation takes that session's ownership lease, copies its last
 // API-authoritative context and reconciliation state, aborts its pending
-// operation and aircraft commands, stops its Registry liveness, and atomically
-// installs the replacement before releasing the old session.
+// operation, aircraft, and mission commands, stops its Registry liveness, and
+// atomically installs the replacement before releasing the old session. A
+// mission whose stream write may have started completes with retained
+// OUTCOME_UNKNOWN evidence; a mission still reserved before admission completes
+// with Aborted and cannot cause a vehicle effect on the replacement.
 //
 // Parameters:
 //   - ctx: carries Agent authentication and bounds request processing.

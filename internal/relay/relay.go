@@ -148,6 +148,7 @@ type missionDeploymentState struct {
 	deliveryStream  *telemetryStreamBinding
 	done            chan struct{}
 	deliveryCancel  context.CancelFunc
+	admission       *missionAdmission
 	reserved        bool
 	admissionFailed bool
 	waiters         int
@@ -156,6 +157,14 @@ type missionDeploymentState struct {
 	delivered       bool
 	completed       bool
 	completedAt     time.Time
+}
+
+type missionAdmission struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	active int
+	closed bool
 }
 
 type telemetryStreamBinding struct {

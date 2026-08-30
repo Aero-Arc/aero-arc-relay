@@ -183,8 +183,10 @@ outcome remains replayable after the session operation context advances because
 replay cannot cause another vehicle effect. For a retained retryable outcome,
 the first exact retry reserves one pending delivery generation before waiting
 for the gate; concurrent callers attach to that reservation, so even another
-immediate retryable Agent result produces only one stream write. Only the owner
-of a generation that may initiate a new stream delivery takes the gate. A
+immediate retryable Agent result produces only one stream write. A
+generation-scoped admission task takes the gate while any waiter remains, so
+one caller's shorter deadline detaches only that caller and cannot cancel other
+coalesced waiters. The last waiter ending cancels pre-effect admission. A
 retryable outcome may be redispatched only while the session still has the exact
 mission binding; otherwise Relay fails the active-context precondition without
 writing to the Agent stream. Successful Agent evidence is accepted only when its
