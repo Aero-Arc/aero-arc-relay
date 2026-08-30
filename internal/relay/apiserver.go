@@ -33,6 +33,27 @@ const (
 	maxOperationCommands      = 4096
 )
 
+type retainedCommandKind uint8
+
+const (
+	retainedOperationCommand retainedCommandKind = iota
+	retainedAircraftCommand
+	retainedMissionDeployment
+)
+
+func prepareCommandIDAdmissionLocked(session *DroneSession, commandID string, kind retainedCommandKind, now time.Time) error {
+	expireOperationCommandsLocked(session, now)
+	expireAircraftCommandsLocked(session, now)
+	expireMissionDeploymentsLocked(session, now)
+	conflict := kind != retainedOperationCommand && session.operationCommands[commandID] != nil ||
+		kind != retainedAircraftCommand && session.aircraftCommands[commandID] != nil ||
+		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil
+	if conflict {
+		return status.Error(codes.AlreadyExists, "command ID was already used by a different command kind")
+	}
+	return nil
+}
+
 // ListActiveDrones snapshots the Relay's currently admitted Agent sessions as
 // drone-status records.
 //
@@ -92,8 +113,9 @@ func (s *Relay) GetDroneStatus(_ context.Context, req *pb.GetDroneStatusRequest)
 // Returns:
 //   - response: contains the correlated Agent acknowledgement.
 //   - error: reports disabled or denied control access, invalid input, command
-//     ID reuse with a different payload, missing/replaced sessions, delivery or
-//     context cancellation, and malformed or mismatched acknowledgements.
+//     ID reuse with a different payload or retained command kind,
+//     missing/replaced sessions, delivery or context cancellation, and
+//     malformed or mismatched acknowledgements.
 func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationContextRequest) (*pb.SetOperationContextResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -157,8 +179,9 @@ func (s *Relay) SetOperationContext(ctx context.Context, req *pb.SetOperationCon
 // Returns:
 //   - response: contains the correlated Agent acknowledgement.
 //   - error: reports disabled or denied control access, invalid input, command
-//     ID reuse with a different payload, missing/replaced sessions, delivery or
-//     context cancellation, and malformed or mismatched acknowledgements.
+//     ID reuse with a different payload or retained command kind,
+//     missing/replaced sessions, delivery or context cancellation, and
+//     malformed or mismatched acknowledgements.
 func (s *Relay) ClearOperationContext(ctx context.Context, req *pb.ClearOperationContextRequest) (*pb.ClearOperationContextResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -266,8 +289,8 @@ func (s *Relay) sessionIsCurrent(agentID string, expected *DroneSession) bool {
 // Returns:
 //   - response: contains the Agent's correlated autopilot-level result.
 //   - error: reports disabled or denied control access, invalid input, an
-//     offline/replaced Agent session, stream delivery failure, deadline expiry,
-//     or a malformed Agent result.
+//     offline/replaced Agent session, command-ID payload or kind conflict,
+//     stream delivery failure, deadline expiry, or a malformed Agent result.
 func (s *Relay) SendAircraftCommand(ctx context.Context, req *pb.SendAircraftCommandRequest) (*pb.SendAircraftCommandResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -378,10 +401,14 @@ func beginAircraftCommandDelivery(session *DroneSession, command *agentv1.Aircra
 	// aborts its uncertain wait, or precedes admission and receives the command.
 	session.controlStreamMu.RLock()
 	session.pendingMu.Lock()
+	if err := prepareCommandIDAdmissionLocked(session, command.GetCommandId(), retainedAircraftCommand, time.Now()); err != nil {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		return nil, false, err
+	}
 	if session.aircraftCommands == nil {
 		session.aircraftCommands = make(map[string]*aircraftCommandState)
 	}
-	expireAircraftCommandsLocked(session, time.Now())
 	if existing := session.aircraftCommands[command.GetCommandId()]; existing != nil {
 		if existing.fingerprint != fingerprint {
 			session.pendingMu.Unlock()
@@ -496,8 +523,9 @@ func cancelAircraftCommandWaiter(session *DroneSession, commandID string, state 
 
 // deliverOperationCommandToSession retains command fingerprints and terminal
 // outcomes for the session, coalesces exact concurrent retries, and rejects a
-// command ID reused with a different payload. The Agent WAL provides the
-// durable cross-session and cross-process idempotency backstop.
+// command ID reused with a different payload or retained command kind. The
+// Agent WAL provides the durable cross-session and cross-process idempotency
+// backstop.
 func beginOperationCommandDelivery(
 	ctx context.Context,
 	session *DroneSession,
@@ -595,7 +623,9 @@ func beginOperationCommand(
 	if session.operationCommands == nil {
 		session.operationCommands = make(map[string]*operationCommandState)
 	}
-	expireOperationCommandsLocked(session, time.Now())
+	if err := prepareCommandIDAdmissionLocked(session, commandID, retainedOperationCommand, time.Now()); err != nil {
+		return nil, false, err
+	}
 	replacingRetryable := false
 	if existing := session.operationCommands[commandID]; existing != nil {
 		if existing.fingerprint != fingerprint {
@@ -718,6 +748,7 @@ func expectedContextAfterClear(session *DroneSession, flightID string, authorita
 		return nil
 	}
 	return &agentv1.OperationContext{
+		AircraftId:    session.AircraftID,
 		FlightId:      session.FlightID,
 		IntentId:      session.IntentID,
 		IntentVersion: session.IntentVersion,
