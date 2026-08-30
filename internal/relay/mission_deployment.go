@@ -385,7 +385,33 @@ func attachMissionDeployment(waitCtx context.Context, session *DroneSession, com
 		return reserved, false, true, nil
 	}
 	if existing.reserved && existing.admission != nil {
-		existing.admission.add(waitCtx)
+		if existing.admission.add(waitCtx) {
+			existing.waiters++
+			return existing, true, false, nil
+		}
+		// The last waiter can close the admission controller before its RPC
+		// decrements state.waiters. A fresh exact retry must not attach to that
+		// doomed generation. Supersede it while pendingMu still makes the map
+		// transition atomic; the old reservation worker is fenced by identity in
+		// beginMissionDeployment and cannot activate or join the replacement.
+		admission, registered := newMissionAdmission(waitCtx)
+		if !registered {
+			return nil, false, false, status.FromContextError(waitCtx.Err()).Err()
+		}
+		existing.err = status.Error(codes.Canceled, "mission retry admission closed before a live waiter attached")
+		existing.admissionFailed = true
+		existing.completed = true
+		existing.completedAt = time.Now()
+		existing.admission.cancel()
+		close(existing.done)
+		cloned := proto.Clone(command).(*agentv1.DeployMissionCommand)
+		replacement := &missionDeploymentState{
+			fingerprint: fingerprint, command: cloned, deliveryStream: currentStream,
+			done: make(chan struct{}), waiters: 1, reserved: true,
+			admission: admission,
+		}
+		session.missionDeployments[command.GetCommandId()] = replacement
+		return replacement, false, true, nil
 	}
 	existing.waiters++
 	return existing, true, false, nil
@@ -573,6 +599,14 @@ func beginMissionDeployment(ctx context.Context, session *DroneSession, command 
 			session.pendingMu.Unlock()
 			session.controlStreamMu.RUnlock()
 			return nil, false, status.Error(codes.AlreadyExists, "mission command ID was already used with a different payload")
+		}
+		if reservation != nil && existing != reservation {
+			// A live waiter superseded this closing pre-admission generation. The
+			// old worker must only release the gate; it is not a waiter on, and may
+			// not activate, the replacement generation.
+			session.pendingMu.Unlock()
+			session.controlStreamMu.RUnlock()
+			return nil, false, status.Error(codes.Canceled, "mission retry admission was superseded")
 		}
 		if existing == reservation && existing.reserved && !existing.completed {
 			// The caller owns this pre-gate delivery reservation. Activate the same

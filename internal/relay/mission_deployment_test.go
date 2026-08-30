@@ -488,6 +488,70 @@ func TestMissionAdmissionUsesEveryWaiterWindow(t *testing.T) {
 	}
 }
 
+func TestAttachMissionDeploymentReplacesClosingRetryReservation(t *testing.T) {
+	_, session, _ := testMissionRelay(t)
+	command := testMissionCommand(t)
+	temporary := &agentv1.MissionDeploymentResult{
+		CommandId: command.GetCommandId(), Binding: proto.Clone(command.GetBinding()).(*agentv1.MissionBinding),
+		Status: agentv1.MissionDeploymentResult_STATUS_TEMPORARY_ERROR, CompletedAtUnixMs: time.Now().UnixMilli(),
+	}
+	fingerprint, err := missionDeploymentFingerprint(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.sessionMu.RLock()
+	currentStream := session.stream
+	session.sessionMu.RUnlock()
+	session.missionDeployments = map[string]*missionDeploymentState{
+		command.GetCommandId(): {
+			fingerprint: fingerprint, command: proto.Clone(command).(*agentv1.DeployMissionCommand),
+			deliveryStream: currentStream, done: make(chan struct{}),
+			result: temporary, completed: true, completedAt: time.Now(),
+		},
+	}
+
+	closingCtx, cancelClosing := context.WithCancel(context.Background())
+	closing, attached, owner, err := attachMissionDeployment(closingCtx, session, command)
+	if err != nil || attached || !owner {
+		t.Fatalf("first retry reservation = (%v, attached=%t, owner=%t), want owner: %v", closing, attached, owner, err)
+	}
+	cancelClosing()
+	<-closing.admission.ctx.Done()
+
+	replacement, attached, owner, err := attachMissionDeployment(context.Background(), session, command)
+	if err != nil || attached || !owner {
+		t.Fatalf("retry at closing reservation = (%v, attached=%t, owner=%t), want replacement owner: %v", replacement, attached, owner, err)
+	}
+	if replacement == closing {
+		t.Fatal("live retry attached to the closing reservation")
+	}
+	select {
+	case <-closing.done:
+	default:
+		t.Fatal("superseded closing reservation was not completed")
+	}
+	if !closing.completed || !closing.admissionFailed || status.Code(closing.err) != codes.Canceled {
+		t.Fatalf("closing reservation = completed %t admissionFailed %t err %v", closing.completed, closing.admissionFailed, closing.err)
+	}
+	session.pendingMu.Lock()
+	retained := session.missionDeployments[command.GetCommandId()]
+	session.pendingMu.Unlock()
+	if retained != replacement || !replacement.reserved || replacement.completed || replacement.waiters != 1 {
+		t.Fatalf("retained replacement = %+v, want one live pending retry", retained)
+	}
+
+	state, owner, err := beginMissionDeployment(context.Background(), session, command, closing)
+	if status.Code(err) != codes.Canceled || owner || state != nil {
+		t.Fatalf("superseded worker begin = (%v, owner=%t, err=%v), want canceled", state, owner, err)
+	}
+	session.pendingMu.Lock()
+	retained = session.missionDeployments[command.GetCommandId()]
+	session.pendingMu.Unlock()
+	if retained != replacement || replacement.waiters != 1 {
+		t.Fatal("superseded worker joined or changed the replacement reservation")
+	}
+}
+
 func TestDeployMissionRetryReservationSurvivesOneCallerDeadline(t *testing.T) {
 	relay, session, stream := testMissionRelay(t)
 	command := testMissionCommand(t)
