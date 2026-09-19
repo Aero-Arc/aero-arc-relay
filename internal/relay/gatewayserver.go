@@ -34,10 +34,17 @@ import (
 // Register authenticates an Agent identity and publishes a fresh logical
 // session generation for its next TelemetryStream. A first session starts with
 // operation context unreconciled when control mutations are enabled. Replacing
-// an existing generation takes that session's ownership lease, copies its last
-// API-authoritative context and reconciliation state, aborts its pending
-// operation and aircraft commands, stops its Registry liveness, and atomically
-// installs the replacement before releasing the old session.
+// an existing generation takes that session's ownership lease, aborts its
+// pending operation, aircraft, and mission commands, stops its Registry
+// liveness, and atomically installs the replacement before releasing the old
+// session. Only when Agent authentication is configured does the replacement
+// inherit the prior generation's last API-authoritative context and
+// reconciliation state. When control mutations are enabled without Agent
+// authentication, the replacement remains unreconciled and must receive an
+// authoritative context replay from the API. A mission whose stream write may
+// have started completes with retained
+// OUTCOME_UNKNOWN evidence; a mission still reserved before admission completes
+// with Aborted and cannot cause a vehicle effect on the replacement.
 //
 // Parameters:
 //   - ctx: carries Agent authentication and bounds request processing.
@@ -81,6 +88,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		operationCommands:            make(map[string]*operationCommandState),
 		operationGate:                makeOperationGate(),
 		aircraftCommands:             make(map[string]*aircraftCommandState),
+		missionDeployments:           make(map[string]*missionDeploymentState),
 	}
 
 	// Retire the previous session before publishing its replacement. Do not hold
@@ -119,9 +127,17 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		}
 		if previous != nil {
 			previous.retired = true
-			previous.restoreContextIntoAndAbortPending(newSession)
+			snapshot := previous.snapshotContextAndAbortPending()
+			if r.agentAuthenticator != nil {
+				snapshot.restoreInto(newSession)
+			}
 			if r.registryReporter != nil {
 				r.registryReporter.StopAgent(agentID)
+			}
+		} else if r.agentAuthenticator != nil {
+			retained, ok := r.takeDisconnectedOperationContextLocked(agentID, time.Now())
+			if ok {
+				retained.restoreInto(newSession)
 			}
 		}
 		r.grpcSessions[agentID] = newSession
@@ -157,9 +173,11 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 //
 // A successfully published binding owns Registry liveness until cleanup. A
 // replacement aborts old-binding command waiters and fences uncertain operation
-// context before it can admit telemetry. Operation-context ACKs and aircraft
-// results are handled ahead of telemetry routing and remain bound to the stream
-// that received them. Cleanup removes only this binding, so a superseding stream
+// context before it can admit telemetry. Operation-context ACKs,
+// aircraft-command results, and mission-deployment results are handled ahead of
+// telemetry routing. Each result is correlated by command ID only against the
+// pending request on this exact active binding; evidence from a superseded
+// binding is ignored. Cleanup removes only this binding, so a superseding stream
 // remains active.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
 	ctx := stream.Context()
@@ -227,6 +245,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 		}
 		if commandResult := message.GetAircraftCommandResult(); commandResult != nil {
 			streamSession.handleAircraftCommandResultFrom(streamBinding, commandResult)
+			continue
+		}
+		if result := message.GetMissionDeploymentResult(); result != nil {
+			streamSession.handleMissionDeploymentResultFrom(streamBinding, result)
 			continue
 		}
 		frame := message.GetTelemetryFrame()
@@ -332,6 +354,17 @@ func sendToSessionThroughWrite(ctx context.Context, session *DroneSession, messa
 // was invoked. Once invoked, either a nil or error result is delivery-uncertain:
 // the peer may have applied the message before Relay observed the outcome.
 func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool) (bool, error) {
+	return sendToSessionWithWritePolicyAndCommit(ctx, session, message, waitThroughWrite, nil)
+}
+
+// sendToSessionWithWritePolicyAndCommit invokes commit immediately before the
+// active binding's Send method. Once commit succeeds, Send is invoked without a
+// later context or state check, so correlated command-level evidence cannot
+// complete the state and suppress the committed delivery.
+func sendToSessionWithWritePolicyAndCommit(ctx context.Context, session *DroneSession, message *agentv1.RelayStreamMessage, waitThroughWrite bool, commit func() bool) (bool, error) {
+	if !waitThroughWrite && commit != nil {
+		return false, status.Error(codes.Internal, "stream delivery commit requires wait-through-write policy")
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, status.FromContextError(err).Err()
@@ -358,6 +391,10 @@ func sendToSessionWithWritePolicy(ctx context.Context, session *DroneSession, me
 			return false, status.FromContextError(err).Err()
 		}
 		if waitThroughWrite {
+			if commit != nil && !commit() {
+				binding.sendMu.Unlock()
+				return false, status.Error(codes.Canceled, "stream delivery state ended before effect-start commit")
+			}
 			err := binding.stream.Send(message)
 			binding.sendMu.Unlock()
 			return true, err
@@ -416,10 +453,12 @@ func (session *DroneSession) handleOperationContextCommandAck(ack *agentv1.Opera
 		} else {
 			session.sessionMu.Lock()
 			if state.expected == nil {
+				session.AircraftID = ""
 				session.FlightID = ""
 				session.IntentID = ""
 				session.IntentVersion = 0
 			} else {
+				session.AircraftID = state.expected.AircraftId
 				session.FlightID = state.expected.FlightId
 				session.IntentID = state.expected.IntentId
 				session.IntentVersion = state.expected.IntentVersion
@@ -494,6 +533,44 @@ func (session *DroneSession) handleAircraftCommandResultFrom(binding *telemetryS
 	session.handleAircraftCommandResult(result)
 }
 
+func (session *DroneSession) handleMissionDeploymentResultFrom(binding *telemetryStreamBinding, result *agentv1.MissionDeploymentResult) {
+	if session == nil || binding == nil || result == nil {
+		return
+	}
+	session.controlStreamMu.RLock()
+	defer session.controlStreamMu.RUnlock()
+	session.sessionMu.RLock()
+	isCurrent := session.stream == binding && !binding.closed
+	session.sessionMu.RUnlock()
+	if !isCurrent {
+		return
+	}
+	session.handleMissionDeploymentResult(result)
+}
+
+func (session *DroneSession) handleMissionDeploymentResult(result *agentv1.MissionDeploymentResult) {
+	if session == nil || result == nil {
+		return
+	}
+	session.pendingMu.Lock()
+	defer session.pendingMu.Unlock()
+	state := session.missionDeployments[result.GetCommandId()]
+	if state == nil || state.completed || !state.resultAdmissionOpen {
+		return
+	}
+	if err := validateMissionDeploymentResult(state.command, result); err != nil {
+		state.err = err
+	} else {
+		state.result = proto.Clone(result).(*agentv1.MissionDeploymentResult)
+	}
+	state.completed = true
+	state.completedAt = time.Now()
+	if state.deliveryCancel != nil {
+		state.deliveryCancel()
+	}
+	close(state.done)
+}
+
 func (session *DroneSession) abortPendingCommands() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
@@ -528,6 +605,9 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 		}
 		close(state.done)
 	}
+	for _, state := range session.missionDeployments {
+		completeMissionDeploymentForLostSessionLocked(state, now, "agent stream replaced after mission delivery")
+	}
 	if contextOutcomeUncertain {
 		// The old stream may have applied Set/Clear before its ACK was lost.
 		// Fence telemetry on the replacement until the API replays its current
@@ -539,35 +619,39 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 	}
 }
 
-func (session *DroneSession) restoreContextIntoAndAbortPending(replacement *DroneSession) {
+func (session *DroneSession) snapshotContextAndAbortPending() operationContextSnapshot {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	session.sessionMu.RLock()
-	replacement.FlightID = session.FlightID
-	replacement.IntentID = session.IntentID
-	replacement.IntentVersion = session.IntentVersion
-	replacement.operationContextUnreconciled = session.operationContextUnreconciled
-	replacement.emptyContextCommandID = session.emptyContextCommandID
+	snapshot := operationContextSnapshot{
+		aircraftID:            session.AircraftID,
+		flightID:              session.FlightID,
+		intentID:              session.IntentID,
+		intentVersion:         session.IntentVersion,
+		unreconciled:          session.operationContextUnreconciled,
+		emptyContextCommandID: session.emptyContextCommandID,
+	}
 	for _, state := range session.operationCommands {
 		if !state.completed && state.delivered {
 			// The retiring Agent may have applied this mutation even though Relay
 			// never received its ACK. The replacement must not inherit the prior
 			// attribution as if the outcome were known.
-			replacement.operationContextUnreconciled = true
+			snapshot.unreconciled = true
 			break
 		}
 	}
-	if replacement.operationContextUnreconciled && replacement.emptyContextCommandID != "" {
-		state := session.operationCommands[replacement.emptyContextCommandID]
+	if snapshot.unreconciled && snapshot.emptyContextCommandID != "" {
+		state := session.operationCommands[snapshot.emptyContextCommandID]
 		if state == nil || state.completed {
 			// A failed or not-yet-admitted attempt has no in-flight outcome to
 			// protect. Its caller may not have run deferred reservation cleanup yet,
 			// so do not copy that transient reservation into the replacement.
-			replacement.emptyContextCommandID = ""
+			snapshot.emptyContextCommandID = ""
 		}
 	}
 	session.sessionMu.RUnlock()
 	session.abortPendingCommandsLocked(time.Now())
+	return snapshot
 }
 
 func (session *DroneSession) requiresOperationContextReconciliation() bool {
@@ -617,6 +701,9 @@ func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
 		state.completedAt = now
 		state.deliveryCancel()
 		close(state.done)
+	}
+	for _, state := range session.missionDeployments {
+		completeMissionDeploymentForLostSessionLocked(state, now, "agent session retired while awaiting mission result")
 	}
 }
 

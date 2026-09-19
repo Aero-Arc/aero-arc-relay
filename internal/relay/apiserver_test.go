@@ -95,7 +95,7 @@ func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
 		Command: &agentv1.SetOperationContextCommand{
 			CommandId: "command-1",
 			Context: &agentv1.OperationContext{
-				FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+				AircraftId: "aircraft-1", FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
 			},
 		},
 	}
@@ -116,7 +116,7 @@ func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
 		CommandId: "command-1",
 		Status:    agentv1.OperationContextCommandAck_STATUS_APPLIED,
 		ActiveContext: &agentv1.OperationContext{
-			FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
+			AircraftId: "aircraft-1", FlightId: "flight-1", IntentId: "intent-1", IntentVersion: 2,
 		},
 	})
 	got := <-resultChannel
@@ -125,6 +125,9 @@ func TestSetOperationContextDeliversToCurrentAgent(t *testing.T) {
 	}
 	if got.response.GetResult().GetStatus() != agentv1.OperationContextCommandAck_STATUS_APPLIED {
 		t.Fatalf("SetOperationContext() response = %#v", got.response)
+	}
+	if session.AircraftID != "aircraft-1" {
+		t.Fatalf("session aircraft ID = %q, want aircraft-1", session.AircraftID)
 	}
 
 	// An exact retry returns the retained result without delivering twice.

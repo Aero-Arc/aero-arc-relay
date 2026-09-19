@@ -38,9 +38,30 @@ flight and intent. This is required after Relay restart; Registry discovery and
 stream admission provide the API-to-Relay replay path. Relays with context
 control disabled preserve their context-free telemetry behavior.
 
-Registering the same agent ID again replaces the map entry with a new
-`DroneSession` and a new session ID. The old stream handler can still be running,
-but it no longer owns the active registered session.
+Registering the same authenticated agent ID again replaces the map entry with a
+new `DroneSession` and a new session ID. The old stream handler can still be
+running, but it no longer owns the active registered session. Without Agent
+authentication, replacement still aborts the old session and pending commands,
+but it does not inherit operation context. When context control is enabled, the
+new session remains unreconciled for API replay; when control is disabled, the
+Relay continues its context-free behavior.
+
+When an authenticated admitted stream disconnects, Relay removes its live
+session but retains the last API-authoritative operation context in a
+process-local reconnect cache. The next authenticated registration for that
+exact agent ID inherits the cached context before its new session is published.
+When Agent authentication is not configured, Relay neither retains nor restores
+reconnect context. With context control enabled, every new session remains
+unreconciled until the API replays its durable authority; control-disabled
+sessions do not require that replay.
+If a delivered Set or Clear lost its acknowledgement during disconnect, the
+cached state is marked unreconciled instead, and telemetry remains retryable
+until the API replays its durable authority. Entries expire after five minutes,
+the cache is hard-capped at 1,024 agents with deterministic oldest-entry
+eviction. A reconciled empty context is retained as an authoritative presence
+marker so an authenticated reconnect preserves the API's acknowledged decision
+that no operation is active. The cache does not survive Relay restart, so the
+fresh-process reconciliation rule above remains the fail-closed backstop.
 
 ## 2. Attaching a Telemetry Stream
 
@@ -148,6 +169,81 @@ outcome without redelivery; reusing a command ID for another aircraft or command
 type is rejected. A new deliberate vehicle action therefore requires a new
 command ID.
 
+`DeployMission` is the durable deployment path for a bounded canonical mission
+plan. Before delivery, Relay recomputes the plan's schema-one canonical-byte
+SHA-256 digest,
+rejects unsupported schema/frame/command values and more than 200 items, and
+requires every immutable binding field. Schema-1 plans use only
+`MAV_FRAME_GLOBAL` (0) and `NAV_WAYPOINT` (16), `NAV_LAND` (21), or
+`NAV_TAKEOFF` (22). They exclude autopilot HOME and export metadata; require
+contiguous sequences, `autocontinue=true`, and the reserved `current=false` so
+autopilot execution/readback state cannot change the digest; and carry exact
+`MISSION_ITEM_INT` E7 coordinates without a legacy float-coordinate constraint.
+The canonical form also requires positive-zero params 1–3, positive-zero param
+4 for waypoint/takeoff, exactly `+1` param 4 for `NAV_LAND`, and finite float32
+altitude that round-trips through ArduPilot's float32 multiply, truncating
+signed-centimeter storage, and float32 readback conversion. The
+digest bytes use the `aeroarc-mission-plan-v1\0` domain prefix, a big-endian
+item count, and fixed-width big-endian item fields; protobuf wire bytes are not
+part of the digest. The binding's operator and aircraft must match
+`telemetry.agent_mappings` for the routed Agent. Its aircraft, flight, intent,
+and intent version must also exactly match the session's
+reconciled operation context; a legacy context without `aircraft_id` or an
+unreconciled session cannot receive a mission. The mission route
+does not replace or reshape the operational intent.
+
+Mission command fingerprints cover the entire command, binding, and plan.
+Concurrent exact retries share one delivery and terminal outcomes are retained;
+reusing the command ID with another byte-level payload or retained command kind
+is rejected. Exact retries attach to an already-running deployment or replay a
+retained terminal outcome before contending for the serialized cross-operation
+gate. They therefore remain recoverable while another operation is waiting for
+Agent evidence, and one caller ending its wait cannot turn a coalesced in-flight
+deployment into an unnecessary uncertain redelivery. An exact retained terminal
+outcome remains replayable after the session operation context advances because
+replay cannot cause another vehicle effect. For a retained retryable outcome,
+the first exact retry reserves one pending delivery generation before waiting
+for the gate; concurrent callers attach to that reservation, so even another
+immediate retryable Agent result produces only one stream write. A
+generation-scoped admission task takes the gate while any waiter remains, so
+one caller's shorter deadline detaches only that caller and cannot cancel other
+coalesced waiters. Relay ignores delayed results from the preceding delivery
+while the next generation is reserved or waiting to begin its stream write;
+immediately before Send, Relay atomically commits that exact immutable command
+to effect start and opens command-level result admission. After this point Send
+is invoked unconditionally, even if correlated evidence completes the shared
+state or the last caller ends its wait. Evidence before commit is ignored;
+evidence after commit is authoritative for the exact command ID and payload.
+The protocol does not claim per-attempt provenance: a delayed retryable result
+can cause another exact idempotent delivery, while delayed terminal evidence
+proves the command-level effect and cannot suppress the already-committed Send.
+Every caller retains its own capped admission window,
+so a later exact retry contributes its full remaining window rather than
+inheriting the first caller's deadline. The last waiter ending cancels
+pre-effect admission. A retryable outcome may be redispatched only while the
+session still has the exact mission binding; otherwise Relay fails the
+active-context precondition without writing to the Agent stream. Successful
+Agent evidence is accepted only when its full binding and onboard digest match
+the requested mission. `APPLIED` proves a
+new upload and must report the canonical plan's exact item count;
+`ALREADY_APPLIED` proves readback-only recovery and must report zero newly
+uploaded items. A nonzero `ALREADY_APPLIED` count is rejected as ambiguous. The
+Relay wait is capped at two minutes across any required serialized command-gate
+admission and result correlation, even when the caller does not provide a
+shorter deadline. New commands must use a validity window no longer than five
+minutes.
+
+Relay deliberately forwards an expired exact command to the current Agent. Its
+in-memory command retention cannot distinguish a first expired request from
+reconciliation after a Relay restart. The Agent's durable journal is therefore
+the final effect fence: it may use an expired command only to read back an
+already uncertain effect under the same command ID and payload, and must reject
+a first expired effect before touching MAVLink. A matching readback may produce
+`ALREADY_APPLIED`; a complete mismatch must be terminal and must not authorize a
+replacement upload after expiry. Roll out an Agent implementing both durable
+expiry fences before enabling this Relay/API path. This forwarding does not
+extend the API reconciliation deadline.
+
 Unlike a telemetry ACK, an operation-context command is not a response to a
 message received on a particular stream. It targets the current admitted Agent
 session. If that session changes before the ACK is returned, the Relay reports
@@ -180,7 +276,8 @@ commands use the same through-write session fence in their shared delivery task,
 but an individual caller may detach at its deadline and must treat that command
 outcome as uncertain while the started write finishes.
 
-Incoming operation-context ACKs and aircraft-command results are applied only
+Incoming operation-context ACKs, aircraft-command results, and mission results
+are applied only
 when their command ID matches a pending request on the session captured by the
 receiving stream handler and that handler still owns the active stream binding.
 The pending entry is consumed before an applied ACK may update active flight and
@@ -220,11 +317,17 @@ After replacement:
   evidence that is no longer authoritative. An aircraft-command caller must
   treat this result as outcome-uncertain because the old Agent may have passed
   the command to the autopilot before reconnecting.
+- A delivered mission awaiting evidence completes as `OUTCOME_UNKNOWN` when its
+  exact stream is replaced. The retained command is not automatically sent on
+  the replacement binding, and evidence arriving on the superseded binding is
+  ignored. A send that was invoked but returned a transport error has the same
+  uncertainty because the Agent may have accepted it before the failure became
+  visible to Relay.
 - Command admission is fenced with its stream write. A command waiting behind
   the swap is admitted only after the replacement becomes active, so Relay
   cannot abort it and then deliver it on the new binding.
-- Operation-context ACKs and aircraft-command results from the superseded
-  binding are ignored, even though it shares the same session ID.
+- Operation-context ACKs, aircraft-command results, and mission results from the
+  superseded binding are ignored, even though it shares the same session ID.
 - A frame already read, or subsequently read, by the old handler is ACKed on the
   old stream while the shared session remains registered.
 - Sends remain serialized independently on each stream binding.
@@ -240,13 +343,16 @@ If the agent registers again instead of only replacing its stream, the new map
 entry has a different `DroneSession` pointer and session ID. The old handler's
 cleanup is rejected by the session pointer check. Frames from the old registration
 also fail the active-session-identity validation and receive their error ACK on
-the old stream. Relay atomically copies the last API-authoritative acknowledged
-operation context into the replacement before publishing it, so reconnecting
-telemetry keeps its flight and intent attribution. Delayed operation-command
-ACKs received by the old handler remain bound to the old session and cannot
-update the replacement session's context or pending commands.
-If no prior in-process session exists, Relay does not infer an empty context:
-telemetry remains retryable until the API explicitly replays Set or Clear.
+the old stream. For an authenticated Agent, Relay atomically copies the last
+API-authoritative acknowledged operation context into the replacement before
+publishing it, so reconnecting telemetry keeps its flight and intent
+attribution. Without Agent authentication, Relay copies no context; when context
+control is enabled, replacement telemetry remains retryable until the API
+explicitly replays Set or Clear. Delayed operation-command ACKs received by the
+old handler remain bound to the old session and cannot update the replacement
+session's context or pending commands. For an authenticated Agent, if neither a
+prior live session nor a retained reconnect snapshot exists, control-enabled
+Relay does not infer an empty context and applies the same API replay fence.
 
 ## 6. Disconnect and Cleanup
 
@@ -257,17 +363,22 @@ holding the session map lock:
 1. The map still contains the exact `DroneSession` captured by this handler.
 2. The captured stream generation is still the session's active generation.
 
-The relay removes the session only when both conditions hold. Consequently:
+The relay removes the live session only when both conditions hold. Consequently:
 
 - An old registration cannot delete a newly registered session.
 - An old stream generation cannot delete a replacement stream in the same
   session.
-- Closing the currently active stream removes its session from the active map.
+- Closing the currently active stream removes its session from the active map,
+  stops Registry liveness, aborts pending control waits, and retains only its
+  operation-context snapshot for an authenticated same-Relay reconnect.
 - Any older handler that remains alive after active-session removal rejects new
   telemetry instead of routing it.
 
 Once the active session is removed, the agent must register again before opening
-another telemetry stream.
+another telemetry stream. A successful same-agent registration consumes the
+cached snapshot and receives a fresh session ID. Cache loss on Relay restart, or
+after expiry or capacity eviction, and an outcome-uncertain operation-context
+mutation at disconnect keep telemetry gated until explicit API reconciliation.
 
 ## Synchronization and Ownership
 

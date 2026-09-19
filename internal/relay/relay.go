@@ -44,6 +44,11 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+const (
+	disconnectedOperationContextTTL      = 5 * time.Minute
+	maxDisconnectedOperationContextCount = 1024
+)
+
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
 	config             *config.Config
@@ -53,15 +58,84 @@ type Relay struct {
 	outputsInitialized bool
 	grpcServer         *grpc.Server
 	grpcSessions       map[string]*DroneSession
-	sessionsMu         sync.RWMutex
-	closeOnce          sync.Once
-	closeErr           error
-	registryReporter   agentRegistryReporter
-	registryLifecycle  registryLifecycle
-	agentAuthenticator func(context.Context, string) error
-	controlAuthorizer  controlPlaneAuthorizer
+	// disconnectedOperationContexts retains the last API-authoritative context
+	// for an Agent whose active stream disconnected. Registration must pass any
+	// configured authentication before consuming it. The cache is process-local:
+	// a Relay restart still requires an explicit API replay.
+	disconnectedOperationContexts map[string]retainedOperationContext
+	sessionsMu                    sync.RWMutex
+	closeOnce                     sync.Once
+	closeErr                      error
+	registryReporter              agentRegistryReporter
+	registryLifecycle             registryLifecycle
+	agentAuthenticator            func(context.Context, string) error
+	controlAuthorizer             controlPlaneAuthorizer
 	relayv1.UnimplementedRelayControlServer
 	agentv1.UnimplementedAgentGatewayServer
+}
+
+type operationContextSnapshot struct {
+	aircraftID            string
+	flightID              string
+	intentID              string
+	intentVersion         uint32
+	unreconciled          bool
+	emptyContextCommandID string
+}
+
+type retainedOperationContext struct {
+	snapshot  operationContextSnapshot
+	expiresAt time.Time
+}
+
+func (snapshot operationContextSnapshot) restoreInto(session *DroneSession) {
+	session.AircraftID = snapshot.aircraftID
+	session.FlightID = snapshot.flightID
+	session.IntentID = snapshot.intentID
+	session.IntentVersion = snapshot.intentVersion
+	session.operationContextUnreconciled = snapshot.unreconciled
+	session.emptyContextCommandID = snapshot.emptyContextCommandID
+}
+
+// retainDisconnectedOperationContextLocked stores bounded, short-lived
+// reconnect state. The caller must hold sessionsMu for writing.
+func (r *Relay) retainDisconnectedOperationContextLocked(agentID string, snapshot operationContextSnapshot, now time.Time) {
+	if r.disconnectedOperationContexts == nil {
+		r.disconnectedOperationContexts = make(map[string]retainedOperationContext)
+	}
+	for retainedAgentID, retained := range r.disconnectedOperationContexts {
+		if !now.Before(retained.expiresAt) {
+			delete(r.disconnectedOperationContexts, retainedAgentID)
+		}
+	}
+	if _, exists := r.disconnectedOperationContexts[agentID]; !exists &&
+		len(r.disconnectedOperationContexts) >= maxDisconnectedOperationContextCount {
+		var evictedAgentID string
+		var oldestExpiry time.Time
+		for retainedAgentID, retained := range r.disconnectedOperationContexts {
+			if evictedAgentID == "" || retained.expiresAt.Before(oldestExpiry) ||
+				(retained.expiresAt.Equal(oldestExpiry) && retainedAgentID < evictedAgentID) {
+				evictedAgentID = retainedAgentID
+				oldestExpiry = retained.expiresAt
+			}
+		}
+		delete(r.disconnectedOperationContexts, evictedAgentID)
+	}
+	r.disconnectedOperationContexts[agentID] = retainedOperationContext{
+		snapshot:  snapshot,
+		expiresAt: now.Add(disconnectedOperationContextTTL),
+	}
+}
+
+// takeDisconnectedOperationContextLocked consumes reconnect state exactly once.
+// The caller must hold sessionsMu for writing.
+func (r *Relay) takeDisconnectedOperationContextLocked(agentID string, now time.Time) (operationContextSnapshot, bool) {
+	retained, ok := r.disconnectedOperationContexts[agentID]
+	delete(r.disconnectedOperationContexts, agentID)
+	if !ok || !now.Before(retained.expiresAt) {
+		return operationContextSnapshot{}, false
+	}
+	return retained.snapshot, true
 }
 
 type agentRegistryReporter interface {
@@ -91,13 +165,15 @@ type DroneSession struct {
 	Attitude         *common.MessageAttitude
 	VfrHud           *common.MessageVfrHud
 	SystemStatus     *common.MessageSysStatus
+	AircraftID       string
 	FlightID         string
 	IntentID         string
 	IntentVersion    uint32
 	// operationContextUnreconciled is set for the first Agent session seen by a
 	// Relay process with context control enabled. Telemetry remains retryable
-	// until the API replays an authoritative Set/Clear command; same-process
-	// replacements inherit the previous session's reconciled state.
+	// until the API replays an authoritative Set/Clear command. Authenticated
+	// same-process replacements inherit the previous session's reconciled state;
+	// control-enabled authentication-free replacements remain unreconciled.
 	operationContextUnreconciled bool
 	// emptyContextCommandID retains the one durable command permitted to assert
 	// an authoritative empty context, including exact retries after admission
@@ -109,6 +185,7 @@ type DroneSession struct {
 	operationCommands     map[string]*operationCommandState
 	operationGate         chan struct{}
 	aircraftCommands      map[string]*aircraftCommandState
+	missionDeployments    map[string]*missionDeploymentState
 	// controlStreamMu keeps command writes and command evidence on one active
 	// telemetry-stream binding. Same-session stream replacement takes the write
 	// side only for the binding swap, not for Registry publication or telemetry.
@@ -138,6 +215,32 @@ type aircraftCommandState struct {
 	err            error
 	completed      bool
 	completedAt    time.Time
+}
+
+type missionDeploymentState struct {
+	fingerprint         string
+	command             *agentv1.DeployMissionCommand
+	deliveryStream      *telemetryStreamBinding
+	done                chan struct{}
+	deliveryCancel      context.CancelFunc
+	admission           *missionAdmission
+	reserved            bool
+	admissionFailed     bool
+	waiters             int
+	result              *agentv1.MissionDeploymentResult
+	err                 error
+	resultAdmissionOpen bool
+	delivered           bool
+	completed           bool
+	completedAt         time.Time
+}
+
+type missionAdmission struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	active int
+	closed bool
 }
 
 type telemetryStreamBinding struct {
@@ -206,6 +309,16 @@ var (
 		Name: "aero_relay_aircraft_command_duration_seconds",
 		Help: "Time from Relay command receipt to Agent result.",
 	}, []string{"command_type"})
+
+	relayMissionDeploymentsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "aero_relay_mission_deployments_total",
+		Help: "Mission deployment requests completed by the relay.",
+	}, []string{"result"})
+
+	relayMissionDeploymentDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name: "aero_relay_mission_deployment_duration_seconds",
+		Help: "Time from Relay mission deployment receipt to Agent result.",
+	})
 )
 
 // New validates Agent authentication requirements and constructs a Relay with
