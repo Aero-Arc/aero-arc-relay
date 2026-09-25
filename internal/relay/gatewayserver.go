@@ -75,6 +75,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 	newSession := &DroneSession{
+		executionCapabilities:        append([]string(nil), req.GetExecutionCapabilities()...),
 		agentID:                      agentID,
 		SessionID:                    sessionID,
 		ConnectedAt:                  time.Now(),
@@ -239,6 +240,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			return err
 		}
 
+		if evidence := message.GetCommandEvidence(); evidence != nil {
+			streamSession.handleC2Evidence(streamBinding, evidence)
+			continue
+		}
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
 			streamSession.handleOperationContextCommandAckFrom(streamBinding, commandAck)
 			continue

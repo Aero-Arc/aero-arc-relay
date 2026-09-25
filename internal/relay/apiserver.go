@@ -759,13 +759,14 @@ func droneStatus(session *DroneSession) *pb.DroneStatus {
 	session.sessionMu.RLock()
 	defer session.sessionMu.RUnlock()
 	return &pb.DroneStatus{
-		DroneId:             session.agentID,
-		SessionId:           session.SessionID,
-		AgentId:             session.agentID,
-		ConnectedAtUnixNs:   session.ConnectedAt.UnixNano(),
-		LastHeartbeatUnixNs: session.LastHeartbeat.UnixNano(),
-		FlightId:            session.FlightID,
-		IntentId:            session.IntentID,
-		IntentVersion:       session.IntentVersion,
+		ExecutionCapabilities: append([]string(nil), session.executionCapabilities...),
+		DroneId:               session.agentID,
+		SessionId:             session.SessionID,
+		AgentId:               session.agentID,
+		ConnectedAtUnixNs:     session.ConnectedAt.UnixNano(),
+		LastHeartbeatUnixNs:   session.LastHeartbeat.UnixNano(),
+		FlightId:              session.FlightID,
+		IntentId:              session.IntentID,
+		IntentVersion:         session.IntentVersion,
 	}
 }
