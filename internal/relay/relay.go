@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/makinje/aero-arc-relay/internal/completionoutbox"
 	"log/slog"
 	"net"
 	"net/http"
@@ -51,6 +52,7 @@ const (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
+	completionOutbox   *completionoutbox.Store
 	config             *config.Config
 	sinks              []sinks.Sink
 	router             *outputs.Router
@@ -360,6 +362,13 @@ func New(cfg *config.Config) (*Relay, error) {
 		return nil, fmt.Errorf("failed to initialize outputs: %w", err)
 	}
 
+	if cfg.CompletionOutboxPath != "" {
+		relay.completionOutbox, err = completionoutbox.Open(cfg.CompletionOutboxPath)
+		if err != nil {
+			_ = relay.Close(context.Background())
+			return nil, err
+		}
+	}
 	return relay, nil
 }
 
@@ -528,6 +537,9 @@ func (r *Relay) failStart(_ context.Context, startErr error) error {
 // telemetry batches are flushed during controlled shutdown.
 func (r *Relay) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
+		if r.completionOutbox != nil {
+			r.closeErr = errors.Join(r.closeErr, r.completionOutbox.Close())
+		}
 		if r.router != nil {
 			r.closeErr = errors.Join(r.closeErr, r.router.Close(ctx))
 		} else {

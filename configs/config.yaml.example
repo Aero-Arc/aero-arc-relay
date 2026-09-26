@@ -1,3 +1,5 @@
+# Persistent local disk; completion receipts follow a durable SQLite commit.
+completion_outbox_path: "./data/flight-completions.db"
 registry:
   enabled: false
   address: "localhost:50051"

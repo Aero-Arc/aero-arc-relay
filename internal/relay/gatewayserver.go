@@ -150,9 +150,10 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 	}
 
 	return &agentv1.RegisterResponse{
-		AgentId:     agentID,
-		SessionId:   sessionID,
-		MaxInflight: 100, // Example default
+		AgentId:                 agentID,
+		SessionId:               sessionID,
+		MaxInflight:             100, // Example default
+		DurableFlightCompletion: r.completionOutbox != nil,
 	}, nil
 }
 
@@ -240,6 +241,12 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			return err
 		}
 
+		if completion := message.GetFlightCompletionEvidence(); completion != nil {
+			if err := r.admitFlightCompletion(ctx, agentID, streamSession, streamBinding, completion); err != nil {
+				return err
+			}
+			continue
+		}
 		if evidence := message.GetCommandEvidence(); evidence != nil {
 			streamSession.handleC2Evidence(streamBinding, evidence)
 			continue
