@@ -19,3 +19,17 @@ the existing Agent stream to API workers. It is not normalized into the
 Roll out the shared protocol module, compatible Relay, and capable Agent before
 enabling API/Ops controls. New server definitions using existing numeric MAVLink
 execution need no Relay schema addition or per-command RPC.
+
+## Streaming execution evidence
+
+`ExecuteCommand` is an additive server-streaming control RPC. It sends the
+immutable command once and forwards cumulative Agent evidence through the
+current authenticated stream. The original unary `ExchangeCommand` remains
+available. A bounded latest-snapshot queue preserves completion under backpressure
+because each snapshot includes all previous immutable events. Old Agent streams
+cannot supply evidence for a replacement session.
+
+The command admission slot is released on the first Agent response, while the
+progress subscription remains active. Completion, Agent delivery-pass completion,
+disconnect, or the bounded exchange deadline ends the subscription. Missing
+outcomes must be recovered with the same authority, never inferred from EOF.
