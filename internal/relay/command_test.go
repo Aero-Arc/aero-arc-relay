@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -140,5 +141,43 @@ func TestCumulativeEvidenceRetainsCompletionAndRejectsOldStream(t *testing.T) {
 	session.handleC2Evidence(&telemetryStreamBinding{}, &agentv1.CommandEvidence{CommandId: "c"})
 	if !commandEvidenceComplete(<-ch) {
 		t.Fatal("completion lost behind initial acknowledgment")
+	}
+}
+
+func TestRetiredSessionRejectsC2Evidence(t *testing.T) {
+	binding := &telemetryStreamBinding{}
+	ch := make(chan *agentv1.CommandEvidence, 1)
+	session := &DroneSession{retired: true, stream: binding, c2Pending: map[string]chan *agentv1.CommandEvidence{"c": ch}}
+	session.handleC2Evidence(binding, &agentv1.CommandEvidence{CommandId: "c"})
+	select {
+	case <-ch:
+		t.Fatal("retired session accepted evidence")
+	default:
+	}
+}
+
+func TestLostSessionWakesC2WaitersAndDropsBufferedEvidence(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(fmt.Sprint(replacement), func(t *testing.T) {
+			ch := make(chan *agentv1.CommandEvidence, 1)
+			ch <- &agentv1.CommandEvidence{CommandId: "c"}
+			session := &DroneSession{c2Pending: map[string]chan *agentv1.CommandEvidence{"c": ch}}
+			if replacement {
+				session.abortPendingCommandsForStreamReplacement()
+			} else {
+				session.abortPendingCommands()
+			}
+			select {
+			case e, ok := <-ch:
+				if ok {
+					t.Fatalf("stale evidence survived: %v", e)
+				}
+			default:
+				t.Fatal("waiter was not woken")
+			}
+			if len(session.c2Pending) != 0 {
+				t.Fatal("pending correlation retained")
+			}
+		})
 	}
 }

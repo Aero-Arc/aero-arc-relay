@@ -126,7 +126,10 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	dispatchedAt := time.Now().UnixMilli()
 	for {
 		select {
-		case e := <-ch:
+		case e, ok := <-ch:
+			if !ok {
+				return status.Error(codes.Aborted, "Agent session or stream ended; reconcile the same command identity")
+			}
 			releaseOnce.Do(release)
 			if e.CommandDigest != d {
 				return status.Error(codes.DataLoss, "command digest mismatch")
@@ -147,10 +150,15 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 }
 
 func (s *DroneSession) handleC2Evidence(binding *telemetryStreamBinding, e *agentv1.CommandEvidence) {
+	s.ownershipMu.RLock()
+	defer s.ownershipMu.RUnlock()
+	if s.retired {
+		return
+	}
 	s.controlStreamMu.RLock()
 	defer s.controlStreamMu.RUnlock()
 	s.sessionMu.RLock()
-	current := s.stream == binding
+	current := s.stream == binding && !binding.closed
 	s.sessionMu.RUnlock()
 	if !current {
 		return
