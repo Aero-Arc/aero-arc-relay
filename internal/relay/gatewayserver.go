@@ -586,6 +586,7 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	now := time.Now()
+	session.abortC2PendingLocked()
 	contextOutcomeUncertain := false
 	for commandID, state := range session.operationCommands {
 		if state.completed {
@@ -686,7 +687,20 @@ func (session *DroneSession) releaseEmptyContextReconciliation(commandID string)
 	}
 }
 
+func (session *DroneSession) abortC2PendingLocked() {
+	for id, ch := range session.c2Pending {
+		// Discard buffered evidence from the lost generation before waking callers.
+		select {
+		case <-ch:
+		default:
+		}
+		close(ch)
+		delete(session.c2Pending, id)
+	}
+}
+
 func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
+	session.abortC2PendingLocked()
 	for commandID, state := range session.operationCommands {
 		if state.completed {
 			continue
