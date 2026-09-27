@@ -149,11 +149,16 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		break
 	}
 
+	completionMapped := false
+	if r.config != nil {
+		mapping, ok := r.config.Telemetry.AgentMappings[agentID]
+		completionMapped = ok && mapping.AircraftID != ""
+	}
 	return &agentv1.RegisterResponse{
 		AgentId:                 agentID,
 		SessionId:               sessionID,
 		MaxInflight:             100, // Example default
-		DurableFlightCompletion: r.completionOutbox != nil && r.agentAuthenticator != nil && r.controlAuthorizer != nil,
+		DurableFlightCompletion: r.completionOutbox != nil && r.agentAuthenticator != nil && r.controlAuthorizer != nil && completionMapped,
 	}, nil
 }
 

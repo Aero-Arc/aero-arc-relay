@@ -27,6 +27,10 @@ var ErrInvalid = errors.New("invalid completion evidence")
 type Store struct{ db *sql.DB }
 
 // Open initializes a single-connection SQLite FULL/WAL store on persistent disk.
+//
+// Parameters: path names a durable SQLite file; empty and in-memory paths fail.
+// Returns: an initialized store, or a path, filesystem, connection, or schema
+// error. Existing pending events and acknowledgement tombstones are preserved.
 func Open(path string) (*Store, error) {
 	if path == "" || path == ":memory:" {
 		return nil, fmt.Errorf("durable completion outbox path required")
@@ -53,6 +57,12 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // Admit commits immutable evidence before producing its exact delivery receipt.
 // Changed content under an existing event ID is rejected even after delivery.
+//
+// Parameters: ctx bounds SQLite admission; e supplies immutable, validated flight
+// binding and completion milestones from an authenticated Agent.
+// Returns: the exact event/digest receipt after commit, ErrInvalid for malformed
+// evidence, ErrConflict for changed identity content, or a storage error. Exact
+// replay returns the original receipt without reviving an acknowledged event.
 func (s *Store) Admit(ctx context.Context, e *pb.FlightCompletionEvidence) (*pb.FlightCompletionReceipt, error) {
 	raw, digest, err := flightcompletion.Encode(e)
 	if err != nil {
@@ -72,6 +82,10 @@ func (s *Store) Admit(ctx context.Context, e *pb.FlightCompletionEvidence) (*pb.
 }
 
 // Pending returns a bounded page without removing delivery obligations.
+//
+// Parameters: ctx bounds reads; limit must be between 1 and 200 inclusive.
+// Returns: pending immutable events in admission order, or a limit, storage, or
+// decoding error. Callers must explicitly acknowledge successful durable delivery.
 func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionEvidence, error) {
 	if limit < 1 || limit > 200 {
 		return nil, fmt.Errorf("limit must be 1..200")
@@ -97,6 +111,11 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionE
 }
 
 // Acknowledge removes the pending obligation only for an exact admitted digest.
+//
+// Parameters: ctx bounds persistence; r identifies an admitted event and its
+// exact encoded digest after the consumer has committed durable admission.
+// Returns: nil after acknowledgement or an exact duplicate; a nil/mismatched
+// receipt or storage error leaves the obligation pending. Tombstones are retained.
 func (s *Store) Acknowledge(ctx context.Context, r *pb.FlightCompletionReceipt) error {
 	if r == nil {
 		return errors.New("receipt required")

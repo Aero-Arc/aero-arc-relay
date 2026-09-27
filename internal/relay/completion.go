@@ -50,6 +50,11 @@ func (r *Relay) admitFlightCompletion(ctx context.Context, agentID string, sessi
 
 // ListFlightCompletions returns durable pending events to an authenticated API.
 // Events survive Agent disconnects and are retained until exact acknowledgement.
+//
+// Parameters: ctx carries control authorization and bounds the database read;
+// req selects at most 200 events, with zero selecting the default page of 100.
+// Returns: immutable pending events without consuming them, or an authorization,
+// InvalidArgument limit, or Unavailable storage/configuration error.
 func (r *Relay) ListFlightCompletions(ctx context.Context, req *rpc.ListFlightCompletionsRequest) (*rpc.ListFlightCompletionsResponse, error) {
 	if err := r.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -73,6 +78,13 @@ func (r *Relay) ListFlightCompletions(ctx context.Context, req *rpc.ListFlightCo
 
 // AckFlightCompletions records API durable admission for exact event digests.
 // Repeating a receipt is idempotent and never acknowledges different content.
+//
+// Parameters: ctx carries control authorization and bounds persistence; req
+// supplies at most 200 exact event-ID/digest receipts after API durable admission.
+// Returns: an empty response after all receipts commit, or authorization,
+// InvalidArgument batch size, Unavailable configuration, or FailedPrecondition
+// receipt/storage errors. Receipts commit individually: on partial failure,
+// earlier receipts stay acknowledged and callers may safely replay the batch.
 func (r *Relay) AckFlightCompletions(ctx context.Context, req *rpc.AckFlightCompletionsRequest) (*rpc.AckFlightCompletionsResponse, error) {
 	if err := r.authorizeControlMutation(ctx); err != nil {
 		return nil, err
