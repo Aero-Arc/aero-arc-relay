@@ -111,6 +111,9 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	if session == nil {
 		return nil, status.Error(codes.NotFound, "agent is not connected")
 	}
+	if err := requireMissionCapabilities(session, command.GetPlan()); err != nil {
+		return nil, err
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, maxMissionDeploymentWait)
 	defer cancel()
 	startedAt := time.Now()

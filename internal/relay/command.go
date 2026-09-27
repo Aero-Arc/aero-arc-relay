@@ -94,6 +94,13 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	if !slices.Contains(session.executionCapabilities, c.Capability) {
 		return status.Error(codes.FailedPrecondition, "Agent execution capability unavailable")
 	}
+	plan := c.GetMavlink().GetMissionPrecondition()
+	if c.GetMission() != nil {
+		plan = c.GetMission().GetPlan()
+	}
+	if err := requireMissionCapabilities(session, plan); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	release, err := acquireOperationCommandSlot(ctx, session)
@@ -181,4 +188,13 @@ func (s *DroneSession) handleC2Evidence(binding *telemetryStreamBinding, e *agen
 			ch <- proto.Clone(e).(*agentv1.CommandEvidence)
 		}
 	}
+}
+
+func requireMissionCapabilities(session *DroneSession, plan *agentv1.MissionPlan) error {
+	for _, item := range plan.GetItems() {
+		if item.GetCommand() == 20 && !slices.Contains(session.executionCapabilities, "mission_rtl_v1") {
+			return status.Error(codes.FailedPrecondition, "Agent must advertise mission_rtl_v1 before receiving an RTL mission")
+		}
+	}
+	return nil
 }
