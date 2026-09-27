@@ -69,6 +69,9 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return err
 	}
+	if s.agentAuthenticator == nil {
+		return status.Error(codes.FailedPrecondition, "durable C2 requires authenticated Agent registration")
+	}
 	receivedAt := time.Now().UnixMilli()
 	c := req.GetCommand()
 	d, err := commanddigest.Digest(c)

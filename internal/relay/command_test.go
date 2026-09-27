@@ -20,10 +20,13 @@ func TestDurableCommandRequiresCapabilityAndAgentEvidence(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: ctx, sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
 	binding := &telemetryStreamBinding{stream: stream}
 	session := &DroneSession{agentID: "agent", SessionID: "session", stream: binding, operationGate: makeOperationGate()}
-	r := &Relay{controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
 	now := time.Now()
 	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
-	var err error
 	c.CommandDigest, err = commanddigest.Digest(c)
 	if err != nil {
 		t.Fatal(err)
@@ -81,10 +84,13 @@ func TestStreamingCommandKeepsOneDeliveryThroughProgress(t *testing.T) {
 	stream := &mockTelemetryStream{ctx: ctx, sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
 	binding := &telemetryStreamBinding{stream: stream}
 	session := &DroneSession{agentID: "agent", SessionID: "session", stream: binding, operationGate: makeOperationGate()}
-	r := &Relay{controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
 	now := time.Now()
 	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
-	var err error
 	c.CommandDigest, err = commanddigest.Digest(c)
 	if err != nil {
 		t.Fatal(err)
@@ -179,5 +185,12 @@ func TestLostSessionWakesC2WaitersAndDropsBufferedEvidence(t *testing.T) {
 				t.Fatal("pending correlation retained")
 			}
 		})
+	}
+}
+
+func TestDurableCommandRejectsUnauthenticatedAgentConfiguration(t *testing.T) {
+	r := &Relay{controlAuthorizer: func(context.Context) error { return nil }}
+	if _, err := r.ExchangeCommand(context.Background(), &relayv1.ExchangeCommandRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unauthenticated command path enabled: %v", err)
 	}
 }
