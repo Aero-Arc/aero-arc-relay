@@ -534,7 +534,16 @@ func (r *Relay) failStart(_ context.Context, startErr error) error {
 
 // Close drains and closes all configured outputs. It is separate from the
 // network-server lifecycle so embedders can guarantee that asynchronous
-// telemetry batches are flushed during controlled shutdown.
+// telemetry batches are flushed during controlled shutdown. The first call closes
+// the durable completion store, then drains the output router (or individual
+// sinks), then stops Registry lifecycle reporting. Callers must stop network
+// admission first; after closing the store, completion admission, listing, and
+// acknowledgement fail rather than accepting unpersisted evidence.
+//
+// Parameters: ctx bounds output flushing and Registry shutdown; completion-store
+// close follows SQLite database-close semantics and does not consume this context.
+// Returns: the joined completion-store/output/Registry close errors, or nil on
+// success. Concurrent or repeated calls return the same first-call result.
 func (r *Relay) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		if r.completionOutbox != nil {

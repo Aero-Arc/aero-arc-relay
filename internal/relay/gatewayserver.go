@@ -52,7 +52,10 @@ import (
 //
 // Returns:
 //   - response: contains the authenticated Agent ID, newly generated session
-//     ID, and advertised telemetry in-flight limit.
+//     ID, and advertised telemetry in-flight limit. DurableFlightCompletion is
+//     true only with a durable completion outbox, Agent authentication, control
+//     authentication, and a nonempty aircraft mapping for this Agent. Otherwise
+//     Agents retain their completion evidence for a capable Relay.
 //   - error: reports a missing Agent ID, failed authentication, or failure to
 //     generate a cryptographically random session ID. Cancellation while
 //     waiting to replace an owned session preserves that live session and
