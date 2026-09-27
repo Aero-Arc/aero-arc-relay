@@ -80,7 +80,9 @@ func isPositiveZero(value float64) bool {
 //     or kind conflict, retention exhaustion, stream delivery failure, malformed
 //     Agent evidence, or caller/Relay wait timeout. An RPC error after admission
 //     leaves the effect uncertain and requires an exact retry with the same
-//     command ID and payload.
+//     command ID and payload. An RTL-bearing plan requires the bound Agent to
+//     advertise mission_rtl_v1; mission_upload_v1 alone is insufficient. Missing
+//     capability returns FailedPrecondition before admission or stream handoff.
 func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest) (*pb.DeployMissionResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err

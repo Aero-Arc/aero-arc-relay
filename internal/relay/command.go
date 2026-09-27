@@ -26,6 +26,10 @@ import (
 // Returns:
 //   - response: contains Agent evidence, never a Relay-generated application ACK.
 //   - error: indicates validation, session, delivery, or timeout failure.
+//     FailedPrecondition also reports a mission upload or MAVLink mission
+//     precondition containing RTL when the bound Agent lacks mission_rtl_v1;
+//     mission_upload_v1 alone does not enable RTL. Rejection occurs before
+//     admission or stream handoff and cannot produce an aircraft effect.
 func (s *Relay) ExchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequest) (*pb.ExchangeCommandResponse, error) {
 	var result *pb.ExchangeCommandResponse
 	err := s.exchangeCommand(ctx, req, false, func(e *agentv1.CommandEvidence) error {
@@ -40,7 +44,10 @@ func (s *Relay) ExchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 //
 // Parameters: req carries command authority; stream authenticates the caller and
 // bounds delivery. Returns an authorization, delivery, or stream error; loss of
-// the stream never proves that the aircraft action failed.
+// the stream never proves that the aircraft action failed. Mission uploads and
+// MAVLink mission preconditions containing RTL additionally require the bound
+// Agent to advertise mission_rtl_v1; mission_upload_v1 alone is insufficient.
+// Missing RTL capability returns FailedPrecondition before admission or handoff.
 func (s *Relay) ExecuteCommand(req *pb.ExecuteCommandRequest, stream grpc.ServerStreamingServer[pb.ExecuteCommandResponse]) error {
 	return s.exchangeCommand(stream.Context(), &pb.ExchangeCommandRequest{AgentId: req.AgentId, Command: req.Command, AttemptId: req.AttemptId}, true, func(e *agentv1.CommandEvidence) error {
 		return stream.Send(&pb.ExecuteCommandResponse{Evidence: e})
