@@ -2,8 +2,10 @@ package relay
 
 import (
 	"context"
+	"errors"
 	pb "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	rpc "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
+	"github.com/makinje/aero-arc-relay/internal/completionoutbox"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -23,10 +25,10 @@ func (r *Relay) admitFlightCompletion(ctx context.Context, agentID string, sessi
 	// Agent can replay the old flight after a new context has been installed.
 	session.ownershipMu.Lock()
 	r.sessionsMu.RLock()
-	current := r.grpcSessions[agentID] == session
+	current := r.grpcSessions[agentID] == session && !session.retired
 	r.sessionsMu.RUnlock()
 	session.sessionMu.RLock()
-	current = current && session.stream == binding
+	current = current && session.stream == binding && !binding.closed
 	session.sessionMu.RUnlock()
 	if !current {
 		session.ownershipMu.Unlock()
@@ -34,6 +36,12 @@ func (r *Relay) admitFlightCompletion(ctx context.Context, agentID string, sessi
 	}
 	receipt, err := r.completionOutbox.Admit(ctx, e)
 	session.ownershipMu.Unlock()
+	if errors.Is(err, completionoutbox.ErrConflict) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+	if errors.Is(err, completionoutbox.ErrInvalid) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
 	}

@@ -16,6 +16,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ErrConflict indicates changed content under an immutable event identity.
+var ErrConflict = errors.New("immutable completion event conflict")
+
+// ErrInvalid identifies malformed completion evidence.
+var ErrInvalid = errors.New("invalid completion evidence")
+
 // Store is a restart-durable, at-least-once completion notification outbox.
 // Acknowledged rows remain as deduplication tombstones; retention is explicit.
 type Store struct{ db *sql.DB }
@@ -50,7 +56,7 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Admit(ctx context.Context, e *pb.FlightCompletionEvidence) (*pb.FlightCompletionReceipt, error) {
 	raw, digest, err := flightcompletion.Encode(e)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if _, err = s.db.ExecContext(ctx, `INSERT INTO flight_completions(event_id,digest,payload) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING`, e.EventId, digest, raw); err != nil {
 		return nil, err
@@ -60,7 +66,7 @@ func (s *Store) Admit(ctx context.Context, e *pb.FlightCompletionEvidence) (*pb.
 		return nil, err
 	}
 	if saved != digest {
-		return nil, fmt.Errorf("immutable completion event conflict")
+		return nil, ErrConflict
 	}
 	return &pb.FlightCompletionReceipt{EventId: e.EventId, PayloadSha256: digest}, nil
 }

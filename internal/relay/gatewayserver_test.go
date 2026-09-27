@@ -22,6 +22,7 @@ import (
 	"time"
 
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
+	"github.com/makinje/aero-arc-relay/internal/completionoutbox"
 	"github.com/makinje/aero-arc-relay/internal/mock"
 	"github.com/makinje/aero-arc-relay/internal/outputs"
 	"github.com/makinje/aero-arc-relay/internal/telemetrywriter"
@@ -2310,5 +2311,30 @@ func TestTelemetryStream_UnregisteredAgent(t *testing.T) {
 	err := relay.TelemetryStream(stream)
 	if err == nil {
 		t.Error("Expected error for unregistered agent")
+	}
+}
+
+func TestCompletionCapabilityRequiresAuthenticatedDeliveryPath(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		for _, control := range []bool{false, true} {
+			r := &Relay{grpcSessions: make(map[string]*DroneSession), completionOutbox: &completionoutbox.Store{}}
+			if authenticated {
+				var err error
+				r.agentAuthenticator, err = newAgentTokenAuthenticator(map[string]string{"agent-1": testAgentToken})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if control {
+				r.controlAuthorizer = func(context.Context) error { return nil }
+			}
+			response, err := r.Register(authenticatedAgentContext("agent-1"), &agentv1.RegisterRequest{AgentId: "agent-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.DurableFlightCompletion != (authenticated && control) {
+				t.Fatalf("capability=%v agent auth=%v control auth=%v", response.DurableFlightCompletion, authenticated, control)
+			}
+		}
 	}
 }

@@ -153,7 +153,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		AgentId:                 agentID,
 		SessionId:               sessionID,
 		MaxInflight:             100, // Example default
-		DurableFlightCompletion: r.completionOutbox != nil,
+		DurableFlightCompletion: r.completionOutbox != nil && r.agentAuthenticator != nil && r.controlAuthorizer != nil,
 	}, nil
 }
 
