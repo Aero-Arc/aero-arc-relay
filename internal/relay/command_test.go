@@ -260,3 +260,20 @@ func TestOldExchangeCleanupPreservesReplacementWaiter(t *testing.T) {
 		t.Fatal("old cleanup deleted replacement evidence waiter")
 	}
 }
+
+func TestRTLMissionRequiresExplicitCapability(t *testing.T) {
+	plan := &agentv1.MissionPlan{SchemaVersion: 1, Items: []*agentv1.MissionItem{{Command: 20}}}
+	session := &DroneSession{executionCapabilities: []string{"mavlink_command_v1", "mission_upload_v1"}}
+	if err := requireMissionCapabilities(session, plan); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("legacy capability accepted RTL: %v", err)
+	}
+	session.executionCapabilities = append(session.executionCapabilities, "mission_rtl_v1")
+	if err := requireMissionCapabilities(session, plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Items[0].Command = 21
+	session.executionCapabilities = nil
+	if err := requireMissionCapabilities(session, plan); err != nil {
+		t.Fatalf("legacy LAND compatibility broken: %v", err)
+	}
+}
