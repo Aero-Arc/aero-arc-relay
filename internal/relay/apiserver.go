@@ -46,15 +46,15 @@ func prepareCommandIDAdmissionLocked(session *DroneSession, commandID string, ki
 	expireOperationCommandsLocked(session, now)
 	expireAircraftCommandsLocked(session, now)
 	expireMissionDeploymentsLocked(session, now)
-	for id, until := range session.durableCommandIDs {
-		if !now.Before(until) && session.c2Pending[id] == nil {
+	for id, identity := range session.durableCommandIDs {
+		if !now.Before(identity.until) && session.c2Pending[id] == nil {
 			delete(session.durableCommandIDs, id)
 		}
 	}
 	conflict := kind != retainedOperationCommand && session.operationCommands[commandID] != nil ||
 		kind != retainedAircraftCommand && session.aircraftCommands[commandID] != nil ||
 		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil ||
-		kind != retainedDurableCommand && (session.c2Pending[commandID] != nil || !session.durableCommandIDs[commandID].IsZero())
+		kind != retainedDurableCommand && (session.c2Pending[commandID] != nil || session.durableCommandIDs[commandID] != nil)
 	if conflict {
 		return status.Error(codes.AlreadyExists, "command ID was already used by a different command kind")
 	}
