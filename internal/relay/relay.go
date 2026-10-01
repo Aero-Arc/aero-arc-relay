@@ -331,10 +331,15 @@ var (
 //
 // Parameters:
 //   - cfg: defines listener, TLS, authentication, output, and Registry settings.
+//     A nonempty CompletionOutboxPath opens persistent SQLite WAL storage; an
+//     empty path disables completion admission. In-memory and URI paths fail.
 //
 // Returns:
-//   - relay: owns initialized outputs but is not yet serving.
-//   - error: reports authentication or output initialization failure.
+//   - relay: owns initialized outputs and the optional completion outbox, but is
+//     not yet serving. The caller must stop serving before calling Close.
+//   - error: reports missing configuration, authentication, output initialization,
+//     or outbox filesystem, connection, schema, or WAL validation failures. An
+//     outbox-open failure closes initialized outputs before returning.
 func New(cfg *config.Config) (*Relay, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("relay configuration is required")

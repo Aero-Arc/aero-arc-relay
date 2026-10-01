@@ -63,7 +63,13 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close flushes and releases the database connection.
+// Close releases the database connection without acknowledging pending evidence.
+// Stop delivery workers first. Closing prevents new queries; database/sql drains
+// queries already processing. Repeated and concurrent calls are safe.
+//
+// Parameters: none.
+// Returns: the database close error, if any. Pending events and deduplication
+// tombstones remain on disk for Open; subsequent store operations fail.
 func (s *Store) Close() error { return s.db.Close() }
 
 // Admit commits immutable evidence before producing its exact delivery receipt.
