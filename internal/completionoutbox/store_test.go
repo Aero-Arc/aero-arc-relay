@@ -56,6 +56,10 @@ func TestCompletionDeliverySurvivesRestartAndRetainsIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var size int
+	if err = s.db.QueryRow(`SELECT length(payload) FROM flight_completions WHERE event_id=?`, e.EventId).Scan(&size); err != nil || size != 0 {
+		t.Fatalf("acknowledged payload retained: %d %v", size, err)
+	}
 	if _, err = s.Admit(ctx, e); err != nil {
 		t.Fatal(err)
 	}

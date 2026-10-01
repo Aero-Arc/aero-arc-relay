@@ -23,6 +23,9 @@ var ErrConflict = errors.New("immutable completion event conflict")
 // ErrInvalid identifies malformed completion evidence.
 var ErrInvalid = errors.New("invalid completion evidence")
 
+// ErrReceipt identifies a missing or mismatched completion acknowledgement.
+var ErrReceipt = errors.New("invalid completion receipt")
+
 // Store is a restart-durable, at-least-once completion notification outbox.
 // Acknowledged rows remain as deduplication tombstones; retention is explicit.
 type Store struct{ db *sql.DB }
@@ -157,12 +160,13 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionE
 // Parameters: ctx bounds persistence; r identifies an admitted event and its
 // exact encoded digest after the consumer has committed durable admission.
 // Returns: nil after acknowledgement or an exact duplicate; a nil/mismatched
-// receipt or storage error leaves the obligation pending. Tombstones are retained.
+// receipt (ErrReceipt) or storage error leaves the obligation pending. Acknowledged
+// payload bytes are released for SQLite reuse; identity/digest tombstones remain.
 func (s *Store) Acknowledge(ctx context.Context, r *pb.FlightCompletionReceipt) error {
 	if r == nil {
-		return errors.New("receipt required")
+		return fmt.Errorf("%w: receipt required", ErrReceipt)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE flight_completions SET delivered=1 WHERE event_id=? AND digest=?`, r.EventId, r.PayloadSha256)
+	result, err := s.db.ExecContext(ctx, `UPDATE flight_completions SET delivered=1,payload=X'' WHERE event_id=? AND digest=?`, r.EventId, r.PayloadSha256)
 	if err != nil {
 		return err
 	}
@@ -171,7 +175,7 @@ func (s *Store) Acknowledge(ctx context.Context, r *pb.FlightCompletionReceipt) 
 		return err
 	}
 	if n != 1 {
-		return errors.New("completion receipt does not match stored event")
+		return fmt.Errorf("%w: completion receipt does not match stored event", ErrReceipt)
 	}
 	return nil
 }

@@ -83,7 +83,7 @@ func (r *Relay) ListFlightCompletions(ctx context.Context, req *rpc.ListFlightCo
 // supplies at most 200 exact event-ID/digest receipts after API durable admission.
 // Returns: an empty response after all receipts commit, or authorization,
 // InvalidArgument batch size, Unavailable configuration, or FailedPrecondition
-// receipt/storage errors. Receipts commit individually: on partial failure,
+// receipt errors, or retryable Unavailable storage errors. Receipts commit individually: on partial failure,
 // earlier receipts stay acknowledged and callers may safely replay the batch.
 func (r *Relay) AckFlightCompletions(ctx context.Context, req *rpc.AckFlightCompletionsRequest) (*rpc.AckFlightCompletionsResponse, error) {
 	if err := r.authorizeControlMutation(ctx); err != nil {
@@ -97,7 +97,13 @@ func (r *Relay) AckFlightCompletions(ctx context.Context, req *rpc.AckFlightComp
 	}
 	for _, receipt := range req.GetReceipts() {
 		if err := r.completionOutbox.Acknowledge(ctx, receipt); err != nil {
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+			if errors.Is(err, completionoutbox.ErrReceipt) {
+				return nil, status.Error(codes.FailedPrecondition, err.Error())
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, status.FromContextError(err).Err()
+			}
+			return nil, status.Error(codes.Unavailable, err.Error())
 		}
 	}
 	return &rpc.AckFlightCompletionsResponse{}, nil

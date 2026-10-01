@@ -339,7 +339,8 @@ var (
 //     not yet serving. The caller must stop serving before calling Close.
 //   - error: reports missing configuration, authentication, output initialization,
 //     or outbox filesystem, connection, schema, or WAL validation failures. An
-//     outbox-open failure closes initialized outputs before returning.
+//     outbox-open failure attempts output cleanup with a five-second deadline
+//     and joins any cleanup error with the original initialization error.
 func New(cfg *config.Config) (*Relay, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("relay configuration is required")
@@ -370,8 +371,9 @@ func New(cfg *config.Config) (*Relay, error) {
 	if cfg.CompletionOutboxPath != "" {
 		relay.completionOutbox, err = completionoutbox.Open(cfg.CompletionOutboxPath)
 		if err != nil {
-			_ = relay.Close(context.Background())
-			return nil, err
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return nil, errors.Join(err, relay.Close(cleanupCtx))
 		}
 	}
 	return relay, nil
