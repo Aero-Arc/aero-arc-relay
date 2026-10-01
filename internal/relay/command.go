@@ -26,6 +26,10 @@ import (
 // Returns:
 //   - response: contains Agent evidence, never a Relay-generated application ACK.
 //   - error: indicates validation, session, delivery, or timeout failure.
+//     FailedPrecondition also reports a mission upload or MAVLink mission
+//     precondition containing RTL when the bound Agent lacks mission_rtl_v1;
+//     mission_upload_v1 alone does not enable RTL. Rejection occurs before
+//     admission or stream handoff and cannot produce an aircraft effect.
 func (s *Relay) ExchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequest) (*pb.ExchangeCommandResponse, error) {
 	var result *pb.ExchangeCommandResponse
 	err := s.exchangeCommand(ctx, req, false, func(e *agentv1.CommandEvidence) error {
@@ -40,7 +44,10 @@ func (s *Relay) ExchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 //
 // Parameters: req carries command authority; stream authenticates the caller and
 // bounds delivery. Returns an authorization, delivery, or stream error; loss of
-// the stream never proves that the aircraft action failed.
+// the stream never proves that the aircraft action failed. Mission uploads and
+// MAVLink mission preconditions containing RTL additionally require the bound
+// Agent to advertise mission_rtl_v1; mission_upload_v1 alone is insufficient.
+// Missing RTL capability returns FailedPrecondition before admission or handoff.
 func (s *Relay) ExecuteCommand(req *pb.ExecuteCommandRequest, stream grpc.ServerStreamingServer[pb.ExecuteCommandResponse]) error {
 	return s.exchangeCommand(stream.Context(), &pb.ExchangeCommandRequest{AgentId: req.AgentId, Command: req.Command, AttemptId: req.AttemptId}, true, func(e *agentv1.CommandEvidence) error {
 		return stream.Send(&pb.ExecuteCommandResponse{Evidence: e})
@@ -71,6 +78,16 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	}
 	if s.agentAuthenticator == nil {
 		return status.Error(codes.FailedPrecondition, "durable C2 requires authenticated Agent registration")
+	}
+	relayID := ""
+	if s.config != nil {
+		relayID = s.config.Registry.RelayID
+		if relayID == "" {
+			relayID = s.config.Telemetry.RelayID
+		}
+	}
+	if relayID == "" {
+		return status.Error(codes.FailedPrecondition, "durable C2 requires a stable Relay identity")
 	}
 	receivedAt := time.Now().UnixMilli()
 	c := req.GetCommand()
@@ -119,7 +136,13 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	}
 	session.c2Pending[c.CommandId] = ch
 	session.pendingMu.Unlock()
-	defer func() { session.pendingMu.Lock(); delete(session.c2Pending, c.CommandId); session.pendingMu.Unlock() }()
+	defer func() {
+		session.pendingMu.Lock()
+		defer session.pendingMu.Unlock()
+		if session.c2Pending[c.CommandId] == ch {
+			delete(session.c2Pending, c.CommandId)
+		}
+	}()
 	_, err = sendToSessionWithWritePolicy(ctx, session, &agentv1.RelayStreamMessage{Payload: &agentv1.RelayStreamMessage_DurableCommand{DurableCommand: proto.Clone(c).(*agentv1.DurableCommand)}}, true)
 	session.controlStreamMu.RUnlock()
 	session.ownershipMu.RUnlock()
@@ -138,8 +161,8 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 				return status.Error(codes.DataLoss, "command digest mismatch")
 			}
 			e.Events = append(e.Events,
-				&agentv1.CommandEvent{EventId: req.AttemptId + "/relay_received", Stage: "relay_received", OccurredAtUnixMs: receivedAt, EvidenceSource: "relay:" + s.config.Registry.RelayID, Message: "Relay admitted delivery attempt"},
-				&agentv1.CommandEvent{EventId: req.AttemptId + "/dispatched", Stage: "dispatched", OccurredAtUnixMs: dispatchedAt, EvidenceSource: "relay:" + s.config.Registry.RelayID, Message: "command handed to bound Agent stream"})
+				&agentv1.CommandEvent{EventId: req.AttemptId + "/relay_received", Stage: "relay_received", OccurredAtUnixMs: receivedAt, EvidenceSource: "relay:" + relayID, Message: "Relay admitted delivery attempt"},
+				&agentv1.CommandEvent{EventId: req.AttemptId + "/dispatched", Stage: "dispatched", OccurredAtUnixMs: dispatchedAt, EvidenceSource: "relay:" + relayID, Message: "command handed to bound Agent stream"})
 			if err := emit(e); err != nil {
 				return err
 			}
