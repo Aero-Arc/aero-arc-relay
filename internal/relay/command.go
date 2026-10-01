@@ -43,15 +43,29 @@ func (s *Relay) ExchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 // evidence until completion or disconnect. Recovery must reuse the same identity.
 //
 // Parameters: req carries command authority; stream authenticates the caller and
-// bounds delivery. Returns an authorization, delivery, or stream error; loss of
+// bounds delivery. The RPC also ends after 35 seconds, cancelling blocked
+// progress writes before worker cleanup. Returns an authorization, delivery, or stream error; loss of
 // the stream never proves that the aircraft action failed. Mission uploads and
 // MAVLink mission preconditions containing RTL additionally require the bound
 // Agent to advertise mission_rtl_v1; mission_upload_v1 alone is insufficient.
 // Missing RTL capability returns FailedPrecondition before admission or handoff.
 func (s *Relay) ExecuteCommand(req *pb.ExecuteCommandRequest, stream grpc.ServerStreamingServer[pb.ExecuteCommandResponse]) error {
-	return s.exchangeCommand(stream.Context(), &pb.ExchangeCommandRequest{AgentId: req.AgentId, Command: req.Command, AttemptId: req.AttemptId}, true, func(e *agentv1.CommandEvidence) error {
-		return stream.Send(&pb.ExecuteCommandResponse{Evidence: e})
-	})
+	ctx, cancel := context.WithTimeout(stream.Context(), 35*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.exchangeCommand(ctx, &pb.ExchangeCommandRequest{AgentId: req.AgentId, Command: req.Command, AttemptId: req.AttemptId}, true, func(e *agentv1.CommandEvidence) error {
+			return stream.Send(&pb.ExecuteCommandResponse{Evidence: e})
+		})
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// Returning the RPC cancels its actual transport, including a blocked
+		// progress Send. The worker then drains and removes only its own waiter.
+		return status.FromContextError(ctx.Err()).Err()
+	}
 }
 
 func commandEvidenceComplete(e *agentv1.CommandEvidence) bool {
