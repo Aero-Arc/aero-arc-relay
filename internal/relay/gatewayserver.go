@@ -179,8 +179,26 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 // telemetry routing. Each result is correlated by command ID only against the
 // pending request on this exact active binding; evidence from a superseded
 // binding is ignored. Cleanup removes only this binding, so a superseding stream
-// remains active.
+// remains active. A command write that exceeds its delivery deadline terminates
+// this RPC to cancel the transport write. Session cleanup follows write drainage;
+// replacement cannot overtake a write still capable of reaching the old stream.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
+	// Returning the RPC handler is what cancels gRPC's transport Send/Recv.
+	// Cleanup runs in the worker: waiting for its ownership lease here would
+	// deadlock with a command writer that must drain Send before releasing it.
+	abort, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.telemetryStream(stream, cancel) }()
+	select {
+	case err := <-done:
+		return err
+	case <-abort.Done():
+		return status.Error(codes.DeadlineExceeded, "Agent stream write exceeded command deadline")
+	}
+}
+
+func (r *Relay) telemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer, abortWrite context.CancelFunc) error {
 	ctx := stream.Context()
 
 	meta, ok := metadata.FromIncomingContext(ctx)
@@ -205,7 +223,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	}
 	sessionID := strings.TrimSpace(sessionIDs[0])
 
-	streamSession, streamBinding, previousStream, err := r.updateStream(agentID, sessionID, stream)
+	streamSession, streamBinding, previousStream, err := r.updateStreamWithAbort(agentID, sessionID, stream, abortWrite)
 	if err != nil {
 		return status.Error(codes.Unauthenticated, "telemetry stream is not bound to an active session")
 	}
@@ -400,9 +418,28 @@ func sendToSessionWithWritePolicyAndCommit(ctx context.Context, session *DroneSe
 				binding.sendMu.Unlock()
 				return false, status.Error(codes.Canceled, "stream delivery state ended before effect-start commit")
 			}
-			err := binding.stream.Send(message)
-			binding.sendMu.Unlock()
-			return true, err
+			if binding.abortWrite == nil {
+				// Direct bindings supplied by tests/embedders have no RPC handler
+				// to terminate. Preserve the write fence until their Send returns.
+				err := binding.stream.Send(message)
+				binding.sendMu.Unlock()
+				return true, err
+			}
+			sent := make(chan error, 1)
+			go func() { sent <- binding.stream.Send(message) }()
+			select {
+			case err := <-sent:
+				binding.sendMu.Unlock()
+				return true, err
+			case <-ctx.Done():
+				binding.abortWrite()
+				// The handler returns independently of cleanup, cancelling the
+				// real transport. Drain before unlocking: no stale write may
+				// survive publication of a replacement session or stream.
+				<-sent
+				binding.sendMu.Unlock()
+				return true, status.FromContextError(ctx.Err()).Err()
+			}
 		}
 		sent := make(chan error, 1)
 		go func() {
