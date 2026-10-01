@@ -79,6 +79,16 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	if s.agentAuthenticator == nil {
 		return status.Error(codes.FailedPrecondition, "durable C2 requires authenticated Agent registration")
 	}
+	relayID := ""
+	if s.config != nil {
+		relayID = s.config.Registry.RelayID
+		if relayID == "" {
+			relayID = s.config.Telemetry.RelayID
+		}
+	}
+	if relayID == "" {
+		return status.Error(codes.FailedPrecondition, "durable C2 requires a stable Relay identity")
+	}
 	receivedAt := time.Now().UnixMilli()
 	c := req.GetCommand()
 	d, err := commanddigest.Digest(c)
@@ -133,7 +143,13 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	}
 	session.c2Pending[c.CommandId] = ch
 	session.pendingMu.Unlock()
-	defer func() { session.pendingMu.Lock(); delete(session.c2Pending, c.CommandId); session.pendingMu.Unlock() }()
+	defer func() {
+		session.pendingMu.Lock()
+		defer session.pendingMu.Unlock()
+		if session.c2Pending[c.CommandId] == ch {
+			delete(session.c2Pending, c.CommandId)
+		}
+	}()
 	_, err = sendToSessionWithWritePolicy(ctx, session, &agentv1.RelayStreamMessage{Payload: &agentv1.RelayStreamMessage_DurableCommand{DurableCommand: proto.Clone(c).(*agentv1.DurableCommand)}}, true)
 	session.controlStreamMu.RUnlock()
 	session.ownershipMu.RUnlock()
@@ -152,8 +168,8 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 				return status.Error(codes.DataLoss, "command digest mismatch")
 			}
 			e.Events = append(e.Events,
-				&agentv1.CommandEvent{EventId: req.AttemptId + "/relay_received", Stage: "relay_received", OccurredAtUnixMs: receivedAt, EvidenceSource: "relay:" + s.config.Registry.RelayID, Message: "Relay admitted delivery attempt"},
-				&agentv1.CommandEvent{EventId: req.AttemptId + "/dispatched", Stage: "dispatched", OccurredAtUnixMs: dispatchedAt, EvidenceSource: "relay:" + s.config.Registry.RelayID, Message: "command handed to bound Agent stream"})
+				&agentv1.CommandEvent{EventId: req.AttemptId + "/relay_received", Stage: "relay_received", OccurredAtUnixMs: receivedAt, EvidenceSource: "relay:" + relayID, Message: "Relay admitted delivery attempt"},
+				&agentv1.CommandEvent{EventId: req.AttemptId + "/dispatched", Stage: "dispatched", OccurredAtUnixMs: dispatchedAt, EvidenceSource: "relay:" + relayID, Message: "command handed to bound Agent stream"})
 			if err := emit(e); err != nil {
 				return err
 			}

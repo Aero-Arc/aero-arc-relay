@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aero-arc/aero-arc-protos/flightcompletion"
 	pb "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
@@ -28,11 +29,11 @@ type Store struct{ db *sql.DB }
 
 // Open initializes a single-connection SQLite FULL/WAL store on persistent disk.
 //
-// Parameters: path names a durable SQLite file; empty and in-memory paths fail.
+// Parameters: path names a durable SQLite file; empty, in-memory, and SQLite URI paths fail.
 // Returns: an initialized store, or a path, filesystem, connection, or schema
 // error. Existing pending events and acknowledgement tombstones are preserved.
 func Open(path string) (*Store, error) {
-	if path == "" || path == ":memory:" {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
 		return nil, fmt.Errorf("durable completion outbox path required")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -43,11 +44,21 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	for _, q := range []string{`PRAGMA journal_mode=WAL`, `PRAGMA synchronous=FULL`, `PRAGMA busy_timeout=5000`, `CREATE TABLE IF NOT EXISTS flight_completions(event_id TEXT PRIMARY KEY,digest TEXT NOT NULL,payload BLOB NOT NULL,delivered INTEGER NOT NULL DEFAULT 0)`} {
+	for _, q := range []string{`PRAGMA journal_mode=WAL`, `PRAGMA synchronous=FULL`, `PRAGMA busy_timeout=5000`, `CREATE TABLE IF NOT EXISTS flight_completions(event_id TEXT PRIMARY KEY,digest TEXT NOT NULL,payload BLOB NOT NULL,delivered INTEGER NOT NULL DEFAULT 0)`, `CREATE TABLE IF NOT EXISTS completion_delivery_rotation(event_id TEXT PRIMARY KEY, turn INTEGER NOT NULL)`} {
 		if _, err = db.Exec(q); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
+	}
+	var mode, filename string
+	var sequence int
+	var name string
+	if err = db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err == nil {
+		err = db.QueryRow(`PRAGMA database_list`).Scan(&sequence, &name, &filename)
+	}
+	if err != nil || mode != "wal" || filename == "" {
+		_ = db.Close()
+		return nil, fmt.Errorf("completion outbox requires on-disk WAL storage: mode=%q file=%q: %v", mode, filename, err)
 	}
 	return &Store{db: db}, nil
 }
@@ -84,13 +95,20 @@ func (s *Store) Admit(ctx context.Context, e *pb.FlightCompletionEvidence) (*pb.
 // Pending returns a bounded page without removing delivery obligations.
 //
 // Parameters: ctx bounds reads; limit must be between 1 and 200 inclusive.
-// Returns: pending immutable events in admission order, or a limit, storage, or
-// decoding error. Callers must explicitly acknowledge successful durable delivery.
+// Returns: pending immutable events in durable least-recently-offered order, or a limit, storage, or
+// decoding error. Offering a page only rotates its scheduling priority; failed
+// admissions remain pending and will be offered again. Callers must explicitly
+// acknowledge successful durable delivery.
 func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionEvidence, error) {
 	if limit < 1 || limit > 200 {
 		return nil, fmt.Errorf("limit must be 1..200")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM flight_completions WHERE delivered=0 ORDER BY rowid LIMIT ?`, limit)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT e.payload FROM flight_completions e LEFT JOIN completion_delivery_rotation r ON r.event_id=e.event_id WHERE e.delivered=0 ORDER BY COALESCE(r.turn,0),e.rowid LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +125,25 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionE
 		}
 		result = append(result, e)
 	}
-	return result, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	var turn int64
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(turn),0)+1 FROM completion_delivery_rotation`).Scan(&turn); err != nil {
+		return nil, err
+	}
+	for _, e := range result {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO completion_delivery_rotation(event_id,turn) VALUES(?,?) ON CONFLICT(event_id) DO UPDATE SET turn=excluded.turn`, e.EventId, turn); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // Acknowledge removes the pending obligation only for an exact admitted digest.

@@ -456,8 +456,12 @@ func (r *Relay) Start(ctx context.Context) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 
+	metricsAddress := r.config.MetricsAddress
+	if metricsAddress == "" {
+		metricsAddress = ":2112"
+	}
 	metricsServer := &http.Server{
-		Addr:    ":2112",
+		Addr:    metricsAddress,
 		Handler: nil,
 	}
 

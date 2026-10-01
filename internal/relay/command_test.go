@@ -24,7 +24,7 @@ func TestDurableCommandRequiresCapabilityAndAgentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{RelayID: "relay-test", AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
 	now := time.Now()
 	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
 	c.CommandDigest, err = commanddigest.Digest(c)
@@ -88,7 +88,7 @@ func TestStreamingCommandKeepsOneDeliveryThroughProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{RelayID: "relay-test", AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
 	now := time.Now()
 	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
 	c.CommandDigest, err = commanddigest.Digest(c)
@@ -209,5 +209,71 @@ func TestRTLMissionRequiresExplicitCapability(t *testing.T) {
 	session.executionCapabilities = nil
 	if err := requireMissionCapabilities(session, plan); err != nil {
 		t.Fatalf("legacy LAND compatibility broken: %v", err)
+	}
+}
+
+func TestOldExchangeCleanupPreservesReplacementWaiter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stream := &mockTelemetryStream{ctx: ctx, sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	binding := &telemetryStreamBinding{stream: stream}
+	session := &DroneSession{agentID: "agent", SessionID: "session", stream: binding, operationGate: makeOperationGate()}
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{RelayID: "relay-test", AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	now := time.Now()
+	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
+	c.CommandDigest, err = commanddigest.Digest(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &relayv1.ExchangeCommandRequest{AgentId: "agent", Command: c, AttemptId: "command/attempt-1"}
+	session.executionCapabilities = []string{"mavlink_command_v1"}
+
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	oldDone := make(chan error, 1)
+	go func() {
+		oldDone <- r.exchangeCommand(ctx, req, true, func(*agentv1.CommandEvidence) error {
+			close(entered)
+			<-unblock
+			return status.Error(codes.Canceled, "old caller disconnected")
+		})
+	}()
+	select {
+	case <-stream.sentAckChan:
+	case <-ctx.Done():
+		t.Fatal("old delivery missing")
+	}
+	session.handleC2Evidence(binding, &agentv1.CommandEvidence{CommandId: c.CommandId, CommandDigest: c.CommandDigest})
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("old emission did not block")
+	}
+	session.abortPendingCommandsForStreamReplacement()
+	replacement := &telemetryStreamBinding{stream: stream}
+	session.sessionMu.Lock()
+	session.stream = replacement
+	session.sessionMu.Unlock()
+	newDone := make(chan error, 1)
+	go func() { _, err := r.ExchangeCommand(ctx, req); newDone <- err }()
+	select {
+	case <-stream.sentAckChan:
+	case <-ctx.Done():
+		t.Fatal("retry delivery missing")
+	}
+	close(unblock)
+	<-oldDone
+	session.handleC2Evidence(replacement, &agentv1.CommandEvidence{CommandId: c.CommandId, CommandDigest: c.CommandDigest})
+	select {
+	case err := <-newDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("old cleanup deleted replacement evidence waiter")
 	}
 }

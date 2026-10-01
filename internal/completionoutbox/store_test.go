@@ -4,6 +4,7 @@ package completionoutbox
 
 import (
 	"context"
+	"fmt"
 	pb "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	"google.golang.org/protobuf/proto"
 	"path/filepath"
@@ -66,5 +67,56 @@ func TestCompletionDeliverySurvivesRestartAndRetainsIdentity(t *testing.T) {
 	changed.Outcome = "ended_early"
 	if _, err = s.Admit(ctx, changed); err == nil {
 		t.Fatal("changed delivered event accepted")
+	}
+}
+
+func TestRejectsNonDurableSQLitePaths(t *testing.T) {
+	for _, path := range []string{"", ":memory:", "file::memory:?cache=shared", "file:completion?mode=memory&cache=shared", "file:/tmp/completion?mode=memory"} {
+		t.Run(path, func(t *testing.T) {
+			s, err := Open(path)
+			if err == nil {
+				_ = s.Close()
+				t.Fatal("nonpersistent path accepted")
+			}
+		})
+	}
+}
+
+func TestPendingRotatesPastUnadmittedPageAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rotation.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 101; i++ {
+		raw, err := proto.Marshal(&pb.FlightCompletionEvidence{EventId: fmt.Sprint(i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO flight_completions(event_id,digest,payload) VALUES(?,?,?)`, fmt.Sprint(i), "digest", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := s.Pending(ctx, 100)
+	if err != nil || len(page) != 100 {
+		t.Fatalf("first page=%d err=%v", len(page), err)
+	}
+	// Simulate API rejecting all 100: no acknowledgement is issued.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	page, err = s.Pending(ctx, 100)
+	if err != nil || len(page) != 100 || page[0].EventId != "100" {
+		t.Fatalf("later valid event starved: %v %v", page, err)
+	}
+	var pending int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM flight_completions WHERE delivered=0`).Scan(&pending); err != nil || pending != 101 {
+		t.Fatalf("evidence lost: %d %v", pending, err)
 	}
 }

@@ -24,6 +24,7 @@ import (
 
 // Config represents the application configuration
 type Config struct {
+	MetricsAddress       string            `yaml:"metrics_address"`
 	CompletionOutboxPath string            `yaml:"completion_outbox_path"`
 	Sinks                SinksConfig       `yaml:"sinks"`
 	Registry             RegistryConfig    `yaml:"registry"`
