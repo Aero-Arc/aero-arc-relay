@@ -187,6 +187,7 @@ type DroneSession struct {
 	aircraftCommands      map[string]*aircraftCommandState
 	missionDeployments    map[string]*missionDeploymentState
 	c2Pending             map[string]chan *agentv1.CommandEvidence
+	durableCommandIDs     map[string]time.Time
 	executionCapabilities []string
 	// controlStreamMu keeps command writes and command evidence on one active
 	// telemetry-stream binding. Same-session stream replacement takes the write
