@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCompletionAcknowledgementSeparatesReceiptAndStorageErrors(t *testing.T) {
@@ -33,5 +34,26 @@ func TestCompletionAcknowledgementSeparatesReceiptAndStorageErrors(t *testing.T)
 	}
 	if _, err = r.AckFlightCompletions(context.Background(), req); status.Code(err) != codes.Unavailable {
 		t.Fatalf("storage failure reported permanent: %v", err)
+	}
+}
+
+func TestCompletionListPreservesContextStatus(t *testing.T) {
+	store, err := completionoutbox.Open(filepath.Join(t.TempDir(), "outbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	r := &Relay{completionOutbox: store, controlAuthorizer: func(context.Context) error { return nil }}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	for _, tc := range []struct {
+		ctx  context.Context
+		code codes.Code
+	}{{canceled, codes.Canceled}, {expired, codes.DeadlineExceeded}} {
+		if _, err := r.ListFlightCompletions(tc.ctx, &rpc.ListFlightCompletionsRequest{}); status.Code(err) != tc.code {
+			t.Fatalf("got %v want %v", err, tc.code)
+		}
 	}
 }

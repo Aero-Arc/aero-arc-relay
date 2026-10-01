@@ -54,7 +54,8 @@ func (r *Relay) admitFlightCompletion(ctx context.Context, agentID string, sessi
 // Parameters: ctx carries control authorization and bounds the database read;
 // req selects at most 200 events, with zero selecting the default page of 100.
 // Returns: immutable pending events without consuming them, or an authorization,
-// InvalidArgument limit, or Unavailable storage/configuration error.
+// InvalidArgument limit, Canceled/DeadlineExceeded context, or Unavailable
+// storage/configuration error.
 func (r *Relay) ListFlightCompletions(ctx context.Context, req *rpc.ListFlightCompletionsRequest) (*rpc.ListFlightCompletionsResponse, error) {
 	if err := r.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -71,6 +72,9 @@ func (r *Relay) ListFlightCompletions(ctx context.Context, req *rpc.ListFlightCo
 	}
 	events, err := r.completionOutbox.Pending(ctx, limit)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
 		return nil, status.Error(codes.Unavailable, err.Error())
 	}
 	return &rpc.ListFlightCompletionsResponse{Events: events}, nil
