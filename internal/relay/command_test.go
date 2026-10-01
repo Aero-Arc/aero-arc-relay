@@ -352,3 +352,19 @@ func TestExecuteCommandReturnsDeadlineBeforeBlockedProgressCleanup(t *testing.T)
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestDurableIdentityRemainsAfterEvidenceWaiterLeaves(t *testing.T) {
+	now := time.Now()
+	s := &DroneSession{durableCommandIDs: map[string]time.Time{"command": now.Add(operationCommandRetention)}}
+	for _, kind := range []retainedCommandKind{retainedOperationCommand, retainedAircraftCommand, retainedMissionDeployment} {
+		if err := prepareCommandIDAdmissionLocked(s, "command", kind, now); status.Code(err) != codes.AlreadyExists {
+			t.Fatalf("retained durable identity admitted legacy kind %d: %v", kind, err)
+		}
+	}
+	if err := prepareCommandIDAdmissionLocked(s, "command", retainedDurableCommand, now); err != nil {
+		t.Fatalf("exact durable recovery blocked: %v", err)
+	}
+	if err := prepareCommandIDAdmissionLocked(s, "command", retainedAircraftCommand, now.Add(operationCommandRetention+time.Second)); err != nil {
+		t.Fatalf("expired retention not released: %v", err)
+	}
+}

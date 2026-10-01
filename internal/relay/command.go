@@ -161,6 +161,16 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 		session.ownershipMu.RUnlock()
 		return status.Error(codes.Aborted, "command evidence stream already active")
 	}
+	if session.durableCommandIDs == nil {
+		session.durableCommandIDs = map[string]time.Time{}
+	}
+	if session.durableCommandIDs[c.CommandId].IsZero() && len(session.durableCommandIDs) >= maxOperationCommands {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		session.ownershipMu.RUnlock()
+		return status.Error(codes.ResourceExhausted, "durable command identity retention is full")
+	}
+	session.durableCommandIDs[c.CommandId] = time.Now().Add(operationCommandRetention)
 	session.c2Pending[c.CommandId] = ch
 	session.pendingMu.Unlock()
 	defer func() {
