@@ -124,3 +124,30 @@ func TestPendingRotatesPastUnadmittedPageAcrossRestart(t *testing.T) {
 		t.Fatalf("evidence lost: %d %v", pending, err)
 	}
 }
+
+func TestPendingStillDeliversWhenRotationCannotWrite(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "outbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	raw, _ := proto.Marshal(&pb.FlightCompletionEvidence{EventId: "event"})
+	if _, err = s.db.Exec(`INSERT INTO flight_completions(event_id,digest,payload) VALUES('event','digest',?)`, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec(`CREATE TRIGGER reject_rotation BEFORE INSERT ON completion_delivery_rotation BEGIN SELECT RAISE(ABORT,'rotation storage unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.Pending(ctx, 100)
+	if err != nil || len(page) != 1 || page[0].EventId != "event" {
+		t.Fatalf("readable evidence blocked: %v %v", page, err)
+	}
+	if err = s.Acknowledge(ctx, &pb.FlightCompletionReceipt{EventId: "event", PayloadSha256: "digest"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = s.Pending(ctx, 100)
+	if err != nil || len(page) != 0 {
+		t.Fatalf("acknowledged evidence still pending: %v %v", page, err)
+	}
+}

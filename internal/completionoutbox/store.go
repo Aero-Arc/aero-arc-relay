@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,15 +143,18 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]*pb.FlightCompletionE
 	}
 	var turn int64
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(turn),0)+1 FROM completion_delivery_rotation`).Scan(&turn); err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "completion delivery rotation not persisted", "error", err)
+		return result, nil
 	}
 	for _, e := range result {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO completion_delivery_rotation(event_id,turn) VALUES(?,?) ON CONFLICT(event_id) DO UPDATE SET turn=excluded.turn`, e.EventId, turn); err != nil {
-			return nil, err
+			slog.WarnContext(ctx, "completion delivery rotation not persisted", "error", err)
+			return result, nil
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "completion delivery rotation not persisted", "error", err)
+		return result, nil
 	}
 	return result, nil
 }
