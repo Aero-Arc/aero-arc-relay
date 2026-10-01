@@ -10,6 +10,7 @@ import (
 	agentv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/agent/v1"
 	relayv1 "github.com/aero-arc/aero-arc-protos/gen/go/aeroarc/relay/v1"
 	"github.com/makinje/aero-arc-relay/internal/config"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -275,5 +276,96 @@ func TestOldExchangeCleanupPreservesReplacementWaiter(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("old cleanup deleted replacement evidence waiter")
+	}
+}
+
+func TestRTLMissionRequiresExplicitCapability(t *testing.T) {
+	plan := &agentv1.MissionPlan{SchemaVersion: 1, Items: []*agentv1.MissionItem{{Command: 20}}}
+	session := &DroneSession{executionCapabilities: []string{"mavlink_command_v1", "mission_upload_v1"}}
+	if err := requireMissionCapabilities(session, plan); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("legacy capability accepted RTL: %v", err)
+	}
+	session.executionCapabilities = append(session.executionCapabilities, "mission_rtl_v1")
+	if err := requireMissionCapabilities(session, plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Items[0].Command = 21
+	session.executionCapabilities = nil
+	if err := requireMissionCapabilities(session, plan); err != nil {
+		t.Fatalf("legacy LAND compatibility broken: %v", err)
+	}
+}
+
+type blockedCommandProgress struct {
+	grpc.ServerStream
+	ctx     context.Context
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockedCommandProgress) Context() context.Context { return s.ctx }
+func (s *blockedCommandProgress) Send(*relayv1.ExecuteCommandResponse) error {
+	close(s.started)
+	<-s.release
+	return context.Canceled
+}
+func TestExecuteCommandReturnsDeadlineBeforeBlockedProgressCleanup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	stream := &mockTelemetryStream{ctx: context.Background(), sentAckChan: make(chan *agentv1.RelayStreamMessage, 1)}
+	binding := &telemetryStreamBinding{stream: stream}
+	session := &DroneSession{agentID: "agent", SessionID: "session", stream: binding, operationGate: makeOperationGate()}
+	authenticator, err := newAgentTokenAuthenticator(map[string]string{"agent": testAgentToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Relay{agentAuthenticator: authenticator, controlAuthorizer: func(context.Context) error { return nil }, grpcSessions: map[string]*DroneSession{"agent": session}, config: &config.Config{Telemetry: config.TelemetryConfig{RelayID: "relay-test", AgentMappings: map[string]config.AgentMapping{"agent": {OperatorID: "operator", AircraftID: "aircraft"}}}}}
+	now := time.Now()
+	c := &agentv1.DurableCommand{CommandId: "command", OperatorId: "operator", AircraftId: "aircraft", AgentId: "agent", Context: &agentv1.OperationContext{AircraftId: "aircraft", FlightId: "flight", IntentId: "intent", IntentVersion: 1}, Definition: "ARM", DefinitionVersion: 1, Capability: "mavlink_command_v1", IssuedAtUnixMs: now.UnixMilli(), ExpiresAtUnixMs: now.Add(time.Second).UnixMilli(), RecoveryPolicy: "no_repeat_effect_v1", Execution: &agentv1.DurableCommand_Mavlink{Mavlink: &agentv1.MavlinkExecution{Command: 400, Parameters: []float32{1, 0, 0, 0, 0, 0, 0}, Observation: "armed"}}}
+	c.CommandDigest, err = commanddigest.Digest(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &relayv1.ExchangeCommandRequest{AgentId: "agent", Command: c, AttemptId: "command/attempt-1"}
+	session.executionCapabilities = []string{"mavlink_command_v1"}
+	progress := &blockedCommandProgress{ctx: ctx, started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ExecuteCommand(&relayv1.ExecuteCommandRequest{AgentId: req.AgentId, Command: req.Command, AttemptId: req.AttemptId}, progress)
+	}()
+	select {
+	case <-stream.sentAckChan:
+	case <-time.After(time.Second):
+		t.Fatal("command not delivered")
+	}
+	session.handleC2Evidence(binding, &agentv1.CommandEvidence{CommandId: c.CommandId, CommandDigest: c.CommandDigest, Events: []*agentv1.CommandEvent{{EventId: "ack", Stage: "acknowledged"}}})
+	select {
+	case <-progress.started:
+	case <-time.After(time.Second):
+		t.Fatal("progress not sent")
+	}
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("deadline result: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked progress prevented RPC return")
+	}
+	// gRPC cancels Send after handler return. Model that transport wakeup and
+	// verify that the worker removes its waiter, allowing exact recovery.
+	close(progress.release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.pendingMu.Lock()
+		pending := len(session.c2Pending)
+		session.pendingMu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter survived transport drainage")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
