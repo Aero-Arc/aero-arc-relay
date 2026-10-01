@@ -248,6 +248,7 @@ type missionAdmission struct {
 }
 
 type telemetryStreamBinding struct {
+	abortWrite context.CancelFunc // immutable; returns the owning RPC to cancel a blocked Send
 	stream     agentv1.AgentGateway_TelemetryStreamServer
 	generation uint64
 	closed     bool

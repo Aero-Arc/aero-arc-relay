@@ -19,6 +19,10 @@ import (
 )
 
 func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer) (*DroneSession, *telemetryStreamBinding, *telemetryStreamBinding, error) {
+	return r.updateStreamWithAbort(agentID, sessionID, stream, nil)
+}
+
+func (r *Relay) updateStreamWithAbort(agentID, sessionID string, stream agentv1.AgentGateway_TelemetryStreamServer, abortWrite context.CancelFunc) (*DroneSession, *telemetryStreamBinding, *telemetryStreamBinding, error) {
 	r.sessionsMu.RLock()
 	session, ok := r.grpcSessions[agentID]
 	valid := ok && session.SessionID == sessionID && !session.retired
@@ -47,6 +51,7 @@ func (r *Relay) updateStream(agentID, sessionID string, stream agentv1.AgentGate
 	session.streamGeneration++
 	binding := &telemetryStreamBinding{
 		stream:     stream,
+		abortWrite: abortWrite,
 		generation: session.streamGeneration,
 	}
 	if r.registryReporter == nil {
