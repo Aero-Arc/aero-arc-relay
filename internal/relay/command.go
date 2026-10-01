@@ -146,7 +146,7 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	session.controlStreamMu.RLock()
 	ch := make(chan *agentv1.CommandEvidence, 1)
 	session.pendingMu.Lock()
-	if err := prepareCommandIDAdmissionLocked(session, c.CommandId, retainedDurableCommand, time.Now()); err != nil {
+	if err := retainDurableCommandIDLocked(session, c.CommandId, c.CommandDigest, time.Now()); err != nil {
 		session.pendingMu.Unlock()
 		session.controlStreamMu.RUnlock()
 		session.ownershipMu.RUnlock()
@@ -161,16 +161,6 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 		session.ownershipMu.RUnlock()
 		return status.Error(codes.Aborted, "command evidence stream already active")
 	}
-	if session.durableCommandIDs == nil {
-		session.durableCommandIDs = map[string]time.Time{}
-	}
-	if session.durableCommandIDs[c.CommandId].IsZero() && len(session.durableCommandIDs) >= maxOperationCommands {
-		session.pendingMu.Unlock()
-		session.controlStreamMu.RUnlock()
-		session.ownershipMu.RUnlock()
-		return status.Error(codes.ResourceExhausted, "durable command identity retention is full")
-	}
-	session.durableCommandIDs[c.CommandId] = time.Now().Add(operationCommandRetention)
 	session.c2Pending[c.CommandId] = ch
 	session.pendingMu.Unlock()
 	defer func() {
@@ -249,5 +239,28 @@ func requireMissionCapabilities(session *DroneSession, plan *agentv1.MissionPlan
 			return status.Error(codes.FailedPrecondition, "Agent must advertise mission_rtl_v1 before receiving an RTL mission")
 		}
 	}
+	return nil
+}
+
+type durableCommandIdentity struct {
+	digest string
+	until  time.Time
+}
+
+func retainDurableCommandIDLocked(session *DroneSession, id, digest string, now time.Time) error {
+	if err := prepareCommandIDAdmissionLocked(session, id, retainedDurableCommand, now); err != nil {
+		return err
+	}
+	if session.durableCommandIDs == nil {
+		session.durableCommandIDs = map[string]*durableCommandIdentity{}
+	}
+	previous := session.durableCommandIDs[id]
+	if previous != nil && previous.digest != digest {
+		return status.Error(codes.AlreadyExists, "durable command ID has a different digest")
+	}
+	if previous == nil && len(session.durableCommandIDs) >= maxOperationCommands {
+		return status.Error(codes.ResourceExhausted, "durable command identity retention is full")
+	}
+	session.durableCommandIDs[id] = &durableCommandIdentity{digest: digest, until: now.Add(operationCommandRetention)}
 	return nil
 }
