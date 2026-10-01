@@ -1,5 +1,9 @@
-# Persistent local disk; completion receipts follow a durable SQLite commit.
-completion_outbox_path: "./data/flight-completions.db"
+# Completion is disabled in this minimal telemetry example. To enable it, set a
+# persistent path AND agent_auth.tokens, control_auth.enabled with valid mTLS,
+# and telemetry.agent_mappings[agent-id].aircraft_id. See docs/flight-completion.md.
+completion_outbox_path: ""
+agent_auth:
+  tokens: {}
 registry:
   enabled: false
   address: "localhost:50051"
