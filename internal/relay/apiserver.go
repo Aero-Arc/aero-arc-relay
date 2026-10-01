@@ -39,15 +39,22 @@ const (
 	retainedOperationCommand retainedCommandKind = iota
 	retainedAircraftCommand
 	retainedMissionDeployment
+	retainedDurableCommand
 )
 
 func prepareCommandIDAdmissionLocked(session *DroneSession, commandID string, kind retainedCommandKind, now time.Time) error {
 	expireOperationCommandsLocked(session, now)
 	expireAircraftCommandsLocked(session, now)
 	expireMissionDeploymentsLocked(session, now)
+	for id, identity := range session.durableCommandIDs {
+		if !now.Before(identity.until) && session.c2Pending[id] == nil {
+			delete(session.durableCommandIDs, id)
+		}
+	}
 	conflict := kind != retainedOperationCommand && session.operationCommands[commandID] != nil ||
 		kind != retainedAircraftCommand && session.aircraftCommands[commandID] != nil ||
-		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil
+		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil ||
+		kind != retainedDurableCommand && (session.c2Pending[commandID] != nil || session.durableCommandIDs[commandID] != nil)
 	if conflict {
 		return status.Error(codes.AlreadyExists, "command ID was already used by a different command kind")
 	}
@@ -759,13 +766,14 @@ func droneStatus(session *DroneSession) *pb.DroneStatus {
 	session.sessionMu.RLock()
 	defer session.sessionMu.RUnlock()
 	return &pb.DroneStatus{
-		DroneId:             session.agentID,
-		SessionId:           session.SessionID,
-		AgentId:             session.agentID,
-		ConnectedAtUnixNs:   session.ConnectedAt.UnixNano(),
-		LastHeartbeatUnixNs: session.LastHeartbeat.UnixNano(),
-		FlightId:            session.FlightID,
-		IntentId:            session.IntentID,
-		IntentVersion:       session.IntentVersion,
+		ExecutionCapabilities: append([]string(nil), session.executionCapabilities...),
+		DroneId:               session.agentID,
+		SessionId:             session.SessionID,
+		AgentId:               session.agentID,
+		ConnectedAtUnixNs:     session.ConnectedAt.UnixNano(),
+		LastHeartbeatUnixNs:   session.LastHeartbeat.UnixNano(),
+		FlightId:              session.FlightID,
+		IntentId:              session.IntentID,
+		IntentVersion:         session.IntentVersion,
 	}
 }

@@ -75,6 +75,7 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		return nil, status.Errorf(codes.Internal, "generate session ID: %v", err)
 	}
 	newSession := &DroneSession{
+		executionCapabilities:        append([]string(nil), req.GetExecutionCapabilities()...),
 		agentID:                      agentID,
 		SessionID:                    sessionID,
 		ConnectedAt:                  time.Now(),
@@ -178,8 +179,26 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 // telemetry routing. Each result is correlated by command ID only against the
 // pending request on this exact active binding; evidence from a superseded
 // binding is ignored. Cleanup removes only this binding, so a superseding stream
-// remains active.
+// remains active. A command write that exceeds its delivery deadline terminates
+// this RPC to cancel the transport write. Session cleanup follows write drainage;
+// replacement cannot overtake a write still capable of reaching the old stream.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
+	// Returning the RPC handler is what cancels gRPC's transport Send/Recv.
+	// Cleanup runs in the worker: waiting for its ownership lease here would
+	// deadlock with a command writer that must drain Send before releasing it.
+	abort, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.telemetryStream(stream, cancel) }()
+	select {
+	case err := <-done:
+		return err
+	case <-abort.Done():
+		return status.Error(codes.DeadlineExceeded, "Agent stream write exceeded command deadline")
+	}
+}
+
+func (r *Relay) telemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer, abortWrite context.CancelFunc) error {
 	ctx := stream.Context()
 
 	meta, ok := metadata.FromIncomingContext(ctx)
@@ -204,7 +223,7 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 	}
 	sessionID := strings.TrimSpace(sessionIDs[0])
 
-	streamSession, streamBinding, previousStream, err := r.updateStream(agentID, sessionID, stream)
+	streamSession, streamBinding, previousStream, err := r.updateStreamWithAbort(agentID, sessionID, stream, abortWrite)
 	if err != nil {
 		return status.Error(codes.Unauthenticated, "telemetry stream is not bound to an active session")
 	}
@@ -239,6 +258,10 @@ func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			return err
 		}
 
+		if evidence := message.GetCommandEvidence(); evidence != nil {
+			streamSession.handleC2Evidence(streamBinding, evidence)
+			continue
+		}
 		if commandAck := message.GetOperationContextCommandAck(); commandAck != nil {
 			streamSession.handleOperationContextCommandAckFrom(streamBinding, commandAck)
 			continue
@@ -395,9 +418,28 @@ func sendToSessionWithWritePolicyAndCommit(ctx context.Context, session *DroneSe
 				binding.sendMu.Unlock()
 				return false, status.Error(codes.Canceled, "stream delivery state ended before effect-start commit")
 			}
-			err := binding.stream.Send(message)
-			binding.sendMu.Unlock()
-			return true, err
+			if binding.abortWrite == nil {
+				// Direct bindings supplied by tests/embedders have no RPC handler
+				// to terminate. Preserve the write fence until their Send returns.
+				err := binding.stream.Send(message)
+				binding.sendMu.Unlock()
+				return true, err
+			}
+			sent := make(chan error, 1)
+			go func() { sent <- binding.stream.Send(message) }()
+			select {
+			case err := <-sent:
+				binding.sendMu.Unlock()
+				return true, err
+			case <-ctx.Done():
+				binding.abortWrite()
+				// The handler returns independently of cleanup, cancelling the
+				// real transport. Drain before unlocking: no stale write may
+				// survive publication of a replacement session or stream.
+				<-sent
+				binding.sendMu.Unlock()
+				return true, status.FromContextError(ctx.Err()).Err()
+			}
 		}
 		sent := make(chan error, 1)
 		go func() {
@@ -581,6 +623,7 @@ func (session *DroneSession) abortPendingCommandsForStreamReplacement() {
 	session.pendingMu.Lock()
 	defer session.pendingMu.Unlock()
 	now := time.Now()
+	session.abortC2PendingLocked()
 	contextOutcomeUncertain := false
 	for commandID, state := range session.operationCommands {
 		if state.completed {
@@ -681,7 +724,20 @@ func (session *DroneSession) releaseEmptyContextReconciliation(commandID string)
 	}
 }
 
+func (session *DroneSession) abortC2PendingLocked() {
+	for id, ch := range session.c2Pending {
+		// Discard buffered evidence from the lost generation before waking callers.
+		select {
+		case <-ch:
+		default:
+		}
+		close(ch)
+		delete(session.c2Pending, id)
+	}
+}
+
 func (session *DroneSession) abortPendingCommandsLocked(now time.Time) {
+	session.abortC2PendingLocked()
 	for commandID, state := range session.operationCommands {
 		if state.completed {
 			continue

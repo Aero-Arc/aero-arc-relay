@@ -186,6 +186,9 @@ type DroneSession struct {
 	operationGate         chan struct{}
 	aircraftCommands      map[string]*aircraftCommandState
 	missionDeployments    map[string]*missionDeploymentState
+	c2Pending             map[string]chan *agentv1.CommandEvidence
+	durableCommandIDs     map[string]*durableCommandIdentity
+	executionCapabilities []string
 	// controlStreamMu keeps command writes and command evidence on one active
 	// telemetry-stream binding. Same-session stream replacement takes the write
 	// side only for the binding swap, not for Registry publication or telemetry.
@@ -244,6 +247,7 @@ type missionAdmission struct {
 }
 
 type telemetryStreamBinding struct {
+	abortWrite context.CancelFunc // immutable; returns the owning RPC to cancel a blocked Send
 	stream     agentv1.AgentGateway_TelemetryStreamServer
 	generation uint64
 	closed     bool
