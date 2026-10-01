@@ -39,6 +39,7 @@ const (
 	retainedOperationCommand retainedCommandKind = iota
 	retainedAircraftCommand
 	retainedMissionDeployment
+	retainedDurableCommand
 )
 
 func prepareCommandIDAdmissionLocked(session *DroneSession, commandID string, kind retainedCommandKind, now time.Time) error {
@@ -47,7 +48,8 @@ func prepareCommandIDAdmissionLocked(session *DroneSession, commandID string, ki
 	expireMissionDeploymentsLocked(session, now)
 	conflict := kind != retainedOperationCommand && session.operationCommands[commandID] != nil ||
 		kind != retainedAircraftCommand && session.aircraftCommands[commandID] != nil ||
-		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil
+		kind != retainedMissionDeployment && session.missionDeployments[commandID] != nil ||
+		kind != retainedDurableCommand && session.c2Pending[commandID] != nil
 	if conflict {
 		return status.Error(codes.AlreadyExists, "command ID was already used by a different command kind")
 	}

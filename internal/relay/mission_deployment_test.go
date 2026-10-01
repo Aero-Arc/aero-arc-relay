@@ -921,6 +921,12 @@ func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
 		retained retainedCommandKind
 		admit    retainedCommandKind
 	}{
+		{name: "durable after context", retained: retainedOperationCommand, admit: retainedDurableCommand},
+		{name: "durable after aircraft", retained: retainedAircraftCommand, admit: retainedDurableCommand},
+		{name: "durable after mission", retained: retainedMissionDeployment, admit: retainedDurableCommand},
+		{name: "context after durable", retained: retainedDurableCommand, admit: retainedOperationCommand},
+		{name: "aircraft after durable", retained: retainedDurableCommand, admit: retainedAircraftCommand},
+		{name: "mission after durable", retained: retainedDurableCommand, admit: retainedMissionDeployment},
 		{name: "mission after operation context", retained: retainedOperationCommand, admit: retainedMissionDeployment},
 		{name: "mission after aircraft", retained: retainedAircraftCommand, admit: retainedMissionDeployment},
 		{name: "aircraft after operation context", retained: retainedOperationCommand, admit: retainedAircraftCommand},
@@ -932,6 +938,8 @@ func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			session := &DroneSession{}
 			switch tt.retained {
+			case retainedDurableCommand:
+				session.c2Pending = map[string]chan *agentv1.CommandEvidence{commandID: make(chan *agentv1.CommandEvidence)}
 			case retainedOperationCommand:
 				session.operationCommands = map[string]*operationCommandState{commandID: {}}
 			case retainedAircraftCommand:
@@ -942,6 +950,8 @@ func TestCommandIDCannotBeReusedAcrossCommandKinds(t *testing.T) {
 
 			var err error
 			switch tt.admit {
+			case retainedDurableCommand:
+				err = prepareCommandIDAdmissionLocked(session, commandID, retainedDurableCommand, time.Now())
 			case retainedOperationCommand:
 				_, _, err = beginOperationCommand(session, commandID, "new-operation-fingerprint", nil)
 			case retainedAircraftCommand:

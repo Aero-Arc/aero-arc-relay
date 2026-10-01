@@ -146,6 +146,12 @@ func (s *Relay) exchangeCommand(ctx context.Context, req *pb.ExchangeCommandRequ
 	session.controlStreamMu.RLock()
 	ch := make(chan *agentv1.CommandEvidence, 1)
 	session.pendingMu.Lock()
+	if err := prepareCommandIDAdmissionLocked(session, c.CommandId, retainedDurableCommand, time.Now()); err != nil {
+		session.pendingMu.Unlock()
+		session.controlStreamMu.RUnlock()
+		session.ownershipMu.RUnlock()
+		return err
+	}
 	if session.c2Pending == nil {
 		session.c2Pending = map[string]chan *agentv1.CommandEvidence{}
 	}
