@@ -52,7 +52,10 @@ import (
 //
 // Returns:
 //   - response: contains the authenticated Agent ID, newly generated session
-//     ID, and advertised telemetry in-flight limit.
+//     ID, and advertised telemetry in-flight limit. DurableFlightCompletion is
+//     true only with a durable completion outbox, Agent authentication, control
+//     authentication, and a nonempty aircraft mapping for this Agent. Otherwise
+//     Agents retain their completion evidence for a capable Relay.
 //   - error: reports a missing Agent ID, failed authentication, or failure to
 //     generate a cryptographically random session ID. Cancellation while
 //     waiting to replace an owned session preserves that live session and
@@ -149,10 +152,16 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 		break
 	}
 
+	completionMapped := false
+	if r.config != nil {
+		mapping, ok := r.config.Telemetry.AgentMappings[agentID]
+		completionMapped = ok && mapping.AircraftID != ""
+	}
 	return &agentv1.RegisterResponse{
-		AgentId:     agentID,
-		SessionId:   sessionID,
-		MaxInflight: 100, // Example default
+		AgentId:                 agentID,
+		SessionId:               sessionID,
+		MaxInflight:             100, // Example default
+		DurableFlightCompletion: r.completionOutbox != nil && r.agentAuthenticator != nil && r.controlAuthorizer != nil && completionMapped,
 	}, nil
 }
 
@@ -180,7 +189,16 @@ func (r *Relay) Register(ctx context.Context, req *agentv1.RegisterRequest) (*ag
 // pending request on this exact active binding; evidence from a superseded
 // binding is ignored. Cleanup removes only this binding, so a superseding stream
 // remains active. A command write that exceeds its delivery deadline terminates
-// this RPC to cancel the transport write. Session cleanup follows write drainage;
+// this RPC to cancel the transport write. Flight-completion evidence is admitted
+// to the durable inbox before an exact ID/digest receipt is sent. Historical
+// evidence is accepted only for this authenticated Agent's configured aircraft
+// on the current stream binding; replay preserves event identity and timestamps.
+// Producer/aircraft mapping failures return PermissionDenied; replaced binding
+// returns Aborted. Evidence validation returns InvalidArgument, identity
+// conflicts AlreadyExists, and storage failures Unavailable.
+// Receipt-send failures propagate their transport status and terminate the stream;
+// admission remains durable and the Agent retries the same event until receipted.
+// Session cleanup follows write drainage;
 // replacement cannot overtake a write still capable of reaching the old stream.
 func (r *Relay) TelemetryStream(stream agentv1.AgentGateway_TelemetryStreamServer) error {
 	// Returning the RPC handler is what cancels gRPC's transport Send/Recv.
@@ -258,6 +276,12 @@ func (r *Relay) telemetryStream(stream agentv1.AgentGateway_TelemetryStreamServe
 			return err
 		}
 
+		if completion := message.GetFlightCompletionEvidence(); completion != nil {
+			if err := r.admitFlightCompletion(ctx, agentID, streamSession, streamBinding, completion); err != nil {
+				return err
+			}
+			continue
+		}
 		if evidence := message.GetCommandEvidence(); evidence != nil {
 			streamSession.handleC2Evidence(streamBinding, evidence)
 			continue

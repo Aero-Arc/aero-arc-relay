@@ -1397,3 +1397,70 @@ func TestValidateMissionDeploymentSuccessEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployMissionRTLCapabilityAndValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		capable bool
+		mutate  func(*agentv1.MissionPlan)
+		want    codes.Code
+	}{
+		{name: "capable", capable: true},
+		{name: "old-agent", want: codes.FailedPrecondition},
+		{name: "coordinates", capable: true, mutate: func(p *agentv1.MissionPlan) { p.Items[2].LatitudeE7 = 1 }, want: codes.InvalidArgument},
+		{name: "altitude", capable: true, mutate: func(p *agentv1.MissionPlan) { p.Items[2].AltitudeM = 10 }, want: codes.InvalidArgument},
+		{name: "params", capable: true, mutate: func(p *agentv1.MissionPlan) { p.Items[2].Param4 = 1 }, want: codes.InvalidArgument},
+		{name: "nonterminal", capable: true, mutate: func(p *agentv1.MissionPlan) {
+			p.Items = append(p.Items, &agentv1.MissionItem{Sequence: 3, Command: 16, Autocontinue: true})
+		}, want: codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			relay, session, stream := testMissionRelay(t)
+			if tc.capable {
+				session.executionCapabilities = []string{"mission_rtl_v1"}
+			}
+			command := testMissionCommand(t)
+			command.Plan.Items[2] = &agentv1.MissionItem{Sequence: 2, Command: uint32(common.MAV_CMD_NAV_RETURN_TO_LAUNCH), Autocontinue: true}
+			if tc.mutate != nil {
+				tc.mutate(command.Plan)
+			}
+			digest, err := missionPlanDigest(command.Plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			command.Binding.MissionDigest = digest
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, err := relay.DeployMission(ctx, &relayv1.DeployMissionRequest{AgentId: "agent-1", Command: command})
+				result <- err
+			}()
+			if tc.want != codes.OK {
+				if err := <-result; status.Code(err) != tc.want {
+					t.Fatalf("DeployMission=%v want %v", err, tc.want)
+				}
+				select {
+				case msg := <-stream.sentAckChan:
+					t.Fatalf("invalid/incapable mission dispatched: %v", msg)
+				default:
+				}
+				return
+			}
+			select {
+			case msg := <-stream.sentAckChan:
+				if !proto.Equal(msg.GetDeployMission(), command) {
+					t.Fatal("RTL changed during delivery")
+				}
+				session.handleMissionDeploymentResult(testAppliedMissionResult(command))
+			case err := <-result:
+				t.Fatalf("capable RTL rejected: %v", err)
+			case <-ctx.Done():
+				t.Fatal("RTL was not dispatched")
+			}
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

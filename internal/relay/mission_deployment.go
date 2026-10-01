@@ -41,6 +41,7 @@ func isSupportedMissionFrame(value uint32) bool {
 func isSupportedMissionCommand(value uint32) bool {
 	switch value {
 	case uint32(common.MAV_CMD_NAV_WAYPOINT),
+		uint32(common.MAV_CMD_NAV_RETURN_TO_LAUNCH),
 		uint32(common.MAV_CMD_NAV_LAND),
 		uint32(common.MAV_CMD_NAV_TAKEOFF):
 		return true
@@ -80,7 +81,9 @@ func isPositiveZero(value float64) bool {
 //     or kind conflict, retention exhaustion, stream delivery failure, malformed
 //     Agent evidence, or caller/Relay wait timeout. An RPC error after admission
 //     leaves the effect uncertain and requires an exact retry with the same
-//     command ID and payload.
+//     command ID and payload. An RTL-bearing plan requires the bound Agent to
+//     advertise mission_rtl_v1; mission_upload_v1 alone is insufficient. Missing
+//     capability returns FailedPrecondition before admission or stream handoff.
 func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest) (*pb.DeployMissionResponse, error) {
 	if err := s.authorizeControlMutation(ctx); err != nil {
 		return nil, err
@@ -110,6 +113,9 @@ func (s *Relay) DeployMission(ctx context.Context, req *pb.DeployMissionRequest)
 	s.sessionsMu.RUnlock()
 	if session == nil {
 		return nil, status.Error(codes.NotFound, "agent is not connected")
+	}
+	if err := requireMissionCapabilities(session, command.GetPlan()); err != nil {
+		return nil, err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, maxMissionDeploymentWait)
 	defer cancel()
@@ -538,7 +544,7 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 			return status.Errorf(codes.InvalidArgument, "mission item %d uses unsupported command %d", i, item.GetCommand())
 		}
 		switch item.GetCommand() {
-		case uint32(common.MAV_CMD_NAV_WAYPOINT), uint32(common.MAV_CMD_NAV_TAKEOFF):
+		case uint32(common.MAV_CMD_NAV_WAYPOINT), uint32(common.MAV_CMD_NAV_TAKEOFF), uint32(common.MAV_CMD_NAV_RETURN_TO_LAUNCH):
 			if !isPositiveZero(item.GetParam4()) {
 				return status.Errorf(codes.InvalidArgument, "mission item %d param4 must be positive zero for command %d", i, item.GetCommand())
 			}
@@ -546,6 +552,9 @@ func validateDeployMissionCommand(command *agentv1.DeployMissionCommand) error {
 			if item.GetParam4() != 1 {
 				return status.Errorf(codes.InvalidArgument, "mission item %d param4 must be +1 for NAV_LAND", i)
 			}
+		}
+		if item.GetCommand() == uint32(common.MAV_CMD_NAV_RETURN_TO_LAUNCH) && (i != len(plan.Items)-1 || item.GetLatitudeE7() != 0 || item.GetLongitudeE7() != 0 || !isPositiveZero(float64(item.GetAltitudeM()))) {
+			return status.Errorf(codes.InvalidArgument, "mission item %d RTL must be terminal with zero coordinates and altitude", i)
 		}
 		if item.GetLatitudeE7() < -900000000 || item.GetLatitudeE7() > 900000000 || item.GetLongitudeE7() < -1800000000 || item.GetLongitudeE7() > 1800000000 {
 			return status.Errorf(codes.InvalidArgument, "mission item %d has invalid coordinates", i)

@@ -24,17 +24,19 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Sinks       SinksConfig       `yaml:"sinks"`
-	Registry    RegistryConfig    `yaml:"registry"`
-	AgentAuth   AgentAuthConfig   `yaml:"agent_auth"`
-	ControlAuth ControlAuthConfig `yaml:"control_auth"`
-	Telemetry   TelemetryConfig   `yaml:"telemetry"`
-	Logging     LoggingConfig     `yaml:"logging"`
-	Debug       bool
-	TLSCertPath string
-	TLSKeyPath  string
-	GrpcPort    int
-	BufferSize  int
+	MetricsAddress       string            `yaml:"metrics_address"`
+	CompletionOutboxPath string            `yaml:"completion_outbox_path"`
+	Sinks                SinksConfig       `yaml:"sinks"`
+	Registry             RegistryConfig    `yaml:"registry"`
+	AgentAuth            AgentAuthConfig   `yaml:"agent_auth"`
+	ControlAuth          ControlAuthConfig `yaml:"control_auth"`
+	Telemetry            TelemetryConfig   `yaml:"telemetry"`
+	Logging              LoggingConfig     `yaml:"logging"`
+	Debug                bool
+	TLSCertPath          string
+	TLSKeyPath           string
+	GrpcPort             int
+	BufferSize           int
 }
 
 // ControlAuthConfig protects the mutating Relay control RPCs with a client

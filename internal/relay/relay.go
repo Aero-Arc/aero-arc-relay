@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/makinje/aero-arc-relay/internal/completionoutbox"
 	"log/slog"
 	"net"
 	"net/http"
@@ -51,6 +52,7 @@ const (
 
 // Relay manages MAVLink connections and data forwarding to sinks
 type Relay struct {
+	completionOutbox   *completionoutbox.Store
 	config             *config.Config
 	sinks              []sinks.Sink
 	router             *outputs.Router
@@ -331,10 +333,16 @@ var (
 //
 // Parameters:
 //   - cfg: defines listener, TLS, authentication, output, and Registry settings.
+//     A nonempty CompletionOutboxPath opens persistent SQLite WAL storage; an
+//     empty path disables completion admission. In-memory and URI paths fail.
 //
 // Returns:
-//   - relay: owns initialized outputs but is not yet serving.
-//   - error: reports authentication or output initialization failure.
+//   - relay: owns initialized outputs and the optional completion outbox, but is
+//     not yet serving. The caller must stop serving before calling Close.
+//   - error: reports missing configuration, authentication, output initialization,
+//     or outbox filesystem, connection, schema, or WAL validation failures. An
+//     outbox-open failure attempts output cleanup with a five-second deadline
+//     and joins any cleanup error with the original initialization error.
 func New(cfg *config.Config) (*Relay, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("relay configuration is required")
@@ -362,6 +370,14 @@ func New(cfg *config.Config) (*Relay, error) {
 		return nil, fmt.Errorf("failed to initialize outputs: %w", err)
 	}
 
+	if cfg.CompletionOutboxPath != "" {
+		relay.completionOutbox, err = completionoutbox.Open(cfg.CompletionOutboxPath)
+		if err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return nil, errors.Join(err, relay.Close(cleanupCtx))
+		}
+	}
 	return relay, nil
 }
 
@@ -449,8 +465,12 @@ func (r *Relay) Start(ctx context.Context) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 
+	metricsAddress := r.config.MetricsAddress
+	if metricsAddress == "" {
+		metricsAddress = ":2112"
+	}
 	metricsServer := &http.Server{
-		Addr:    ":2112",
+		Addr:    metricsAddress,
 		Handler: nil,
 	}
 
@@ -527,9 +547,21 @@ func (r *Relay) failStart(_ context.Context, startErr error) error {
 
 // Close drains and closes all configured outputs. It is separate from the
 // network-server lifecycle so embedders can guarantee that asynchronous
-// telemetry batches are flushed during controlled shutdown.
+// telemetry batches are flushed during controlled shutdown. The first call closes
+// the durable completion store, then drains the output router (or individual
+// sinks), then stops Registry lifecycle reporting. Callers must stop network
+// admission first; after closing the store, completion admission, listing, and
+// acknowledgement fail rather than accepting unpersisted evidence.
+//
+// Parameters: ctx bounds output flushing and Registry shutdown; completion-store
+// close follows SQLite database-close semantics and does not consume this context.
+// Returns: the joined completion-store/output/Registry close errors, or nil on
+// success. Concurrent or repeated calls return the same first-call result.
 func (r *Relay) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
+		if r.completionOutbox != nil {
+			r.closeErr = errors.Join(r.closeErr, r.completionOutbox.Close())
+		}
 		if r.router != nil {
 			r.closeErr = errors.Join(r.closeErr, r.router.Close(ctx))
 		} else {
