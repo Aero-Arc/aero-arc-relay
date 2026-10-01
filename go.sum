@@ -59,6 +59,8 @@ github.com/aero-arc/aero-arc-protos v0.0.0-20260926045856-b2b8a314f0b4 h1:Tlr9ng
 github.com/aero-arc/aero-arc-protos v0.0.0-20260926045856-b2b8a314f0b4/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260926050751-29291bd0549c h1:pxUAWRcFXzYTLM435f8pSSMSyA9GRgW5tVSBG+BwpcQ=
 github.com/aero-arc/aero-arc-protos v0.0.0-20260926050751-29291bd0549c/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
+github.com/aero-arc/aero-arc-protos v0.0.0-20261001015557-5f956995eba4 h1:1BVz0l6evg121WQWr2I/4cY3CnhA99K17S8QjKtTU7A=
+github.com/aero-arc/aero-arc-protos v0.0.0-20261001015557-5f956995eba4/go.mod h1:fILW3Dz6auXllS5ABRFTt0FTnNC4Mtw3ukvGrJa7zLo=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
